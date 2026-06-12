@@ -9,6 +9,7 @@ from typing import Any
 
 from lumi.connectors.google.auth import load_credentials
 from lumi.logging import get_logger
+from lumi.utils.calendar_people import compact_person
 from lumi.utils.links import extract_links, prefer_meeting_url
 
 log = get_logger(__name__)
@@ -30,6 +31,10 @@ class CalendarEventDTO:
     external_url: str | None = None
     links: list[str] | None = None
     external_updated_at: datetime | None = None
+    creator: dict[str, str] | None = None
+    organizer: dict[str, str] | None = None
+    attendees: list[dict[str, Any]] | None = None
+    user_response_status: str | None = None
 
 
 @dataclass(slots=True)
@@ -66,6 +71,29 @@ def _conference_link(item: dict[str, Any]) -> str | None:
     return None
 
 
+def _google_attendees(item: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
+    attendees: list[dict[str, Any]] = []
+    user_status = None
+    for raw in item.get("attendees") or []:
+        person = compact_person(raw)
+        if person is None:
+            continue
+        attendee = {
+            **person,
+            "response_status": raw.get("responseStatus"),
+            "optional": bool(raw.get("optional", False)),
+            "resource": bool(raw.get("resource", False)),
+            "organizer": bool(raw.get("organizer", False)),
+            "self": bool(raw.get("self", False)),
+        }
+        if raw.get("comment"):
+            attendee["comment"] = raw["comment"]
+        if raw.get("self"):
+            user_status = raw.get("responseStatus")
+        attendees.append(attendee)
+    return attendees, user_status
+
+
 def calendar_event_dto_from_google_item(
     item: dict[str, Any], *, calendar_id: str
 ) -> CalendarEventDTO | None:
@@ -77,6 +105,7 @@ def calendar_event_dto_from_google_item(
     meeting_url = _conference_link(item)
     external_url = item.get("htmlLink")
     links = extract_links(item.get("description"), item.get("location"))
+    attendees, user_response_status = _google_attendees(item)
     return CalendarEventDTO(
         external_calendar_id=calendar_id,
         external_event_id=item["id"],
@@ -92,6 +121,10 @@ def calendar_event_dto_from_google_item(
         external_url=external_url,
         links=links,
         external_updated_at=_parse_google_datetime(item.get("updated")),
+        creator=compact_person(item.get("creator")),
+        organizer=compact_person(item.get("organizer")),
+        attendees=attendees,
+        user_response_status=user_response_status,
     )
 
 

@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lumi.db.models import Connector, ConnectorStatus, ConnectorType, User
 from lumi.logging import get_logger
 from lumi.security.crypto import CryptoError, decrypt_text, encrypt_text
+from lumi.utils.calendar_people import normalize_email, normalize_response_status
 from lumi.utils.links import extract_links, prefer_meeting_url
 
 log = get_logger(__name__)
@@ -44,6 +45,8 @@ class YandexEventDTO:
     meeting_url: str | None = None
     external_url: str | None = None
     links: list[str] | None = None
+    organizer: dict[str, str] | None = None
+    attendees: list[dict[str, object]] | None = None
 
 
 def _to_utc(value) -> datetime:
@@ -143,6 +146,12 @@ class YandexCalendarConnector:
                 location = str(vevent.get("LOCATION", "")) or None
                 external_url = str(vevent.get("URL", "")) or None
                 links = extract_links(description, location, external_url)
+                organizer = YandexCalendarConnector._parse_person(vevent.get("ORGANIZER"))
+                attendees = [
+                    parsed
+                    for raw_attendee in YandexCalendarConnector._as_list(vevent.get("ATTENDEE"))
+                    if (parsed := YandexCalendarConnector._parse_attendee(raw_attendee)) is not None
+                ]
                 out.append(
                     YandexEventDTO(
                         external_calendar_id=cal_id,
@@ -158,11 +167,54 @@ class YandexCalendarConnector:
                         meeting_url=prefer_meeting_url(links),
                         external_url=external_url,
                         links=links,
+                        organizer=organizer,
+                        attendees=attendees,
                     )
                 )
             except Exception as exc:  # noqa: BLE001 — skip malformed events
                 log.warning("yandex event parse failed", fields={"error": str(exc)[:200]})
         return out
+
+    @staticmethod
+    def _as_list(value) -> list:
+        if value is None:
+            return []
+        return value if isinstance(value, list) else [value]
+
+    @staticmethod
+    def _param(value, name: str):
+        params = getattr(value, "params", {}) or {}
+        raw = params.get(name)
+        if isinstance(raw, list):
+            raw = raw[0] if raw else None
+        return str(raw) if raw is not None else None
+
+    @staticmethod
+    def _parse_person(value) -> dict[str, str] | None:
+        if value is None:
+            return None
+        name = YandexCalendarConnector._param(value, "CN")
+        email = normalize_email(value)
+        if not name and not email:
+            return None
+        return {key: val for key, val in {"name": name, "email": email}.items() if val}
+
+    @staticmethod
+    def _parse_attendee(value) -> dict[str, object] | None:
+        person = YandexCalendarConnector._parse_person(value)
+        if person is None:
+            return None
+        role = (YandexCalendarConnector._param(value, "ROLE") or "").upper()
+        attendee: dict[str, object] = {
+            **person,
+            "response_status": normalize_response_status(
+                YandexCalendarConnector._param(value, "PARTSTAT")
+            ),
+            "optional": role == "OPT-PARTICIPANT",
+            "resource": role == "NON-PARTICIPANT",
+            "rsvp": (YandexCalendarConnector._param(value, "RSVP") or "").upper() == "TRUE",
+        }
+        return attendee
 
 
 # ---------------------------------------------------------------------------

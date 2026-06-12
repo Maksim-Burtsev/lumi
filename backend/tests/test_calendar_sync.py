@@ -71,7 +71,29 @@ async def test_event_serializer_exposes_external_details(user):
             location="Zoom",
             meeting_url="https://meet.example.com/abc",
             external_url="https://calendar.example.com/event",
-            links=["https://example.com/doc"],
+            links=[
+                "https://meet.example.com/abc",
+                "https://calendar.example.com/event",
+                "https://example.com/doc",
+            ],
+            organizer={"name": "Alice", "email": "alice@example.com"},
+            attendees=[
+                {
+                    "name": "Bob",
+                    "email": "bob@example.com",
+                    "response_status": "accepted",
+                    "optional": False,
+                    "resource": False,
+                },
+                {
+                    "name": "Room 1",
+                    "email": "room@example.com",
+                    "response_status": "needsAction",
+                    "optional": True,
+                    "resource": True,
+                },
+            ],
+            user_response_status="accepted",
         )
 
         payload = event_to_dict(event)
@@ -81,3 +103,8 @@ async def test_event_serializer_exposes_external_details(user):
         assert payload["external_url"] == "https://calendar.example.com/event"
         assert payload["links"] == ["https://example.com/doc"]
         assert payload["last_synced_at"] is not None
+        assert payload["organizer"] == {"name": "Alice", "email": "alice@example.com"}
+        assert payload["attendee_count"] == 2
+        assert payload["user_response_status"] == "accepted"
+        assert payload["attendees"][0]["name"] == "Bob"
+        assert payload["attendees"][1]["resource"] is True

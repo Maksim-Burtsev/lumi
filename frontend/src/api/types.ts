@@ -236,6 +236,24 @@ export interface CalendarEvent {
   external_url: string | null;
   links: string[];
   last_synced_at: string | null;
+  organizer: CalendarPerson | null;
+  attendees: CalendarAttendee[];
+  attendee_count: number;
+  user_response_status: string | null;
+}
+
+export interface CalendarPerson {
+  name?: string;
+  email?: string;
+}
+
+export interface CalendarAttendee extends CalendarPerson {
+  response_status?: string | null;
+  optional?: boolean;
+  resource?: boolean;
+  organizer?: boolean;
+  self?: boolean;
+  rsvp?: boolean;
 }
 
 export interface CalendarSyncState {

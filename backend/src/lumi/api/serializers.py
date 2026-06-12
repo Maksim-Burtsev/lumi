@@ -75,6 +75,10 @@ def event_to_dict(event: CalendarEvent) -> dict[str, Any]:
         "external_url": metadata.get("external_url"),
         "links": list(metadata.get("links") or []),
         "last_synced_at": _iso(event.last_synced_at),
+        "organizer": metadata.get("organizer"),
+        "attendees": list(metadata.get("attendees") or []),
+        "attendee_count": metadata.get("attendee_count", len(metadata.get("attendees") or [])),
+        "user_response_status": metadata.get("user_response_status"),
     }
 
 

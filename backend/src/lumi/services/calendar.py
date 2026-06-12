@@ -24,6 +24,26 @@ DEFAULT_DAY_END_HOUR = 19
 MEETING_BUFFER = timedelta(minutes=10)
 
 
+def _same_url(a: str | None, b: str | None) -> bool:
+    return bool(a and b and a.rstrip("/").lower() == b.rstrip("/").lower())
+
+
+def _clean_links(
+    links: list[str] | None, *, meeting_url: str | None = None, external_url: str | None = None
+) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for link in links or []:
+        if _same_url(link, meeting_url) or _same_url(link, external_url):
+            continue
+        normalized = link.rstrip("/").lower()
+        if normalized in seen:
+            continue
+        out.append(link)
+        seen.add(normalized)
+    return out
+
+
 def merge_busy_intervals(intervals: list[tuple[datetime, datetime]]) -> list[tuple[datetime, datetime]]:
     """Merge overlapping/touching intervals into a sorted, disjoint list."""
     if not intervals:
@@ -107,8 +127,15 @@ class CalendarService:
         meeting_url: str | None = None,
         external_url: str | None = None,
         links: list[str] | None = None,
+        organizer: dict[str, Any] | None = None,
+        attendees: list[dict[str, Any]] | None = None,
+        user_response_status: str | None = None,
     ) -> CalendarEvent:
-        detail_links = links if links is not None else extract_links(description, meeting_url, external_url)
+        detail_links = _clean_links(
+            links if links is not None else extract_links(description, meeting_url, external_url),
+            meeting_url=meeting_url,
+            external_url=external_url,
+        )
         event = CalendarEvent(
             user_id=user.id,
             source=CalendarSource.INTERNAL,
@@ -129,6 +156,10 @@ class CalendarService:
                     "meeting_url": meeting_url,
                     "external_url": external_url,
                     "links": detail_links,
+                    "organizer": organizer,
+                    "attendees": attendees or [],
+                    "attendee_count": len(attendees or []),
+                    "user_response_status": user_response_status,
                 }.items()
                 if value not in (None, "", [])
             },
@@ -237,6 +268,10 @@ class CalendarService:
         links: list[str] | None = None,
         external_updated_at: datetime | None = None,
         metadata: dict[str, Any] | None = None,
+        creator: dict[str, Any] | None = None,
+        organizer: dict[str, Any] | None = None,
+        attendees: list[dict[str, Any]] | None = None,
+        user_response_status: str | None = None,
     ) -> CalendarEvent:
         result = await self.session.execute(
             select(CalendarEvent).where(
@@ -266,7 +301,11 @@ class CalendarService:
         event.busy = busy
         event.status = status
         event.last_synced_at = utc_now()
-        detail_links = links if links is not None else extract_links(description, meeting_url, external_url)
+        detail_links = _clean_links(
+            links if links is not None else extract_links(description, meeting_url, external_url),
+            meeting_url=meeting_url,
+            external_url=external_url,
+        )
         detail_metadata: dict[str, Any] = {
             **(event.metadata_ or {}),
             **(metadata or {}),
@@ -274,6 +313,11 @@ class CalendarService:
             "meeting_url": meeting_url,
             "external_url": external_url,
             "links": detail_links,
+            "creator": creator,
+            "organizer": organizer,
+            "attendees": attendees or [],
+            "attendee_count": len(attendees or []),
+            "user_response_status": user_response_status,
         }
         if external_updated_at is not None:
             detail_metadata["external_updated_at"] = external_updated_at.isoformat()

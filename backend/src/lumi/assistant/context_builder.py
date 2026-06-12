@@ -125,6 +125,11 @@ class ContextBuilder:
                     line += f" @ {metadata['location']}"
                 if metadata.get("meeting_url"):
                     line += f" join={metadata['meeting_url']}"
+                if metadata.get("organizer"):
+                    organizer = metadata["organizer"]
+                    line += f" organizer={organizer.get('name') or organizer.get('email')}"
+                if metadata.get("attendee_count"):
+                    line += f" attendees={metadata['attendee_count']}"
                 links = list(metadata.get("links") or [])[:2]
                 if links:
                     line += " links=" + ", ".join(links)

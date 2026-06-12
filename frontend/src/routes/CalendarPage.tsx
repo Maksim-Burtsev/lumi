@@ -1,11 +1,15 @@
 import { useMemo, useState } from 'react';
+import type { CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import {
   CalendarDays,
   ChevronLeft,
   ChevronRight,
   CloudOff,
+  Copy,
   ExternalLink,
+  Users,
   MapPin,
   Plus,
   RefreshCw,
@@ -23,7 +27,7 @@ import {
   useCreateEvent,
   useDeleteEvent,
 } from '../api/hooks';
-import type { CalendarEvent } from '../api/types';
+import type { CalendarAttendee, CalendarEvent, CalendarPerson } from '../api/types';
 import { DayGrid } from '../components/calendar/DayGrid';
 import { Button } from '../components/ui/Button';
 import { EmptyState } from '../components/ui/EmptyState';
@@ -39,6 +43,11 @@ import { haptic, openExternalLink } from '../telegram/webapp';
 interface SheetPrefill {
   start: string; // "HH:MM"
   end: string;
+}
+
+interface ContactAction {
+  person: CalendarPerson | CalendarAttendee;
+  anchor: DOMRect;
 }
 
 function combine(day: Date, time: string): Date | null {
@@ -65,6 +74,163 @@ function linkLabel(url: string): string {
   } catch {
     return 'Ссылка';
   }
+}
+
+function sameUrl(a: string | null | undefined, b: string | null | undefined): boolean {
+  return Boolean(a && b && a.replace(/\/$/, '').toLowerCase() === b.replace(/\/$/, '').toLowerCase());
+}
+
+function isCalendarServiceLink(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+    return host === 'calendar.yandex.ru' || host === 'calendar.yandex.com' || host === 'calendar.google.com';
+  } catch {
+    return false;
+  }
+}
+
+function visibleLinks(event: CalendarEvent): string[] {
+  return event.links.filter(
+    (link) => !sameUrl(link, event.meeting_url) && !sameUrl(link, event.external_url) && !isCalendarServiceLink(link),
+  );
+}
+
+function personLabel(person: { name?: string; email?: string }): string {
+  return person.name || person.email || 'Участник';
+}
+
+function responseLabel(status?: string | null): string | null {
+  if (status === 'declined') return 'отказался';
+  if (status === 'tentative') return 'возможно';
+  if (status === 'needsAction') return 'ждёт ответа';
+  return null;
+}
+
+function contactPopoverStyle(anchor: DOMRect): CSSProperties {
+  const margin = 12;
+  const width = Math.min(360, window.innerWidth - margin * 2);
+  const height = 164;
+  const left = Math.min(Math.max(anchor.left, margin), window.innerWidth - width - margin);
+  let top = anchor.bottom + 8;
+  if (top + height > window.innerHeight - margin) {
+    top = Math.max(margin, anchor.top - height - 8);
+  }
+  return { left, top, width };
+}
+
+function copyText(value: string): Promise<void> {
+  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(value);
+
+  const input = document.createElement('textarea');
+  input.value = value;
+  input.setAttribute('readonly', '');
+  input.style.position = 'fixed';
+  input.style.opacity = '0';
+  document.body.appendChild(input);
+  input.select();
+  const ok = document.execCommand('copy');
+  document.body.removeChild(input);
+  return ok ? Promise.resolve() : Promise.reject(new Error('copy_failed'));
+}
+
+function ContactActionSheet({
+  contact,
+  onClose,
+  onCopy,
+}: {
+  contact: ContactAction | null;
+  onClose: () => void;
+  onCopy: (email: string) => void;
+}) {
+  const reduceMotion = useReducedMotion();
+  const email = contact?.person.email;
+  if (!contact || !email) return null;
+
+  const actions = (
+    <>
+      <p className="truncate px-4 py-3 text-[15px] text-hint">{email}</p>
+      <div className="h-px bg-[var(--hairline)]" />
+      <button
+        type="button"
+        onClick={() => onCopy(email)}
+        className="flex min-h-12 w-full items-center gap-3 px-4 text-left text-[15px] font-medium text-ink"
+      >
+        <Copy size={17} className="shrink-0 text-hint" />
+        Скопировать email
+      </button>
+    </>
+  );
+
+  const content = (
+    <div className="fixed inset-0 z-[90]">
+      <button type="button" aria-label="Закрыть контакт" className="absolute inset-0 cursor-default" onClick={onClose} />
+      <motion.div
+        initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 12, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 8, scale: 0.98 }}
+        transition={{ duration: 0.18, ease: 'easeOut' }}
+        className="absolute inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+14px)] overflow-hidden rounded-[22px] border border-hairline bg-[var(--surface-strong)] shadow-card sm:hidden"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Контакт участника"
+      >
+        {actions}
+      </motion.div>
+      <motion.div
+        initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 8, scale: 0.98 }}
+        transition={{ duration: 0.18, ease: 'easeOut' }}
+        className="absolute hidden overflow-hidden rounded-2xl border border-hairline bg-[var(--surface-strong)] shadow-card sm:block"
+        style={contactPopoverStyle(contact.anchor)}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Контакт участника"
+      >
+        {actions}
+      </motion.div>
+    </div>
+  );
+
+  return createPortal(content, document.body);
+}
+
+function ParticipantRow({
+  person,
+  labels,
+  onContact,
+}: {
+  person: CalendarPerson | CalendarAttendee;
+  labels: string[];
+  onContact: (person: CalendarPerson | CalendarAttendee, anchor: DOMRect) => void;
+}) {
+  const label = personLabel(person);
+  const badges = labels.filter(Boolean);
+  const content = (
+    <>
+      <span className="min-w-0 flex-1 truncate text-[14px] text-ink">{label}</span>
+      {badges.map((badge) => (
+        <span key={badge} className="shrink-0 text-[12.5px] text-hint">
+          {badge}
+        </span>
+      ))}
+    </>
+  );
+
+  if (!person.email) {
+    return <p className="flex min-w-0 items-center gap-2 py-0.5">{content}</p>;
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={(event) => onContact(person, event.currentTarget.getBoundingClientRect())}
+      className="-mx-2 flex w-[calc(100%+16px)] min-w-0 items-center gap-2 rounded-xl px-2 py-1.5 text-left transition active:bg-[var(--secondary-bg)] sm:hover:bg-[var(--secondary-bg)]"
+      aria-label={`Открыть контакт: ${label}`}
+    >
+      {content}
+    </button>
+  );
 }
 
 function CreateBlockSheet({
@@ -216,9 +382,27 @@ export default function CalendarPage() {
   const isToday = isSameDay(day, startOfDay(new Date()));
 
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
+  const [showAllAttendees, setShowAllAttendees] = useState(false);
+  const [contactAction, setContactAction] = useState<ContactAction | null>(null);
   const dayStart = useMemo(() => startOfDay(day), [day]);
   const events = eventsQuery.data?.items ?? [];
   const syncState = eventsQuery.data?.sync;
+
+  const openContactAction = (person: CalendarPerson | CalendarAttendee, anchor: DOMRect) => {
+    if (!person.email) return;
+    haptic('light');
+    setContactAction({ person, anchor });
+  };
+
+  const copyContactEmail = (email: string) => {
+    void copyText(email)
+      .then(() => {
+        haptic('success');
+        show('Скопировано', 'success');
+        setContactAction(null);
+      })
+      .catch(() => show('Не удалось скопировать', 'error'));
+  };
 
   return (
     <Stagger>
@@ -336,7 +520,11 @@ export default function CalendarPage() {
               events={events}
               dayStart={dayStart}
               nowLine={isToday}
-              onEventTap={(e) => setSelectedEvent(e)}
+              onEventTap={(e) => {
+                setShowAllAttendees(false);
+                setContactAction(null);
+                setSelectedEvent(e);
+              }}
               onEmptyTap={(time) => {
                 const end = new Date(time.getTime() + 60 * 60000);
                 setPrefill({ start: formatTime(time.toISOString()), end: formatTime(end.toISOString()) });
@@ -348,7 +536,15 @@ export default function CalendarPage() {
       </Rise>
 
       {/* Event details */}
-      <Sheet open={selectedEvent !== null} onClose={() => setSelectedEvent(null)} title={selectedEvent?.title ?? ''}>
+      <Sheet
+        open={selectedEvent !== null}
+        onClose={() => {
+          setShowAllAttendees(false);
+          setContactAction(null);
+          setSelectedEvent(null);
+        }}
+        title={selectedEvent?.title ?? ''}
+      >
         {selectedEvent && (
           <div className="space-y-4">
             <p className="tnum text-[14px] text-hint">
@@ -357,19 +553,49 @@ export default function CalendarPage() {
               {selectedEvent.source === 'yandex' && ' · Яндекс.Календарь'}
               {selectedEvent.status === 'proposed' && ' · предложение Lumi'}
             </p>
-            {selectedEvent.last_synced_at && selectedEvent.source !== 'internal' && (
-              <p className="text-[12.5px] text-hint">Обновлено {formatRelative(selectedEvent.last_synced_at)}</p>
-            )}
             {selectedEvent.location && (
               <div className="flex items-start gap-2 text-[14px] leading-relaxed text-ink">
                 <MapPin size={16} className="mt-0.5 shrink-0 text-hint" />
                 <span className="min-w-0">{selectedEvent.location}</span>
               </div>
             )}
+            {(selectedEvent.organizer || selectedEvent.attendee_count > 0) && (
+              <div className="space-y-2.5 rounded-xl bg-[var(--secondary-bg)] px-3.5 py-3">
+                <div className="flex items-center gap-2 text-[13px] font-medium text-hint">
+                  <Users size={15} />
+                  <span>Участники{selectedEvent.attendee_count ? ` · ${selectedEvent.attendee_count}` : ''}</span>
+                </div>
+                {selectedEvent.organizer && (
+                  <ParticipantRow person={selectedEvent.organizer} labels={['организатор']} onContact={openContactAction} />
+                )}
+                <div className="space-y-1.5">
+                  {(showAllAttendees ? selectedEvent.attendees : selectedEvent.attendees.slice(0, 5)).map((attendee) => {
+                    const label = responseLabel(attendee.response_status);
+                    return (
+                      <ParticipantRow
+                        key={`${attendee.email ?? attendee.name}-${attendee.response_status ?? ''}`}
+                        person={attendee}
+                        labels={[label ?? '', attendee.optional ? 'опц.' : '', attendee.resource ? 'ресурс' : '']}
+                        onContact={openContactAction}
+                      />
+                    );
+                  })}
+                </div>
+                {selectedEvent.attendees.length > 5 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllAttendees((v) => !v)}
+                    className="text-[13px] font-medium text-accent-text"
+                  >
+                    {showAllAttendees ? 'Скрыть' : `Показать всех (${selectedEvent.attendees.length})`}
+                  </button>
+                )}
+              </div>
+            )}
             {selectedEvent.description && (
               <p className="whitespace-pre-wrap text-[14px] leading-relaxed text-ink">{selectedEvent.description}</p>
             )}
-            {(selectedEvent.meeting_url || selectedEvent.external_url || selectedEvent.links.length > 0) && (
+            {(selectedEvent.meeting_url || selectedEvent.external_url || visibleLinks(selectedEvent).length > 0) && (
               <div className="flex flex-wrap gap-2.5">
                 {selectedEvent.meeting_url && (
                   <Button
@@ -380,16 +606,7 @@ export default function CalendarPage() {
                     Встреча
                   </Button>
                 )}
-                {selectedEvent.external_url && (
-                  <Button
-                    variant="secondary"
-                    icon={<ExternalLink size={15} />}
-                    onClick={() => openExternalLink(selectedEvent.external_url!)}
-                  >
-                    В календаре
-                  </Button>
-                )}
-                {selectedEvent.links.map((link) => (
+                {visibleLinks(selectedEvent).map((link) => (
                   <Button
                     key={link}
                     variant="secondary"
@@ -399,6 +616,16 @@ export default function CalendarPage() {
                     {linkLabel(link)}
                   </Button>
                 ))}
+                {selectedEvent.external_url && selectedEvent.source !== 'internal' && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon={<ExternalLink size={14} />}
+                    onClick={() => openExternalLink(selectedEvent.external_url!)}
+                  >
+                    Открыть оригинал
+                  </Button>
+                )}
               </div>
             )}
             {selectedEvent.source !== 'internal' ? (
@@ -462,6 +689,11 @@ export default function CalendarPage() {
       </motion.button>
 
       <CreateBlockSheet open={sheetOpen} onClose={() => setSheetOpen(false)} day={day} prefill={prefill} />
+      <ContactActionSheet
+        contact={contactAction}
+        onClose={() => setContactAction(null)}
+        onCopy={copyContactEmail}
+      />
     </Stagger>
   );
 }

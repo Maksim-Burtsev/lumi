@@ -164,6 +164,10 @@ class CalendarSyncService:
                 external_url=dto.external_url,
                 links=dto.links,
                 external_updated_at=dto.external_updated_at,
+                creator=dto.creator,
+                organizer=dto.organizer,
+                attendees=dto.attendees,
+                user_response_status=dto.user_response_status,
             )
             synced += 1
         cancelled = 0
@@ -224,6 +228,8 @@ class CalendarSyncService:
                 meeting_url=dto.meeting_url,
                 external_url=dto.external_url,
                 links=dto.links,
+                organizer=dto.organizer,
+                attendees=dto.attendees,
             )
             synced += 1
         cancelled = 0
