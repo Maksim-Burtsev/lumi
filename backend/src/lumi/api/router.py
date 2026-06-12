@@ -8,6 +8,7 @@ from lumi.api.routes import (
     agent_runs,
     automations,
     calendar,
+    confirmations,
     connectors,
     debug,
     inbox,
@@ -23,6 +24,7 @@ api_router.include_router(me.router, tags=["me"])
 api_router.include_router(today.router, tags=["today"])
 api_router.include_router(tasks.router, tags=["tasks"])
 api_router.include_router(calendar.router, tags=["calendar"])
+api_router.include_router(confirmations.router, tags=["confirmations"])
 api_router.include_router(inbox.router, tags=["inbox"])
 api_router.include_router(news.router, tags=["news"])
 api_router.include_router(automations.router, tags=["automations"])

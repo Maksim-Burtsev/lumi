@@ -6,6 +6,7 @@ import type {
   AutomationsResponse,
   CalendarEventResponse,
   CalendarEventsResponse,
+  ConfirmationDecisionResponse,
   CreateAutomationInput,
   CreateEventInput,
   CreateNewsTopicInput,
@@ -174,6 +175,14 @@ export class LumiApiClient {
 
   confirmBlock(id: string): Promise<CalendarEventResponse> {
     return request('POST', `/api/calendar/blocks/${id}/confirm`);
+  }
+
+  acceptConfirmation(id: string): Promise<ConfirmationDecisionResponse> {
+    return request('POST', `/api/confirmations/${id}/accept`);
+  }
+
+  rejectConfirmation(id: string): Promise<ConfirmationDecisionResponse> {
+    return request('POST', `/api/confirmations/${id}/reject`);
   }
 
   deleteCalendarEvent(id: string): Promise<OkResponse> {

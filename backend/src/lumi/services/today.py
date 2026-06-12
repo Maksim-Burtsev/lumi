@@ -12,6 +12,7 @@ from lumi.db.models import (
     EmailThread,
     User,
 )
+from lumi.services.action_policy import policy_for_action, policy_to_dict
 from lumi.services.calendar import CalendarService
 from lumi.services.confirmations import ConfirmationService
 from lumi.services.tasks import TaskService
@@ -111,12 +112,16 @@ class TodayService:
                 "ref_id": str(thread.id),
             })
         for confirmation in await self.confirmations.list_pending(user, limit=3):
+            policy = policy_for_action(confirmation.action_type)
             needs_attention.append({
                 "id": f"confirmation-{confirmation.id}",
                 "kind": "confirmation",
                 "title": confirmation.prompt,
-                "subtitle": "Ждет подтверждения в чате",
+                "subtitle": "Ждет решения",
                 "ref_id": str(confirmation.id),
+                "action_type": confirmation.action_type,
+                "action_payload": confirmation.action_payload,
+                **policy_to_dict(policy),
             })
         needs_attention = needs_attention[:8]
 

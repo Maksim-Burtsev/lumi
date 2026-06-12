@@ -4,6 +4,7 @@ import pytest
 from lumi.api.deps import get_current_user
 from lumi.db.session import session_scope
 from lumi.main import app
+from lumi.services.confirmations import ConfirmationService
 from lumi.services.users import UserService
 
 from .conftest import TEST_TELEGRAM_ID
@@ -91,6 +92,52 @@ async def test_memories_and_automations_endpoints(client):
         "type": "news_digest", "title": "x", "cron_expression": "мусор",
     })
     assert bad.status_code == 422
+
+
+async def test_confirmations_accept_and_reject(client, db_session):
+    user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID)
+    service = ConfirmationService(db_session)
+    accept_item = await service.create(
+        user,
+        action_type="store_memory",
+        action_payload={
+            "kind": "fact",
+            "text": "Пользователь тестирует confirmation API",
+            "importance": 3,
+            "confidence": 0.9,
+            "requires_confirmation": True,
+        },
+        prompt="Запомнить тестовый факт?",
+    )
+    reject_item = await service.create(
+        user,
+        action_type="create_task",
+        action_payload={
+            "title": "Тестовая задача из confirmation",
+            "confidence": 0.8,
+            "requires_confirmation": True,
+        },
+        prompt="Создать тестовую задачу?",
+    )
+    await db_session.commit()
+
+    accepted = await client.post(f"/api/confirmations/{accept_item.id}/accept")
+    assert accepted.status_code == 200
+    body = accepted.json()
+    assert body["executed"] is True
+    assert body["confirmation"]["status"] == "accepted"
+    assert body["confirmation"]["risk_class"] == "write_internal_memory"
+    assert body["result_text"] == "Запомнил."
+
+    rejected = await client.post(f"/api/confirmations/{reject_item.id}/reject")
+    assert rejected.status_code == 200
+    body = rejected.json()
+    assert body["executed"] is False
+    assert body["confirmation"]["status"] == "rejected"
+    assert body["result_text"] == "Ок, не делаю."
+
+    again = await client.post(f"/api/confirmations/{reject_item.id}/reject")
+    assert again.status_code == 409
 
 
 async def test_calendar_events_crud(client):

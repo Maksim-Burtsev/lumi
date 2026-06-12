@@ -105,6 +105,16 @@ export interface TimelineItem {
 }
 
 export type AttentionKind = 'overdue_task' | 'due_task' | 'email' | 'confirmation';
+export type RiskClass =
+  | 'write_internal'
+  | 'write_internal_memory'
+  | 'write_internal_scheduled'
+  | 'write_external'
+  | 'external_communication'
+  | 'destructive'
+  | 'unknown';
+export type ApprovalMode = 'auto_or_confirm' | 'confirm' | 'draft_then_confirm' | 'strong_confirm';
+export type AttentionUiMode = 'inline_confirm' | 'review_then_confirm' | 'strong_confirm';
 
 export interface AttentionItem {
   id: string;
@@ -112,6 +122,35 @@ export interface AttentionItem {
   title: string;
   subtitle: string | null;
   ref_id: string | null;
+  action_type?: string;
+  action_payload?: Record<string, unknown>;
+  risk_class?: RiskClass;
+  approval_mode?: ApprovalMode;
+  ui_mode?: AttentionUiMode;
+  primary_label?: string;
+  secondary_label?: string;
+}
+
+export interface PendingConfirmation {
+  id: string;
+  action_type: string;
+  title: string;
+  status: 'pending' | 'accepted' | 'rejected' | 'expired';
+  action_payload: Record<string, unknown>;
+  created_at: string | null;
+  expires_at: string | null;
+  decided_at: string | null;
+  risk_class: RiskClass;
+  approval_mode: ApprovalMode;
+  ui_mode: AttentionUiMode;
+  primary_label: string;
+  secondary_label: string;
+}
+
+export interface ConfirmationDecisionResponse {
+  confirmation: PendingConfirmation;
+  result_text: string;
+  executed: boolean;
 }
 
 export type SuggestionKind = 'focus_block' | 'plan_day' | 'email_triage' | 'news_digest';

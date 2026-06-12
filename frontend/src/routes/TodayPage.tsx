@@ -1,8 +1,9 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AlertCircle,
-  ArrowRight,
   CalendarDays,
+  Check,
   CheckCircle2,
   Clock,
   HelpCircle,
@@ -11,20 +12,31 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { api } from '../api/client';
-import { qk, useAgentRunAction, useConfirmBlock, useToday } from '../api/hooks';
+import {
+  qk,
+  useAgentRunAction,
+  useCompleteTask,
+  useConfirmBlock,
+  useCreateTaskFromThread,
+  useDecideConfirmation,
+  useSnoozeTask,
+  useToday,
+} from '../api/hooks';
 import type { AttentionItem, Suggestion, TimelineItem, TodaySummary } from '../api/types';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorState } from '../components/ui/ErrorState';
 import { SectionHeader } from '../components/ui/SectionHeader';
+import { Sheet } from '../components/ui/Sheet';
 import { Skeleton, SkeletonList, SkeletonTimeline } from '../components/ui/Skeleton';
 import { StatPill } from '../components/ui/StatPill';
 import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
 import { Timeline } from '../components/timeline/Timeline';
 import type { TimelineEntry } from '../components/timeline/Timeline';
-import { countLabel, formatDateHeading, formatSpanMinutes, plural } from '../lib/format';
+import { countLabel, formatDateHeading, formatDueLabel, formatSpanMinutes, plural } from '../lib/format';
+import { haptic } from '../telegram/webapp';
 
 function buildSummaryLine(summary: TodaySummary): string {
   const parts: string[] = [];
@@ -57,6 +69,108 @@ const ATTENTION_ROUTES: Record<AttentionItem['kind'], string> = {
   confirmation: '/calendar',
 };
 
+function attentionCtaLabel(item: AttentionItem): string {
+  if (item.kind === 'confirmation') {
+    if (item.ui_mode === 'review_then_confirm' || item.ui_mode === 'strong_confirm') return 'Проверить';
+    return 'Решить';
+  }
+  if (item.kind === 'email') return 'Ответить';
+  return 'Разобрать';
+}
+
+function riskLabel(item: AttentionItem): string {
+  switch (item.risk_class) {
+    case 'write_external':
+      return 'Внешний календарь';
+    case 'external_communication':
+      return 'Внешняя отправка';
+    case 'destructive':
+      return 'Опасное действие';
+    case 'write_internal_memory':
+      return 'Память';
+    case 'write_internal_scheduled':
+      return 'Автоматизация';
+    case 'write_internal':
+      return 'Внутри Lumi';
+    default:
+      return 'Нужно подтверждение';
+  }
+}
+
+function riskHint(item: AttentionItem): string {
+  switch (item.risk_class) {
+    case 'write_external':
+      return 'Будет создана запись вне Lumi.';
+    case 'external_communication':
+      return 'Сначала будет черновик, отправка только после подтверждения.';
+    case 'destructive':
+      return 'Действие может удалить или отключить данные.';
+    case 'write_internal_memory':
+      return 'Lumi сохранит это как долгосрочную память.';
+    case 'write_internal_scheduled':
+      return 'Lumi включит регулярное действие.';
+    case 'write_internal':
+      return 'Изменение останется внутри Lumi.';
+    default:
+      return 'Проверь детали перед решением.';
+  }
+}
+
+function payloadText(value: unknown): string | null {
+  if (typeof value === 'string' && value.trim()) return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return null;
+}
+
+function payloadDate(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return formatDueLabel(date.toISOString());
+}
+
+function confirmationDetailRows(item: AttentionItem): { label: string; value: string }[] {
+  const payload = item.action_payload ?? {};
+  const rows: { label: string; value: string }[] = [];
+  const push = (label: string, value: string | null) => {
+    if (value) rows.push({ label, value });
+  };
+
+  switch (item.action_type) {
+    case 'create_google_calendar_event':
+      push('Действие', 'Добавить в Google Calendar');
+      push('Название', payloadText(payload.title));
+      push('Начало', payloadDate(payload.start_at_local));
+      push('Конец', payloadDate(payload.end_at_local));
+      break;
+    case 'store_memory':
+      push('Запомнить', payloadText(payload.text));
+      push('Тип', payloadText(payload.kind));
+      break;
+    case 'create_task':
+      push('Задача', payloadText(payload.title));
+      push('Срок', payloadDate(payload.due_at_local));
+      push('Напоминание', payloadDate(payload.reminder_at_local));
+      push('Проект', payloadText(payload.project));
+      break;
+    case 'create_automation':
+      push('Автоматизация', payloadText(payload.title));
+      push('Расписание', payloadText(payload.cron_expression));
+      push('Часовой пояс', payloadText(payload.timezone));
+      break;
+    default:
+      push('Действие', item.action_type ?? null);
+  }
+
+  return rows;
+}
+
+function AttentionIcon({ item }: { item: AttentionItem }) {
+  const meta = ATTENTION_ICONS[item.kind];
+  const Icon = meta.icon;
+  return <Icon size={17} strokeWidth={1.9} className={`shrink-0 ${meta.className}`} />;
+}
+
 function TodaySkeleton() {
   return (
     <div>
@@ -85,7 +199,12 @@ export default function TodayPage() {
   const todayQuery = useToday();
   const navigate = useNavigate();
   const { show } = useToast();
+  const [selectedAttention, setSelectedAttention] = useState<AttentionItem | null>(null);
   const confirmBlock = useConfirmBlock();
+  const decideConfirmation = useDecideConfirmation();
+  const completeTask = useCompleteTask('today');
+  const snoozeTask = useSnoozeTask('today');
+  const createTaskFromThread = useCreateTaskFromThread();
 
   const planAction = useAgentRunAction({
     start: () => api.planDay(),
@@ -143,6 +262,72 @@ export default function TodayPage() {
         break;
       }
     }
+  };
+
+  const closeAttention = () => setSelectedAttention(null);
+
+  const handleAttentionNavigate = (route: string) => {
+    closeAttention();
+    navigate(route);
+  };
+
+  const handleConfirmationDecision = (accept: boolean) => {
+    const id = selectedAttention?.ref_id;
+    if (!id) return;
+    decideConfirmation.mutate(
+      { id, accept },
+      {
+        onSuccess: (result) => {
+          haptic(accept ? 'success' : 'light');
+          show(result.result_text, accept ? 'success' : 'info');
+          closeAttention();
+        },
+        onError: () => {
+          show('Не удалось сохранить решение', 'error');
+          void todayQuery.refetch();
+        },
+      },
+    );
+  };
+
+  const handleAttentionTaskComplete = () => {
+    const id = selectedAttention?.ref_id;
+    if (!id) return;
+    completeTask.mutate(id, {
+      onSuccess: () => {
+        haptic('success');
+        show('Задача выполнена', 'success');
+        closeAttention();
+      },
+      onError: () => show('Не удалось выполнить задачу', 'error'),
+    });
+  };
+
+  const handleAttentionTaskSnooze = () => {
+    const id = selectedAttention?.ref_id;
+    if (!id) return;
+    snoozeTask.mutate(
+      { id, input: { preset: 'tomorrow' } },
+      {
+        onSuccess: () => {
+          show('Задача перенесена на завтра', 'success');
+          closeAttention();
+        },
+        onError: () => show('Не удалось перенести задачу', 'error'),
+      },
+    );
+  };
+
+  const handleAttentionEmailTask = () => {
+    const id = selectedAttention?.ref_id;
+    if (!id) return;
+    createTaskFromThread.mutate(id, {
+      onSuccess: (result) => {
+        show(`Задача создана: ${result.task.title}`, 'success');
+        closeAttention();
+      },
+      onError: () => show('Не удалось создать задачу', 'error'),
+    });
   };
 
   const suggestionBusy = (suggestion: Suggestion): boolean => {
@@ -275,24 +460,24 @@ export default function TodayPage() {
       {/* ----------------------------------------------------------- Needs attention */}
       {data.needs_attention.length > 0 && (
         <Rise>
-          <SectionHeader title="Требует внимания" />
+          <SectionHeader title="Ждет решения" />
           <Card className="card-strong divide-y divide-[var(--hairline)] overflow-hidden !p-0">
             {data.needs_attention.map((item) => {
-              const meta = ATTENTION_ICONS[item.kind];
-              const Icon = meta.icon;
               return (
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => navigate(ATTENTION_ROUTES[item.kind])}
+                  onClick={() => setSelectedAttention(item)}
                   className="flex min-h-[52px] w-full items-center gap-3 px-4 py-2.5 text-left"
                 >
-                  <Icon size={17} strokeWidth={1.9} className={`shrink-0 ${meta.className}`} />
+                  <AttentionIcon item={item} />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[14px] font-medium text-ink">{item.title}</span>
                     {item.subtitle && <span className="block truncate text-[12.5px] text-hint">{item.subtitle}</span>}
                   </span>
-                  <ArrowRight size={15} className="shrink-0 text-hint" />
+                  <span className="shrink-0 rounded-full bg-[var(--secondary-bg)] px-2.5 py-1 text-[12px] font-medium text-[var(--secondary-text)]">
+                    {attentionCtaLabel(item)}
+                  </span>
                 </button>
               );
             })}
@@ -342,6 +527,97 @@ export default function TodayPage() {
           </div>
         </Rise>
       )}
+
+      <Sheet open={selectedAttention !== null} onClose={closeAttention} title="Решение">
+        {selectedAttention && (
+          <div className="pb-2">
+            <div className="flex items-start gap-3">
+              <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--secondary-bg)]">
+                <AttentionIcon item={selectedAttention} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-[16px] font-semibold leading-snug text-ink">{selectedAttention.title}</p>
+                {selectedAttention.subtitle && (
+                  <p className="mt-1 text-[13px] leading-relaxed text-hint">{selectedAttention.subtitle}</p>
+                )}
+              </div>
+            </div>
+
+            {selectedAttention.kind === 'confirmation' && (
+              <>
+                <div className="mt-4 rounded-2xl bg-[var(--accent-soft)] px-4 py-3">
+                  <p className="text-[12px] font-semibold uppercase tracking-wide text-accent-text">
+                    {riskLabel(selectedAttention)}
+                  </p>
+                  <p className="mt-1 text-[13px] leading-relaxed text-ink">{riskHint(selectedAttention)}</p>
+                </div>
+
+                {confirmationDetailRows(selectedAttention).length > 0 && (
+                  <dl className="mt-4 divide-y divide-hairline rounded-2xl border border-hairline">
+                    {confirmationDetailRows(selectedAttention).map((row) => (
+                      <div key={row.label} className="grid grid-cols-[96px_1fr] gap-3 px-3.5 py-2.5">
+                        <dt className="text-[12.5px] text-hint">{row.label}</dt>
+                        <dd className="min-w-0 break-words text-[13px] font-medium text-ink">{row.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
+
+                <div className="mt-5 flex flex-col gap-2.5">
+                  <Button
+                    fullWidth
+                    variant={selectedAttention.ui_mode === 'strong_confirm' ? 'danger' : 'primary'}
+                    busy={decideConfirmation.isPending}
+                    icon={<Check size={16} />}
+                    onClick={() => handleConfirmationDecision(true)}
+                  >
+                    {selectedAttention.primary_label ?? 'Подтвердить'}
+                  </Button>
+                  <Button
+                    fullWidth
+                    variant="ghost"
+                    busy={decideConfirmation.isPending}
+                    onClick={() => handleConfirmationDecision(false)}
+                  >
+                    {selectedAttention.secondary_label ?? 'Отклонить'}
+                  </Button>
+                </div>
+              </>
+            )}
+
+            {(selectedAttention.kind === 'overdue_task' || selectedAttention.kind === 'due_task') && (
+              <div className="mt-5 flex flex-col gap-2.5">
+                <Button fullWidth icon={<Check size={16} />} busy={completeTask.isPending} onClick={handleAttentionTaskComplete}>
+                  Готово
+                </Button>
+                <Button
+                  fullWidth
+                  variant="secondary"
+                  icon={<Clock size={16} />}
+                  busy={snoozeTask.isPending}
+                  onClick={handleAttentionTaskSnooze}
+                >
+                  Завтра
+                </Button>
+                <Button fullWidth variant="ghost" onClick={() => handleAttentionNavigate(ATTENTION_ROUTES[selectedAttention.kind])}>
+                  Открыть задачи
+                </Button>
+              </div>
+            )}
+
+            {selectedAttention.kind === 'email' && (
+              <div className="mt-5 flex flex-col gap-2.5">
+                <Button fullWidth busy={createTaskFromThread.isPending} onClick={handleAttentionEmailTask}>
+                  Создать задачу
+                </Button>
+                <Button fullWidth variant="ghost" onClick={() => handleAttentionNavigate(ATTENTION_ROUTES.email)}>
+                  Открыть почту
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+      </Sheet>
     </Stagger>
   );
 }

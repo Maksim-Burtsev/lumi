@@ -13,11 +13,13 @@ from lumi.db.models import (
     Message,
     NewsDigestRun,
     NewsTopic,
+    PendingConfirmation,
     ScheduledTask,
     Task,
     ToolCall,
     User,
 )
+from lumi.services.action_policy import policy_for_action, policy_to_dict
 
 
 def _iso(dt) -> str | None:
@@ -95,6 +97,21 @@ def thread_to_dict(thread: EmailThread) -> dict[str, Any]:
         "suggested_action": (thread.metadata_ or {}).get("suggested_action"),
         "last_message_at": _iso(thread.last_message_at),
         "task_candidate": candidate,
+    }
+
+
+def confirmation_to_dict(confirmation: PendingConfirmation) -> dict[str, Any]:
+    policy = policy_for_action(confirmation.action_type)
+    return {
+        "id": str(confirmation.id),
+        "action_type": confirmation.action_type,
+        "title": confirmation.prompt,
+        "status": confirmation.status.value,
+        "action_payload": confirmation.action_payload,
+        "created_at": _iso(confirmation.created_at),
+        "expires_at": _iso(confirmation.expires_at),
+        "decided_at": _iso(confirmation.decided_at),
+        **policy_to_dict(policy),
     }
 
 

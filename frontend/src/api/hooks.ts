@@ -276,6 +276,23 @@ export function useConfirmBlock() {
   });
 }
 
+export function useDecideConfirmation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, accept }: { id: string; accept: boolean }) =>
+      accept ? api.acceptConfirmation(id) : api.rejectConfirmation(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: qk.today });
+      void queryClient.invalidateQueries({ queryKey: qk.eventsAll });
+      void queryClient.invalidateQueries({ queryKey: qk.freeSlotsAll });
+      void queryClient.invalidateQueries({ queryKey: qk.tasksAll });
+      void queryClient.invalidateQueries({ queryKey: qk.inbox });
+      void queryClient.invalidateQueries({ queryKey: qk.memories });
+      void queryClient.invalidateQueries({ queryKey: qk.automations });
+    },
+  });
+}
+
 // ------------------------------------------------------------------ inbox mutations
 
 export function useCreateTaskFromThread() {

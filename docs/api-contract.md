@@ -60,7 +60,10 @@ TimelineItem = {
 }
 
 AttentionItem = {"id": str, "kind": "overdue_task"|"due_task"|"email"|"confirmation",
-                 "title": str, "subtitle": str|null, "ref_id": uuid|null}
+                 "title": str, "subtitle": str|null, "ref_id": uuid|null,
+                 "action_type": str|null, "action_payload": object|null,
+                 "risk_class": str|null, "approval_mode": str|null, "ui_mode": str|null,
+                 "primary_label": str|null, "secondary_label": str|null}
 
 Suggestion = {"id": str, "kind": "focus_block"|"plan_day"|"email_triage"|"news_digest",
               "title": str, "description": str|null,
@@ -74,6 +77,23 @@ AgentRunBrief = {"id": uuid, "type": str, "status": str, "created_at": ts,
 
 ```
 GET /api/messages?limit=50 → {"items": [{"id": uuid, "role": "user"|"assistant", "content": str, "created_at": ts}]}
+```
+
+## Confirmations
+
+```
+POST /api/confirmations/{id}/accept → {
+  "confirmation": PendingConfirmation, "result_text": str, "executed": bool
+}
+POST /api/confirmations/{id}/reject → {
+  "confirmation": PendingConfirmation, "result_text": str, "executed": false
+}
+
+PendingConfirmation = {"id": uuid, "action_type": str, "title": str,
+  "status": "pending"|"accepted"|"rejected"|"expired",
+  "action_payload": object, "risk_class": str, "approval_mode": str,
+  "ui_mode": str, "primary_label": str, "secondary_label": str,
+  "created_at": ts|null, "expires_at": ts|null, "decided_at": ts|null}
 ```
 
 ## Tasks
