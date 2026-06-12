@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lumi.db.models import Connector, ConnectorStatus, ConnectorType, User
 from lumi.logging import get_logger
 from lumi.security.crypto import CryptoError, decrypt_text, encrypt_text
+from lumi.utils.links import extract_links, prefer_meeting_url
 
 log = get_logger(__name__)
 
@@ -39,6 +40,10 @@ class YandexEventDTO:
     all_day: bool
     busy: bool
     status: str  # confirmed | tentative | cancelled
+    location: str | None = None
+    meeting_url: str | None = None
+    external_url: str | None = None
+    links: list[str] | None = None
 
 
 def _to_utc(value) -> datetime:
@@ -134,17 +139,25 @@ class YandexCalendarConnector:
                     end_at = start_at + (timedelta(days=1) if all_day else timedelta(hours=1))
                 status = str(vevent.get("STATUS", "CONFIRMED")).lower()
                 transp = str(vevent.get("TRANSP", "OPAQUE")).upper()
+                description = str(vevent.get("DESCRIPTION", "")) or None
+                location = str(vevent.get("LOCATION", "")) or None
+                external_url = str(vevent.get("URL", "")) or None
+                links = extract_links(description, location, external_url)
                 out.append(
                     YandexEventDTO(
                         external_calendar_id=cal_id,
                         external_event_id=uid,
                         title=str(vevent.get("SUMMARY", "")) or "(без названия)",
-                        description=str(vevent.get("DESCRIPTION", "")) or None,
+                        description=description,
                         start_at=start_at,
                         end_at=end_at,
                         all_day=all_day,
                         busy=transp != "TRANSPARENT",
                         status=status if status in ("confirmed", "tentative", "cancelled") else "confirmed",
+                        location=location,
+                        meeting_url=prefer_meeting_url(links),
+                        external_url=external_url,
+                        links=links,
                     )
                 )
             except Exception as exc:  # noqa: BLE001 — skip malformed events

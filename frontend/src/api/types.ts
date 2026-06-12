@@ -231,10 +231,23 @@ export interface CalendarEvent {
   status: EventStatus;
   source: EventSource;
   created_by: string;
+  location: string | null;
+  meeting_url: string | null;
+  external_url: string | null;
+  links: string[];
+  last_synced_at: string | null;
+}
+
+export interface CalendarSyncState {
+  connected: boolean;
+  last_sync_at: string | null;
+  stale: boolean;
+  refresh_queued: boolean;
 }
 
 export interface CalendarEventsResponse {
   items: CalendarEvent[];
+  sync?: CalendarSyncState;
 }
 
 export interface CalendarEventResponse {
@@ -246,6 +259,10 @@ export interface CreateEventInput {
   start_at: string;
   end_at: string;
   description?: string;
+  location?: string;
+  meeting_url?: string;
+  external_url?: string;
+  links?: string[];
 }
 
 export interface FreeSlot {

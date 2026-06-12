@@ -58,6 +58,7 @@ def task_to_dict(task: Task) -> dict[str, Any]:
 
 
 def event_to_dict(event: CalendarEvent) -> dict[str, Any]:
+    metadata = event.metadata_ or {}
     return {
         "id": str(event.id),
         "title": event.title,
@@ -69,6 +70,11 @@ def event_to_dict(event: CalendarEvent) -> dict[str, Any]:
         "status": event.status.value,
         "source": event.source.value,
         "created_by": event.created_by,
+        "location": metadata.get("location"),
+        "meeting_url": metadata.get("meeting_url"),
+        "external_url": metadata.get("external_url"),
+        "links": list(metadata.get("links") or []),
+        "last_synced_at": _iso(event.last_synced_at),
     }
 
 

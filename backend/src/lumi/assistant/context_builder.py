@@ -116,10 +116,22 @@ class ContextBuilder:
             lines = ["Calendar today:"]
             for e in events:
                 marker = {"proposed": " (предложено, не подтверждено)"}.get(e.status.value, "")
-                lines.append(
+                metadata = e.metadata_ or {}
+                line = (
                     f"- {fmt_local(e.start_at, user.timezone, '%H:%M')}–"
                     f"{fmt_local(e.end_at, user.timezone, '%H:%M')} {e.title}{marker}"
                 )
+                if metadata.get("location"):
+                    line += f" @ {metadata['location']}"
+                if metadata.get("meeting_url"):
+                    line += f" join={metadata['meeting_url']}"
+                links = list(metadata.get("links") or [])[:2]
+                if links:
+                    line += " links=" + ", ".join(links)
+                if e.description:
+                    one_line = " ".join(e.description.split())
+                    line += f" — {one_line[:180]}"
+                lines.append(line)
             sections.append("\n".join(lines))
         else:
             sections.append("Calendar today: встреч нет.")

@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import uuid
+from collections import defaultdict
 from datetime import datetime, timedelta
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lumi.assistant.prompts import DAILY_PLANNING_SYSTEM
 from lumi.assistant.schemas import PlanResult
-from lumi.db.models import CalendarEventStatus, User
+from lumi.db.models import (
+    CalendarEventStatus,
+    CalendarSource,
+    Connector,
+    ConnectorStatus,
+    ConnectorType,
+    User,
+)
 from lumi.llm.base import LLMMessage
 from lumi.llm.gateway import LLMGateway
 from lumi.logging import get_logger
@@ -130,13 +139,17 @@ class CalendarSyncService:
         end = utc_now() + timedelta(days=days_ahead)
         dtos = await connector.list_events(start=start, end=end)
         synced = 0
+        seen_by_calendar: dict[str, set[str]] = defaultdict(set)
         for dto in dtos:
             status = {
                 "confirmed": CalendarEventStatus.CONFIRMED,
                 "tentative": CalendarEventStatus.TENTATIVE,
+                "cancelled": CalendarEventStatus.CANCELLED,
             }.get(dto.status, CalendarEventStatus.CONFIRMED)
+            seen_by_calendar[dto.external_calendar_id].add(dto.external_event_id)
             await self.calendar.upsert_external_event(
                 user,
+                source=CalendarSource.GOOGLE,
                 external_calendar_id=dto.external_calendar_id,
                 external_event_id=dto.external_event_id,
                 title=dto.title,
@@ -146,9 +159,34 @@ class CalendarSyncService:
                 all_day=dto.all_day,
                 busy=dto.busy,
                 status=status,
+                location=dto.location,
+                meeting_url=dto.meeting_url,
+                external_url=dto.external_url,
+                links=dto.links,
+                external_updated_at=dto.external_updated_at,
             )
             synced += 1
-        return synced
+        cancelled = 0
+        known_calendar_ids = await self.calendar.external_calendar_ids_in_window(
+            user, source=CalendarSource.GOOGLE, start_at=start, end_at=end
+        )
+        calendar_ids = set(seen_by_calendar) | known_calendar_ids | {"primary"}
+        for calendar_id in calendar_ids:
+            cancelled += await self.calendar.reconcile_external_events(
+                user,
+                source=CalendarSource.GOOGLE,
+                external_calendar_id=calendar_id,
+                start_at=start,
+                end_at=end,
+                seen_event_ids=seen_by_calendar.get(calendar_id, set()),
+            )
+        connector_row = await self._get_connector(user, ConnectorType.GOOGLE, create=True)
+        if connector_row is not None:
+            connector_row.last_sync_at = utc_now()
+            connector_row.status = ConnectorStatus.CONNECTED
+            connector_row.last_error = None
+            await self._ensure_google_watch(user, connector_row)
+        return synced + cancelled
 
     async def sync_yandex_calendar(self, user: User, *, days_ahead: int = 14) -> int:
         """Pull upcoming Yandex (CalDAV) events. Raises YandexNotConnectedError."""
@@ -156,19 +194,20 @@ class CalendarSyncService:
             get_yandex_connector_row,
             load_yandex_client,
         )
-        from lumi.db.models import CalendarSource, ConnectorStatus
 
         client = await load_yandex_client(self.session, user)
         start = utc_now() - timedelta(days=1)
         end = utc_now() + timedelta(days=days_ahead)
         dtos = await client.list_events(start=start, end=end)
         synced = 0
+        seen_by_calendar: dict[str, set[str]] = defaultdict(set)
         for dto in dtos:
             status = {
                 "confirmed": CalendarEventStatus.CONFIRMED,
                 "tentative": CalendarEventStatus.TENTATIVE,
                 "cancelled": CalendarEventStatus.CANCELLED,
             }.get(dto.status, CalendarEventStatus.CONFIRMED)
+            seen_by_calendar[dto.external_calendar_id].add(dto.external_event_id)
             await self.calendar.upsert_external_event(
                 user,
                 source=CalendarSource.YANDEX,
@@ -181,14 +220,31 @@ class CalendarSyncService:
                 all_day=dto.all_day,
                 busy=dto.busy,
                 status=status,
+                location=dto.location,
+                meeting_url=dto.meeting_url,
+                external_url=dto.external_url,
+                links=dto.links,
             )
             synced += 1
+        cancelled = 0
+        known_calendar_ids = await self.calendar.external_calendar_ids_in_window(
+            user, source=CalendarSource.YANDEX, start_at=start, end_at=end
+        )
+        for calendar_id in set(seen_by_calendar) | known_calendar_ids:
+            cancelled += await self.calendar.reconcile_external_events(
+                user,
+                source=CalendarSource.YANDEX,
+                external_calendar_id=calendar_id,
+                start_at=start,
+                end_at=end,
+                seen_event_ids=seen_by_calendar.get(calendar_id, set()),
+            )
         connector = await get_yandex_connector_row(self.session, user)
         if connector is not None:
             connector.last_sync_at = utc_now()
             connector.status = ConnectorStatus.CONNECTED
             connector.last_error = None
-        return synced
+        return synced + cancelled
 
     async def sync_all_calendars(self, user: User, *, days_ahead: int = 14) -> dict[str, int | str]:
         """Sync every configured external calendar. Raises only if NONE is configured."""
@@ -206,6 +262,10 @@ class CalendarSyncService:
         if not google_configured and not yandex_configured:
             raise GoogleNotConnectedError("ни один внешний календарь не подключен")
 
+        from lumi.services.automations import AutomationService
+
+        await AutomationService(self.session).ensure_system_calendar_sync(user)
+
         if google_configured:
             try:
                 results["google"] = await self.sync_google_calendar(user, days_ahead=days_ahead)
@@ -222,3 +282,70 @@ class CalendarSyncService:
                     yandex_row.status = ConnectorStatus.NEEDS_REAUTH
                     yandex_row.last_error = str(exc)[:500]
         return results
+
+    async def _get_connector(
+        self, user: User, type_: ConnectorType, *, create: bool = False
+    ) -> Connector | None:
+        result = await self.session.execute(
+            select(Connector).where(Connector.user_id == user.id, Connector.type == type_)
+        )
+        connector = result.scalar_one_or_none()
+        if connector is None and create:
+            connector = Connector(user_id=user.id, type=type_)
+            self.session.add(connector)
+            await self.session.flush()
+        return connector
+
+    async def _ensure_google_watch(self, user: User, connector: Connector) -> None:
+        import secrets
+        from datetime import UTC as _UTC
+
+        from lumi.config import get_settings
+        from lumi.connectors.google.calendar import GoogleCalendarConnector
+
+        settings = get_settings()
+        if not settings.app_public_url:
+            return
+        metadata = connector.metadata_ or {}
+        watch = metadata.get("calendar_watch") or {}
+        expires_at_raw = watch.get("expires_at")
+        if expires_at_raw:
+            try:
+                expires_at = datetime.fromisoformat(expires_at_raw)
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=_UTC)
+                if expires_at - utc_now() > timedelta(days=1):
+                    return
+            except ValueError:
+                pass
+
+        channel_id = str(uuid.uuid4())
+        token = secrets.token_urlsafe(24)
+        address = settings.app_public_url.rstrip("/") + "/api/connectors/google/webhook"
+        try:
+            response = await GoogleCalendarConnector().watch_events(
+                address=address,
+                channel_id=channel_id,
+                token=token,
+            )
+        except Exception as exc:  # noqa: BLE001 - sync itself must not fail on watch setup
+            connector.metadata_ = {**metadata, "calendar_watch_error": str(exc)[:500]}
+            return
+        expires_at = None
+        expiration_ms = response.get("expiration")
+        if expiration_ms:
+            try:
+                expires_at = datetime.fromtimestamp(int(expiration_ms) / 1000, tz=_UTC)
+            except (TypeError, ValueError):
+                expires_at = None
+        connector.metadata_ = {
+            **metadata,
+            "calendar_watch": {
+                "channel_id": response.get("id", channel_id),
+                "resource_id": response.get("resourceId"),
+                "token": token,
+                "calendar_id": "primary",
+                "expires_at": expires_at.isoformat() if expires_at else None,
+            },
+            "calendar_watch_error": None,
+        }

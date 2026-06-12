@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +11,7 @@ from lumi.api.deps import get_current_user, get_db
 from lumi.connectors.google import auth as google_auth
 from lumi.db.models import Connector, ConnectorStatus, ConnectorType, User
 from lumi.services.audit import AuditService
+from lumi.services.automations import AutomationService
 
 router = APIRouter()
 
@@ -161,15 +162,17 @@ async def google_oauth_callback(
         session.add(connector)
     connector.status = ConnectorStatus.CONNECTED
     connector.last_error = None
-    await AuditService(session).log(
-        user_id=user_id, actor="user", entity_type="connector",
-        action="connected", details={"type": "google", "flow": "web_oauth"},
-    )
     from lumi.db.models import User as UserModel
 
     user_row = (await session.execute(
         select(UserModel).where(UserModel.id == user_id)
     )).scalar_one_or_none()
+    if user_row is not None:
+        await AutomationService(session).ensure_system_calendar_sync(user_row)
+    await AuditService(session).log(
+        user_id=user_id, actor="user", entity_type="connector",
+        action="connected", details={"type": "google", "flow": "web_oauth"},
+    )
     if user_row is not None:
         from lumi.api.run_helper import start_background_run
 
@@ -179,6 +182,52 @@ async def google_oauth_callback(
             pass  # queue down — user can sync manually
 
     return page("Google подключен ✓", "Почта и календарь доступны. Вернись в Lumi — статус уже обновился.")
+
+
+@router.post("/connectors/google/webhook")
+async def google_calendar_webhook(
+    request: Request,
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """Google Calendar push callback: validate channel and enqueue sync.
+
+    Google sends only a change notification, not the changed event payload.
+    """
+    channel_id = request.headers.get("X-Goog-Channel-ID")
+    channel_token = request.headers.get("X-Goog-Channel-Token")
+    resource_id = request.headers.get("X-Goog-Resource-ID")
+    if not channel_id or not channel_token:
+        raise HTTPException(status_code=400, detail="bad_channel")
+
+    result = await session.execute(
+        select(Connector).where(
+            Connector.type == ConnectorType.GOOGLE,
+            Connector.credentials_encrypted.is_(None),
+        )
+    )
+    connector = None
+    for candidate in result.scalars():
+        watch = (candidate.metadata_ or {}).get("calendar_watch") or {}
+        if (
+            watch.get("channel_id") == channel_id
+            and watch.get("token") == channel_token
+            and (not resource_id or not watch.get("resource_id") or watch.get("resource_id") == resource_id)
+        ):
+            connector = candidate
+            break
+    if connector is None:
+        raise HTTPException(status_code=404, detail="unknown_channel")
+
+    from lumi.api.run_helper import start_background_run
+    from lumi.db.models import User as UserModel
+
+    user = (await session.execute(select(UserModel).where(UserModel.id == connector.user_id))).scalar_one()
+    try:
+        await start_background_run(session, user, "calendar_sync", trigger="google_webhook", notify=False)
+    except HTTPException:
+        connector.last_error = "queue_unavailable"
+        return {"ok": False}
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +283,7 @@ async def yandex_connect(
     connector = await save_yandex_credentials(
         session, user, username=payload.username.strip(), app_password=payload.app_password.strip()
     )
+    await AutomationService(session).ensure_system_calendar_sync(user)
     await AuditService(session).log(
         user_id=user.id, actor="user", entity_type="connector",
         entity_id=connector.id, action="connected",

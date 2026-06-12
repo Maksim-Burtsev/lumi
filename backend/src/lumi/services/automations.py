@@ -29,13 +29,16 @@ class AutomationService:
         self.session = session
         self.audit = AuditService(session)
 
-    async def list_for_user(self, user: User) -> list[ScheduledTask]:
+    async def list_for_user(self, user: User, *, include_system: bool = False) -> list[ScheduledTask]:
         result = await self.session.execute(
             select(ScheduledTask)
             .where(ScheduledTask.user_id == user.id)
             .order_by(ScheduledTask.created_at)
         )
-        return list(result.scalars())
+        tasks = list(result.scalars())
+        if include_system:
+            return tasks
+        return [task for task in tasks if not (task.config or {}).get("system")]
 
     async def get(self, user: User, automation_id: uuid.UUID) -> ScheduledTask | None:
         result = await self.session.execute(
@@ -85,6 +88,34 @@ class AutomationService:
                              entity_id=task.id, action="created",
                              details={"type": type_, "cron": cron_expression})
         return task
+
+    async def ensure_system_calendar_sync(self, user: User) -> ScheduledTask:
+        """Ensure calendar sync runs for connected-calendar users without user setup."""
+        result = await self.session.execute(
+            select(ScheduledTask).where(
+                ScheduledTask.user_id == user.id,
+                ScheduledTask.type == ScheduledTaskType.CALENDAR_SYNC,
+            )
+        )
+        for task in result.scalars():
+            if (task.config or {}).get("system"):
+                task.title = "Синхронизация календаря"
+                task.cron_expression = "*/5 * * * *"
+                task.timezone = user.timezone
+                task.config = {**(task.config or {}), "system": True, "hidden": True}
+                task.enabled = True
+                task.next_run_at = compute_next_run(task.cron_expression, task.timezone)
+                task.last_error = None
+                return task
+        return await self.create(
+            user,
+            type_=ScheduledTaskType.CALENDAR_SYNC.value,
+            title="Синхронизация календаря",
+            cron_expression="*/5 * * * *",
+            config={"system": True, "hidden": True},
+            enabled=True,
+            actor="system",
+        )
 
     async def update(
         self, user: User, task: ScheduledTask, updates: dict[str, Any], *, actor: str = "user"

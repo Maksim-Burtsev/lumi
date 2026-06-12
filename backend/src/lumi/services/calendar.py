@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +16,7 @@ from lumi.db.models import (
     User,
 )
 from lumi.services.audit import AuditService
+from lumi.utils.links import extract_links
 from lumi.utils.time import get_zone, local_day_bounds, utc_now
 
 DEFAULT_DAY_START_HOUR = 9
@@ -101,7 +103,12 @@ class CalendarService:
         source_task_id: uuid.UUID | None = None,
         agent_run_id: uuid.UUID | None = None,
         busy: bool = True,
+        location: str | None = None,
+        meeting_url: str | None = None,
+        external_url: str | None = None,
+        links: list[str] | None = None,
     ) -> CalendarEvent:
+        detail_links = links if links is not None else extract_links(description, meeting_url, external_url)
         event = CalendarEvent(
             user_id=user.id,
             source=CalendarSource.INTERNAL,
@@ -115,6 +122,16 @@ class CalendarService:
             created_by=created_by,
             source_task_id=source_task_id,
             agent_run_id=agent_run_id,
+            metadata_={
+                key: value
+                for key, value in {
+                    "location": location,
+                    "meeting_url": meeting_url,
+                    "external_url": external_url,
+                    "links": detail_links,
+                }.items()
+                if value not in (None, "", [])
+            },
         )
         self.session.add(event)
         await self.session.flush()
@@ -214,6 +231,12 @@ class CalendarService:
         all_day: bool = False,
         busy: bool = True,
         status: CalendarEventStatus = CalendarEventStatus.CONFIRMED,
+        location: str | None = None,
+        meeting_url: str | None = None,
+        external_url: str | None = None,
+        links: list[str] | None = None,
+        external_updated_at: datetime | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> CalendarEvent:
         result = await self.session.execute(
             select(CalendarEvent).where(
@@ -243,5 +266,78 @@ class CalendarService:
         event.busy = busy
         event.status = status
         event.last_synced_at = utc_now()
+        detail_links = links if links is not None else extract_links(description, meeting_url, external_url)
+        detail_metadata: dict[str, Any] = {
+            **(event.metadata_ or {}),
+            **(metadata or {}),
+            "location": location,
+            "meeting_url": meeting_url,
+            "external_url": external_url,
+            "links": detail_links,
+        }
+        if external_updated_at is not None:
+            detail_metadata["external_updated_at"] = external_updated_at.isoformat()
+        event.metadata_ = {
+            key: value
+            for key, value in detail_metadata.items()
+            if value not in (None, "", [])
+        }
         await self.session.flush()
         return event
+
+    async def reconcile_external_events(
+        self,
+        user: User,
+        *,
+        source: CalendarSource,
+        external_calendar_id: str,
+        start_at: datetime,
+        end_at: datetime,
+        seen_event_ids: set[str],
+    ) -> int:
+        """Cancel external events in a sync window that the provider no longer returns."""
+        result = await self.session.execute(
+            select(CalendarEvent).where(
+                CalendarEvent.user_id == user.id,
+                CalendarEvent.source == source,
+                CalendarEvent.external_calendar_id == external_calendar_id,
+                CalendarEvent.external_event_id.is_not(None),
+                CalendarEvent.start_at < end_at,
+                CalendarEvent.end_at > start_at,
+                CalendarEvent.status != CalendarEventStatus.CANCELLED,
+            )
+        )
+        cancelled = 0
+        for event in result.scalars():
+            if event.external_event_id in seen_event_ids:
+                continue
+            event.status = CalendarEventStatus.CANCELLED
+            event.last_synced_at = utc_now()
+            event.metadata_ = {
+                **(event.metadata_ or {}),
+                "cancelled_by_sync": True,
+                "cancelled_by_sync_at": event.last_synced_at.isoformat(),
+            }
+            cancelled += 1
+        if cancelled:
+            await self.session.flush()
+        return cancelled
+
+    async def external_calendar_ids_in_window(
+        self,
+        user: User,
+        *,
+        source: CalendarSource,
+        start_at: datetime,
+        end_at: datetime,
+    ) -> set[str]:
+        result = await self.session.execute(
+            select(CalendarEvent.external_calendar_id).where(
+                CalendarEvent.user_id == user.id,
+                CalendarEvent.source == source,
+                CalendarEvent.external_calendar_id.is_not(None),
+                CalendarEvent.start_at < end_at,
+                CalendarEvent.end_at > start_at,
+            )
+        )
+        return {calendar_id for calendar_id in result.scalars() if calendar_id}

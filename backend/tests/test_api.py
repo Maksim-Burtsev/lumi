@@ -97,6 +97,9 @@ async def test_calendar_events_crud(client):
     create = await client.post("/api/calendar/events", json={
         "title": "Фокус", "start_at": "2026-06-11T10:00:00+03:00",
         "end_at": "2026-06-11T11:30:00+03:00",
+        "description": "Контекст https://example.com/spec",
+        "location": "Дом",
+        "links": ["https://example.com/spec"],
     })
     assert create.status_code == 201
     listing = await client.get(
@@ -107,6 +110,8 @@ async def test_calendar_events_crud(client):
     items = listing.json()["items"]
     assert len(items) == 1
     assert items[0]["source"] == "internal"
+    assert items[0]["location"] == "Дом"
+    assert items[0]["links"] == ["https://example.com/spec"]
 
 
 async def test_inbox_disconnected(client):

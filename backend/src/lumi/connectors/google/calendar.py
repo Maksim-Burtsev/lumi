@@ -9,6 +9,7 @@ from typing import Any
 
 from lumi.connectors.google.auth import load_credentials
 from lumi.logging import get_logger
+from lumi.utils.links import extract_links, prefer_meeting_url
 
 log = get_logger(__name__)
 
@@ -24,6 +25,11 @@ class CalendarEventDTO:
     all_day: bool
     busy: bool
     status: str  # confirmed | tentative | cancelled
+    location: str | None = None
+    meeting_url: str | None = None
+    external_url: str | None = None
+    links: list[str] | None = None
+    external_updated_at: datetime | None = None
 
 
 @dataclass(slots=True)
@@ -39,6 +45,54 @@ def _parse_when(when: dict[str, Any]) -> tuple[datetime, bool]:
     # All-day events carry a bare date.
     day = date.fromisoformat(when["date"])
     return datetime.combine(day, time.min, tzinfo=UTC), True
+
+
+def _parse_google_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _conference_link(item: dict[str, Any]) -> str | None:
+    if item.get("hangoutLink"):
+        return item["hangoutLink"]
+    for entry in (item.get("conferenceData") or {}).get("entryPoints") or []:
+        uri = entry.get("uri")
+        if uri:
+            return uri
+    return None
+
+
+def calendar_event_dto_from_google_item(
+    item: dict[str, Any], *, calendar_id: str
+) -> CalendarEventDTO | None:
+    try:
+        start_at, all_day = _parse_when(item["start"])
+        end_at, _ = _parse_when(item["end"])
+    except (KeyError, ValueError):
+        return None
+    meeting_url = _conference_link(item)
+    external_url = item.get("htmlLink")
+    links = extract_links(item.get("description"), item.get("location"))
+    return CalendarEventDTO(
+        external_calendar_id=calendar_id,
+        external_event_id=item["id"],
+        title=item.get("summary") or "(без названия)",
+        description=item.get("description"),
+        start_at=start_at,
+        end_at=end_at,
+        all_day=all_day,
+        busy=item.get("transparency", "opaque") != "transparent",
+        status=item.get("status", "confirmed"),
+        location=item.get("location"),
+        meeting_url=meeting_url or prefer_meeting_url(links),
+        external_url=external_url,
+        links=links,
+        external_updated_at=_parse_google_datetime(item.get("updated")),
+    )
 
 
 class GoogleCalendarConnector:
@@ -72,25 +126,45 @@ class GoogleCalendarConnector:
         for item in response.get("items", []):
             if item.get("status") == "cancelled":
                 continue
-            try:
-                start_at, all_day = _parse_when(item["start"])
-                end_at, _ = _parse_when(item["end"])
-            except (KeyError, ValueError):
-                continue
-            events.append(
-                CalendarEventDTO(
-                    external_calendar_id=calendar_id,
-                    external_event_id=item["id"],
-                    title=item.get("summary") or "(без названия)",
-                    description=item.get("description"),
-                    start_at=start_at,
-                    end_at=end_at,
-                    all_day=all_day,
-                    busy=item.get("transparency", "opaque") != "transparent",
-                    status=item.get("status", "confirmed"),
-                )
-            )
+            dto = calendar_event_dto_from_google_item(item, calendar_id=calendar_id)
+            if dto is not None:
+                events.append(dto)
         return events
+
+    async def watch_events(
+        self,
+        *,
+        address: str,
+        channel_id: str,
+        token: str,
+        calendar_id: str = "primary",
+        ttl_seconds: int = 604800,
+    ) -> dict[str, Any]:
+        creds = await load_credentials()
+        return await asyncio.to_thread(
+            self._watch_events_sync, creds, address, channel_id, token, calendar_id, ttl_seconds
+        )
+
+    def _watch_events_sync(
+        self, creds, address: str, channel_id: str, token: str, calendar_id: str, ttl_seconds: int
+    ) -> dict[str, Any]:
+        from googleapiclient.discovery import build
+
+        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        return (
+            service.events()
+            .watch(
+                calendarId=calendar_id,
+                body={
+                    "id": channel_id,
+                    "type": "web_hook",
+                    "address": address,
+                    "token": token,
+                    "params": {"ttl": str(ttl_seconds)},
+                },
+            )
+            .execute()
+        )
 
     async def create_event(
         self,

@@ -1,6 +1,18 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { CalendarDays, ChevronLeft, ChevronRight, CloudOff, Plus, RefreshCw, Sparkles, X } from 'lucide-react';
+import {
+  CalendarDays,
+  ChevronLeft,
+  ChevronRight,
+  CloudOff,
+  ExternalLink,
+  MapPin,
+  Plus,
+  RefreshCw,
+  Sparkles,
+  Video,
+  X,
+} from 'lucide-react';
 import { motion, useReducedMotion } from 'framer-motion';
 import { api } from '../api/client';
 import {
@@ -21,8 +33,8 @@ import { FieldLabel, Input, Textarea } from '../components/ui/Field';
 import { SkeletonTimeline } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
-import { addDays, formatDateParam, formatDayLabel, formatTime, formatTimeRange, isSameDay, startOfDay } from '../lib/format';
-import { haptic } from '../telegram/webapp';
+import { addDays, formatDateParam, formatDayLabel, formatRelative, formatTime, formatTimeRange, isSameDay, startOfDay } from '../lib/format';
+import { haptic, openExternalLink } from '../telegram/webapp';
 
 interface SheetPrefill {
   start: string; // "HH:MM"
@@ -33,6 +45,26 @@ function combine(day: Date, time: string): Date | null {
   const m = /^(\d{1,2}):(\d{2})$/.exec(time);
   if (!m) return null;
   return new Date(day.getFullYear(), day.getMonth(), day.getDate(), parseInt(m[1], 10), parseInt(m[2], 10));
+}
+
+function parseLinks(value: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of value.split(/[\s,\n]+/)) {
+    const link = raw.trim().replace(/[.,;:!?)]$/, '');
+    if (!/^https?:\/\//i.test(link) || seen.has(link)) continue;
+    out.push(link);
+    seen.add(link);
+  }
+  return out;
+}
+
+function linkLabel(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return 'Ссылка';
+  }
 }
 
 function CreateBlockSheet({
@@ -50,6 +82,8 @@ function CreateBlockSheet({
   const [start, setStart] = useState('10:00');
   const [end, setEnd] = useState('11:00');
   const [description, setDescription] = useState('');
+  const [location, setLocation] = useState('');
+  const [linksText, setLinksText] = useState('');
   const [error, setError] = useState<string | null>(null);
   const createEvent = useCreateEvent();
   const { show } = useToast();
@@ -70,6 +104,8 @@ function CreateBlockSheet({
     setStart('10:00');
     setEnd('11:00');
     setDescription('');
+    setLocation('');
+    setLinksText('');
     setError(null);
   }
 
@@ -92,6 +128,8 @@ function CreateBlockSheet({
         start_at: startDate.toISOString(),
         end_at: endDate.toISOString(),
         ...(description.trim() ? { description: description.trim() } : {}),
+        ...(location.trim() ? { location: location.trim() } : {}),
+        ...(parseLinks(linksText).length ? { links: parseLinks(linksText) } : {}),
       },
       {
         onSuccess: () => {
@@ -124,6 +162,14 @@ function CreateBlockSheet({
       <label className="mt-4 block">
         <FieldLabel>Описание (необязательно)</FieldLabel>
         <Textarea value={description} onChange={setDescription} rows={2} placeholder="Что нужно сделать в этом блоке" />
+      </label>
+      <label className="mt-4 block">
+        <FieldLabel>Место (необязательно)</FieldLabel>
+        <Input value={location} onChange={setLocation} placeholder="Офис, Zoom, дом" />
+      </label>
+      <label className="mt-4 block">
+        <FieldLabel>Ссылки (необязательно)</FieldLabel>
+        <Textarea value={linksText} onChange={setLinksText} rows={2} placeholder="https://..." />
       </label>
       {error && <p className="mt-3 text-[13px] text-danger">{error}</p>}
       <Button fullWidth className="mt-5" busy={createEvent.isPending} onClick={submit}>
@@ -172,6 +218,7 @@ export default function CalendarPage() {
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
   const dayStart = useMemo(() => startOfDay(day), [day]);
   const events = eventsQuery.data?.items ?? [];
+  const syncState = eventsQuery.data?.sync;
 
   return (
     <Stagger>
@@ -231,8 +278,11 @@ export default function CalendarPage() {
           </Button>
         </div>
         <p className="mt-2 px-1 text-[12px] leading-snug text-hint">
-          «Спланировать день» — Lumi подберет свободные окна под твои задачи и предложит
-          фокус-блоки пунктиром: их можно принять или отклонить.
+          {syncState?.stale && syncState.refresh_queued
+            ? 'Календарь обновляется из внешнего источника.'
+            : syncState?.last_sync_at
+              ? `Последний sync: ${formatRelative(syncState.last_sync_at)}.`
+              : 'Внешний календарь обновится после подключения или ручного sync.'}
         </p>
       </Rise>
 
@@ -307,8 +357,49 @@ export default function CalendarPage() {
               {selectedEvent.source === 'yandex' && ' · Яндекс.Календарь'}
               {selectedEvent.status === 'proposed' && ' · предложение Lumi'}
             </p>
+            {selectedEvent.last_synced_at && selectedEvent.source !== 'internal' && (
+              <p className="text-[12.5px] text-hint">Обновлено {formatRelative(selectedEvent.last_synced_at)}</p>
+            )}
+            {selectedEvent.location && (
+              <div className="flex items-start gap-2 text-[14px] leading-relaxed text-ink">
+                <MapPin size={16} className="mt-0.5 shrink-0 text-hint" />
+                <span className="min-w-0">{selectedEvent.location}</span>
+              </div>
+            )}
             {selectedEvent.description && (
-              <p className="text-[14px] leading-relaxed text-ink">{selectedEvent.description}</p>
+              <p className="whitespace-pre-wrap text-[14px] leading-relaxed text-ink">{selectedEvent.description}</p>
+            )}
+            {(selectedEvent.meeting_url || selectedEvent.external_url || selectedEvent.links.length > 0) && (
+              <div className="flex flex-wrap gap-2.5">
+                {selectedEvent.meeting_url && (
+                  <Button
+                    variant="primary"
+                    icon={<Video size={15} />}
+                    onClick={() => openExternalLink(selectedEvent.meeting_url!)}
+                  >
+                    Встреча
+                  </Button>
+                )}
+                {selectedEvent.external_url && (
+                  <Button
+                    variant="secondary"
+                    icon={<ExternalLink size={15} />}
+                    onClick={() => openExternalLink(selectedEvent.external_url!)}
+                  >
+                    В календаре
+                  </Button>
+                )}
+                {selectedEvent.links.map((link) => (
+                  <Button
+                    key={link}
+                    variant="secondary"
+                    icon={<ExternalLink size={15} />}
+                    onClick={() => openExternalLink(link)}
+                  >
+                    {linkLabel(link)}
+                  </Button>
+                ))}
+              </div>
             )}
             {selectedEvent.source !== 'internal' ? (
               <p className="text-[13px] leading-relaxed text-hint">

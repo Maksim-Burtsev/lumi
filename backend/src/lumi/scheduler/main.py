@@ -54,6 +54,10 @@ async def tick() -> int:
                 agent_run_id=str(run.id),
                 scheduled_task_id=str(task.id),
                 trigger="scheduled_task",
+                notify=not (
+                    task.type.value == "calendar_sync"
+                    and (task.config or {}).get("system")
+                ),
             )
             if (task.config or {}).get("one_time"):
                 task.enabled = False
