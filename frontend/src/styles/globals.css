@@ -1,0 +1,235 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ------------------------------------------------------------------ */
+/* Design tokens — "morning light" refined minimalism                  */
+/* ------------------------------------------------------------------ */
+
+:root {
+  --bg: #f3f5f8;
+  --surface: rgba(255, 255, 255, 0.8);
+  --surface-strong: #ffffff;
+  --ink: #0f1420;
+  --hint: #6f7787;
+  --hairline: rgba(15, 20, 32, 0.08);
+
+  --accent: #2e63e7;
+  --accent-text: #1e4fcc;
+  --accent-soft: rgba(46, 99, 231, 0.09);
+  --accent-border: rgba(46, 99, 231, 0.38);
+
+  --success: #1f9d6b;
+  --success-soft: rgba(31, 157, 107, 0.11);
+  --danger: #d14b4b;
+  --danger-soft: rgba(209, 75, 75, 0.1);
+
+  --shadow-card: 0 1px 2px rgba(15, 20, 32, 0.04), 0 12px 32px rgba(15, 20, 32, 0.07);
+  --radius-card: 22px;
+
+  --skeleton-base: rgba(15, 20, 32, 0.06);
+  --skeleton-sheen: rgba(255, 255, 255, 0.55);
+
+  /* Secondary CTA: tinted from Telegram button color when available
+     (set from JS in setupTelegramTheme), cool-neutral fallback. */
+  --secondary-bg: rgba(15, 20, 32, 0.06);
+  --secondary-text: var(--ink);
+
+  --tg-button: #2e63e7;
+}
+
+.dark {
+  --bg: #0e1014;
+  --surface: rgba(255, 255, 255, 0.05);
+  --surface-strong: #181b21;
+  --ink: #eef1f6;
+  --hint: #8c93a3;
+  --hairline: rgba(238, 241, 246, 0.09);
+
+  --accent: #6a93ff;
+  --accent-text: #8faeff;
+  --accent-soft: rgba(106, 147, 255, 0.13);
+  --accent-border: rgba(106, 147, 255, 0.48);
+
+  --success: #34b27f;
+  --success-soft: rgba(52, 178, 127, 0.15);
+  --danger: #e0685f;
+  --danger-soft: rgba(224, 104, 95, 0.14);
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.2), 0 12px 32px rgba(0, 0, 0, 0.3);
+
+  --skeleton-base: rgba(242, 239, 232, 0.07);
+  --skeleton-sheen: rgba(255, 255, 255, 0.07);
+
+  --secondary-bg: rgba(242, 239, 232, 0.08);
+  --secondary-text: var(--ink);
+}
+
+/* ------------------------------------------------------------------ */
+/* Base                                                                */
+/* ------------------------------------------------------------------ */
+
+html {
+  height: 100%;
+}
+
+body {
+  min-height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: 'Golos Text Variable', system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+  text-rendering: optimizeLegibility;
+}
+
+/* Ultra-subtle film grain on the page background */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--hint);
+  opacity: 0.8;
+}
+
+/* Tabular figures for times, durations, counters */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+/* Hide scrollbars on horizontal chip rows, keep scrollability */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* Card                                                                */
+/* ------------------------------------------------------------------ */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+
+.card-strong {
+  background: var(--surface-strong);
+}
+
+/* Dawn glow — placed inside the hero card */
+@keyframes glow-drift {
+  0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.9; }
+  50% { transform: translate(-22px, 14px) scale(1.12); opacity: 1; }
+}
+
+.dawn-glow {
+  position: absolute;
+  top: -120px;
+  right: -100px;
+  width: 340px;
+  height: 340px;
+  pointer-events: none;
+  border-radius: 9999px;
+  animation: glow-drift 9s ease-in-out infinite;
+  background: radial-gradient(circle, rgba(46, 99, 231, 0.16) 0%, rgba(46, 99, 231, 0) 68%);
+  filter: blur(24px);
+}
+
+.dark .dawn-glow {
+  background: radial-gradient(circle, rgba(106, 147, 255, 0.13) 0%, rgba(46, 99, 231, 0) 68%);
+}
+
+/* ------------------------------------------------------------------ */
+/* Skeleton shimmer                                                    */
+/* ------------------------------------------------------------------ */
+
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--skeleton-base);
+}
+
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, var(--skeleton-sheen), transparent);
+  animation: lumi-shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes lumi-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* Status dot pulse for running agent runs */
+@keyframes lumi-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.pulse-dot {
+  animation: lumi-pulse 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton::after,
+  .pulse-dot {
+    animation: none;
+  }
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dawn-glow { animation: none; }
+}

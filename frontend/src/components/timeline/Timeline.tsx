@@ -1,0 +1,122 @@
+import type { ReactNode } from 'react';
+import { motion, useReducedMotion } from 'framer-motion';
+import { Button } from '../ui/Button';
+import { formatTime, formatTimeRange } from '../../lib/format';
+
+export type TimelineEntryKind = 'event' | 'focus' | 'proposed' | 'free' | 'task';
+
+export interface TimelineEntry {
+  id: string;
+  kind: TimelineEntryKind;
+  title: string;
+  start_at: string;
+  end_at: string;
+  subtitle?: string;
+  /** «Принять» on proposed blocks. */
+  action?: { label: string; onClick: () => void; busy?: boolean };
+  /** Secondary, low-emphasis action («Отклонить»/«Убрать»). */
+  secondaryAction?: { label: string; onClick: () => void; busy?: boolean };
+  /** Tap on the whole row (e.g. free slot → create block). */
+  onPress?: () => void;
+}
+
+const DOTS: Record<TimelineEntryKind, string> = {
+  event: 'bg-[var(--hint)]',
+  focus: 'bg-accent shadow-[0_0_6px_rgba(46,99,231,0.5)]',
+  proposed: 'border-2 border-[var(--accent)] bg-transparent',
+  free: 'border border-[var(--hint)] bg-transparent opacity-60',
+  task: 'bg-[var(--success)]',
+};
+
+function entryCardClass(kind: TimelineEntryKind): string {
+  switch (kind) {
+    case 'event':
+      return 'card card-strong px-4 py-3';
+    case 'focus':
+      return 'card card-strong border-l-[3px] border-l-[var(--accent)] px-4 py-3';
+    case 'proposed':
+      return 'rounded-card border border-dashed border-[var(--accent-border)] bg-[var(--accent-soft)] px-4 py-3';
+    case 'free':
+      return 'rounded-card border border-dashed border-hairline bg-transparent px-4 py-2.5';
+    case 'task':
+      return 'rounded-card border border-hairline bg-transparent px-4 py-2.5';
+  }
+}
+
+function EntryRow({ entry }: { entry: TimelineEntry }) {
+  const reduceMotion = useReducedMotion();
+
+  const inner: ReactNode = (
+    <>
+      <span className="tnum absolute -left-16 top-[13px] w-11 text-right text-[12.5px] font-medium text-hint">
+        {formatTime(entry.start_at)}
+      </span>
+      <span
+        aria-hidden
+        className={`absolute left-[-15px] top-[18px] h-[7px] w-[7px] rounded-full ${DOTS[entry.kind]}`}
+      />
+      <div className={entryCardClass(entry.kind)}>
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p
+              className={`truncate text-[14.5px] ${
+                entry.kind === 'free' ? 'font-normal text-hint' : 'font-medium text-ink'
+              }`}
+            >
+              {entry.title}
+            </p>
+            <p className="tnum mt-0.5 text-[12px] text-hint">
+              {entry.kind === 'task'
+                ? `к ${formatTime(entry.start_at)}`
+                : formatTimeRange(entry.start_at, entry.end_at)}
+              {entry.subtitle ? ` · ${entry.subtitle}` : ''}
+            </p>
+          </div>
+          {entry.secondaryAction && (
+            <Button
+              size="sm"
+              variant="ghost"
+              busy={entry.secondaryAction.busy}
+              onClick={entry.secondaryAction.onClick}
+            >
+              {entry.secondaryAction.label}
+            </Button>
+          )}
+          {entry.action && (
+            <Button size="sm" variant="primary" busy={entry.action.busy} onClick={entry.action.onClick}>
+              {entry.action.label}
+            </Button>
+          )}
+        </div>
+      </div>
+    </>
+  );
+
+  if (entry.onPress) {
+    return (
+      <motion.button
+        type="button"
+        onClick={entry.onPress}
+        whileTap={reduceMotion ? undefined : { scale: 0.97 }}
+        transition={{ type: 'spring', stiffness: 420, damping: 26 }}
+        className="relative block w-full text-left"
+      >
+        {inner}
+      </motion.button>
+    );
+  }
+
+  return <div className="relative">{inner}</div>;
+}
+
+/** Thin vertical rail with dot markers; times in tabular figures. */
+export function Timeline({ entries }: { entries: TimelineEntry[] }) {
+  return (
+    <div className="relative flex flex-col gap-2.5 pl-16">
+      <div aria-hidden className="absolute bottom-3 left-[52px] top-3 w-px bg-hairline" />
+      {entries.map((entry) => (
+        <EntryRow key={entry.id} entry={entry} />
+      ))}
+    </div>
+  );
+}

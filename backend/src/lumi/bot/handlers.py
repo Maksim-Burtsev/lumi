@@ -1,0 +1,648 @@
+"""aiogram handlers: commands, chat messages, callback confirmations."""
+
+from __future__ import annotations
+
+import uuid
+
+from aiogram import Bot, F, Router
+from aiogram.filters import Command, CommandStart
+from aiogram.types import CallbackQuery
+from aiogram.types import Message as TgMessage
+
+from lumi.assistant.orchestrator import AssistantOrchestrator
+from lumi.bot.formatting import HELP_TEXT, format_tasks, format_today
+from lumi.bot.keyboards import markup_from_buttons, mini_app_button, start_keyboard
+from lumi.config import get_settings
+from lumi.db.models import CalendarEventStatus, ConfirmationStatus
+from lumi.db.session import session_scope
+from lumi.logging import get_logger, telegram_update_id_var
+from lumi.services.confirmation_executor import ConfirmationExecutor
+from lumi.services.confirmations import ConfirmationService
+from lumi.services.runs import RunService
+from lumi.services.tasks import TaskService
+from lumi.services.today import TodayService
+from lumi.services.users import UserService
+from lumi.utils.text import chunk_telegram
+from lumi.worker.jobs import AGENT_RUN_TYPE_BY_AUTOMATION, JOB_BY_AUTOMATION_TYPE
+from lumi.worker.queue import enqueue_job
+
+log = get_logger(__name__)
+router = Router(name="lumi")
+
+
+# ---------------------------------------------------------------------------
+# Access control
+# ---------------------------------------------------------------------------
+
+def _is_owner(telegram_user_id: int) -> bool:
+    return telegram_user_id in get_settings().allowed_telegram_user_ids
+
+
+async def _check_allowed(event: TgMessage | CallbackQuery) -> bool:
+    """Owners come from env; everyone else must be approved (users.is_allowed)."""
+    tg_user = event.from_user
+    if tg_user is None:
+        return False
+    if isinstance(event, TgMessage) and event.chat.type != "private":
+        return False
+    if _is_owner(tg_user.id):
+        return True
+    async with session_scope() as session:
+        user = await UserService(session).get_by_telegram_id(tg_user.id)
+        if user is not None and user.is_allowed:
+            return True
+    if get_settings().log_unauthorized_telegram_ids:
+        log.warning("unauthorized telegram user",
+                    fields={"telegram_user_id": tg_user.id, "username": tg_user.username})
+    return False
+
+
+async def _request_access(message: TgMessage) -> None:
+    """Create the user row and ping the owner with approve/deny buttons."""
+    tg_user = message.from_user
+    async with session_scope() as session:
+        users = UserService(session)
+        user = await users.ensure_user(
+            tg_user.id, telegram_chat_id=message.chat.id,
+            username=tg_user.username, first_name=tg_user.first_name,
+            last_name=tg_user.last_name,
+        )
+        already_requested = bool(user.settings.get("access_requested"))
+        if not already_requested:
+            user.settings = {**user.settings, "access_requested": True}
+    await message.answer(
+        "Привет! Я Lumi — личный ассистент.\n"
+        "Доступ выдается по приглашению. Заявка отправлена владельцу — "
+        "напишу, как только тебя подтвердят."
+    )
+    if already_requested:
+        return
+    settings = get_settings()
+    if not settings.allowed_telegram_user_ids:
+        return
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    name = " ".join(filter(None, [tg_user.first_name, tg_user.last_name])) or "—"
+    handle = f"@{tg_user.username}" if tg_user.username else f"id {tg_user.id}"
+    owner = type("U", (), {"telegram_chat_id": settings.allowed_telegram_user_ids[0],
+                           "telegram_user_id": settings.allowed_telegram_user_ids[0]})()
+    from lumi.services.notifier import send_telegram_message
+
+    await send_telegram_message(
+        owner,  # type: ignore[arg-type]
+        f"🔑 Заявка на доступ к Lumi:\n{name} ({handle})",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✓ Принять", callback_data=f"access_grant:{tg_user.id}"),
+            InlineKeyboardButton(text="✗ Отклонить", callback_data=f"access_deny:{tg_user.id}"),
+        ]]),
+    )
+
+
+async def _reply_chunks(message: TgMessage, text: str, reply_markup=None) -> None:
+    chunks = chunk_telegram(text)
+    for i, chunk in enumerate(chunks):
+        await message.answer(chunk, reply_markup=reply_markup if i == len(chunks) - 1 else None)
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+@router.message(CommandStart())
+async def cmd_start(message: TgMessage) -> None:
+    if not await _check_allowed(message):
+        await _request_access(message)
+        return
+    tg_user = message.from_user
+    async with session_scope() as session:
+        users = UserService(session)
+        user = await users.ensure_user(
+            tg_user.id,
+            telegram_chat_id=message.chat.id,
+            username=tg_user.username,
+            first_name=tg_user.first_name,
+            last_name=tg_user.last_name,
+            language_code=tg_user.language_code,
+        )
+        await users.ensure_main_conversation(user)
+        name = user.first_name or "привет"
+    settings = get_settings()
+    text = (
+        f"Привет, {name}! Я Lumi — твой личный ассистент.\n\n"
+        "Я веду задачи, напоминания, календарь, почту и новости — всё в одном чате.\n\n"
+        "Попробуй написать:\n"
+        "«Напомни завтра в 10 написать Саше по договору»\n\n"
+        "Или открой Mini App — там Today, задачи, календарь и автоматизации.\n\n"
+        "Хочешь, чтобы я сразу понимал твой контекст? Жми /intro — 5 коротких вопросов."
+    )
+    if not settings.mini_app_url:
+        text += (
+            "\n\nMini App URL еще не настроен. Укажи APP_PUBLIC_URL в .env "
+            "после запуска HTTPS tunnel (например, cloudflared)."
+        )
+    await message.answer(text, reply_markup=start_keyboard())
+
+
+@router.message(Command("intro"))
+async def cmd_intro(message: TgMessage) -> None:
+    if not await _check_allowed(message):
+        return
+    from lumi.bot.intro import INTRO_START_TEXT, set_intro_step
+
+    async with session_scope() as session:
+        users = UserService(session)
+        user = await users.ensure_user(message.from_user.id, telegram_chat_id=message.chat.id)
+        set_intro_step(user, 0)
+    await message.answer(INTRO_START_TEXT)
+
+
+@router.message(Command("cancel"))
+async def cmd_cancel(message: TgMessage) -> None:
+    if not await _check_allowed(message):
+        return
+    from lumi.bot.intro import intro_step, set_intro_step
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(message.from_user.id)
+        if intro_step(user) is not None:
+            set_intro_step(user, None)
+            await message.answer("Ок, прервал знакомство. Вернуться можно командой /intro.")
+            return
+    await message.answer("Нечего отменять.")
+
+
+@router.message(Command("help"))
+async def cmd_help(message: TgMessage) -> None:
+    if not await _check_allowed(message):
+        return
+    await message.answer(HELP_TEXT)
+
+
+@router.message(Command("app"))
+async def cmd_app(message: TgMessage) -> None:
+    if not await _check_allowed(message):
+        return
+    btn = mini_app_button()
+    if btn is None:
+        await message.answer(
+            "Mini App URL еще не настроен. Запусти HTTPS tunnel "
+            "(cloudflared tunnel --url http://localhost:8000) и пропиши APP_PUBLIC_URL в .env."
+        )
+        return
+    from aiogram.types import InlineKeyboardMarkup
+
+    await message.answer(
+        "Открывай — всё в одном месте:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[btn]]),
+    )
+
+
+@router.message(Command("today"))
+async def cmd_today(message: TgMessage) -> None:
+    if not await _check_allowed(message):
+        return
+    async with session_scope() as session:
+        users = UserService(session)
+        user = await users.ensure_user(message.from_user.id, telegram_chat_id=message.chat.id)
+        payload = await TodayService(session).build_payload(user)
+        text = format_today(payload, user.timezone)
+    await _reply_chunks(message, text)
+
+
+@router.message(Command("tasks"))
+async def cmd_tasks(message: TgMessage) -> None:
+    if not await _check_allowed(message):
+        return
+    async with session_scope() as session:
+        users = UserService(session)
+        user = await users.ensure_user(message.from_user.id, telegram_chat_id=message.chat.id)
+        tasks = await TaskService(session).list_active(user, limit=25)
+        text = format_tasks(tasks, user.timezone)
+    await _reply_chunks(message, text)
+
+
+async def _enqueue_automation_run(message: TgMessage, automation_type: str, started_text: str) -> None:
+    async with session_scope() as session:
+        users = UserService(session)
+        user = await users.ensure_user(message.from_user.id, telegram_chat_id=message.chat.id)
+        run = await RunService(session).create(
+            user_id=user.id,
+            type_=AGENT_RUN_TYPE_BY_AUTOMATION[automation_type],
+            trigger="telegram_command",
+        )
+        user_id = str(user.id)
+        run_id = str(run.id)
+    job_id = await enqueue_job(
+        JOB_BY_AUTOMATION_TYPE[automation_type], user_id,
+        agent_run_id=run_id, trigger="telegram_command",
+    )
+    if job_id:
+        await message.answer(started_text)
+    else:
+        await message.answer("Очередь задач недоступна — проверь, что worker и Redis запущены.")
+
+
+@router.message(Command("plan"))
+async def cmd_plan(message: TgMessage) -> None:
+    if not await _check_allowed(message):
+        return
+    await _enqueue_automation_run(message, "daily_planning", "Собираю план дня — пришлю через минуту.")
+
+
+@router.message(Command("news"))
+async def cmd_news(message: TgMessage) -> None:
+    if not await _check_allowed(message):
+        return
+    await _enqueue_automation_run(message, "news_digest", "Собираю свежий дайджест — пришлю через пару минут.")
+
+
+@router.message(Command("email"))
+async def cmd_email(message: TgMessage) -> None:
+    if not await _check_allowed(message):
+        return
+    await _enqueue_automation_run(message, "email_triage", "Разбираю почту — скоро пришлю выжимку.")
+
+
+@router.message(Command("settings"))
+async def cmd_settings(message: TgMessage) -> None:
+    if not await _check_allowed(message):
+        return
+    settings = get_settings()
+    from lumi.connectors.google.auth import connection_status
+
+    google = await connection_status()
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(
+            message.from_user.id, telegram_chat_id=message.chat.id
+        )
+        tz = user.timezone
+    lines = [
+        "Настройки Lumi:",
+        f"• Часовой пояс: {tz}",
+        f"• Модель: {settings.minimax_model if settings.llm_provider == 'minimax' else 'mock (тестовый режим)'}",
+        f"• Google: {'подключен' if google['status'] == 'connected' else 'не подключен'}",
+        f"• Mini App: {settings.mini_app_url or 'не настроен (нужен APP_PUBLIC_URL)'}",
+        "",
+        "Подробнее и управление — в Mini App, раздел Settings.",
+    ]
+    await message.answer("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# Plain text -> orchestrator
+# ---------------------------------------------------------------------------
+
+@router.message(F.text & ~F.text.startswith("/"))
+async def on_text(message: TgMessage, bot: Bot) -> None:
+    if not await _check_allowed(message):
+        return
+    telegram_update_id_var.set(message.message_id)
+
+    # Onboarding interview intercepts plain text until finished.
+    from lumi.bot.intro import handle_intro_answer, intro_step
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(
+            message.from_user.id, telegram_chat_id=message.chat.id
+        )
+        if intro_step(user) is not None:
+            reply, _finished = await handle_intro_answer(session, user, message.text or "")
+            await session.commit()
+            await message.answer(reply)
+            return
+
+    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+
+    # Live progress + streaming: one status message edited through the whole turn.
+    import time as _time
+
+    status_msg = None
+    try:
+        status_msg = await message.answer("🧠 Думаю…")
+    except Exception:  # noqa: BLE001
+        status_msg = None
+    _stream = {"last_edit": 0.0, "shown": "", "t0": _time.monotonic(), "think_last": 0.0}
+
+    async def _edit(text: str) -> None:
+        if status_msg is None or not text or text == _stream["shown"]:
+            return
+        _stream["shown"] = text
+        try:
+            await status_msg.edit_text(text[:4096])
+        except Exception:  # noqa: BLE001 — same-text edits / flood control are fine to skip
+            pass
+
+    async def on_progress(stage: str) -> None:
+        now = _time.monotonic()
+        if stage == "__thinking__":
+            # Reasoning phase: live elapsed counter, at most every 3s.
+            if now - _stream["think_last"] < 3:
+                return
+            _stream["think_last"] = now
+            await _edit(f"💭 Думаю… {int(now - _stream['t0'])}с")
+            return
+        await _edit(stage)
+
+    async def on_reply_delta(accumulated: str) -> None:
+        # Telegram edit budget: ~1 edit/sec is safe; stream with a cursor.
+        now = _time.monotonic()
+        if now - _stream["last_edit"] < 1.2:
+            return
+        _stream["last_edit"] = now
+        await _edit(accumulated[:4000] + " ▌")
+
+    needs_compaction = False
+    conversation_id: str | None = None
+    user_id: str | None = None
+    try:
+        async with session_scope() as session:
+            orchestrator = AssistantOrchestrator(session)
+            result = await orchestrator.handle_user_message(
+                telegram_user_id=message.from_user.id,
+                telegram_chat_id=message.chat.id,
+                telegram_message_id=message.message_id,
+                text=message.text or "",
+                username=message.from_user.username,
+                first_name=message.from_user.first_name,
+                last_name=message.from_user.last_name,
+                on_progress=on_progress,
+                on_reply_delta=on_reply_delta,
+            )
+            needs_compaction = result.needs_compaction
+            if needs_compaction:
+                users = UserService(session)
+                user = await users.ensure_user(message.from_user.id)
+                conversation = await users.ensure_main_conversation(user)
+                user_id, conversation_id = str(user.id), str(conversation.id)
+            reply_text = result.reply_text
+            markup = markup_from_buttons(result.buttons)
+    except Exception:  # noqa: BLE001 — the bot must always answer
+        log.exception("orchestrator failed")
+        reply_text = "Что-то пошло не так на моей стороне. Сообщение сохранено, попробуй еще раз."
+        markup = None
+    if status_msg is not None and len(reply_text) <= 4096:
+        # Finalize the streamed message in place: full text + buttons.
+        try:
+            await status_msg.edit_text(reply_text, reply_markup=markup)
+        except Exception:  # noqa: BLE001 — fall back to a fresh message
+            try:
+                await status_msg.delete()
+            except Exception:  # noqa: BLE001
+                pass
+            await _reply_chunks(message, reply_text, reply_markup=markup)
+    else:
+        if status_msg is not None:
+            try:
+                await status_msg.delete()
+            except Exception:  # noqa: BLE001
+                pass
+        await _reply_chunks(message, reply_text, reply_markup=markup)
+
+    if needs_compaction and user_id and conversation_id:
+        await enqueue_job(
+            "compact_conversation", user_id,
+            conversation_id=conversation_id, trigger="system", notify=False,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Callbacks
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("confirm:") | F.data.startswith("reject:"))
+async def on_confirmation(callback: CallbackQuery) -> None:
+    if not await _check_allowed(callback):
+        await callback.answer()
+        return
+    action, _, confirmation_id_raw = callback.data.partition(":")
+    accept = action == "confirm"
+    try:
+        confirmation_id = uuid.UUID(confirmation_id_raw)
+    except ValueError:
+        await callback.answer("Неизвестное действие")
+        return
+
+    async with session_scope() as session:
+        users = UserService(session)
+        user = await users.ensure_user(callback.from_user.id)
+        confirmations = ConfirmationService(session)
+        confirmation = await confirmations.get(user, confirmation_id)
+        if confirmation is None:
+            await callback.answer("Уже неактуально")
+            return
+        if confirmation.status != ConfirmationStatus.PENDING:
+            await callback.answer("Уже решено")
+            return
+        confirmation = await confirmations.decide(user, confirmation, accept=accept)
+        if accept and confirmation.status == ConfirmationStatus.ACCEPTED:
+            text = await ConfirmationExecutor(session).execute(user, confirmation)
+        elif confirmation.status == ConfirmationStatus.EXPIRED:
+            text = "Это предложение уже истекло."
+        else:
+            text = "Ок, не делаю."
+    await callback.answer("Готово" if accept else "Отменено")
+    if callback.message:
+        await callback.message.answer(text)
+
+
+@router.callback_query(F.data.startswith("task_done:"))
+async def on_task_done(callback: CallbackQuery) -> None:
+    if not await _check_allowed(callback):
+        await callback.answer()
+        return
+    task_id_raw = callback.data.split(":", 1)[1]
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(callback.from_user.id)
+        tasks = TaskService(session)
+        try:
+            task = await tasks.get(user, uuid.UUID(task_id_raw))
+        except ValueError:
+            task = None
+        if task is None:
+            await callback.answer("Задача не найдена")
+            return
+        await tasks.complete_task(user, task)
+        title = task.title
+    await callback.answer("Отмечено выполненным ✓")
+    if callback.message:
+        await callback.message.answer(f"✓ Готово: {title}")
+
+
+@router.callback_query(F.data.startswith("task_snooze:"))
+async def on_task_snooze(callback: CallbackQuery) -> None:
+    if not await _check_allowed(callback):
+        await callback.answer()
+        return
+    parts = callback.data.split(":")
+    task_id_raw = parts[1] if len(parts) > 1 else ""
+    preset = parts[2] if len(parts) > 2 else "1h"
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(callback.from_user.id)
+        tasks = TaskService(session)
+        try:
+            task = await tasks.get(user, uuid.UUID(task_id_raw))
+        except ValueError:
+            task = None
+        if task is None:
+            await callback.answer("Задача не найдена")
+            return
+        task = await tasks.snooze_task(user, task, preset=preset)
+        from lumi.utils.time import fmt_local
+
+        when = fmt_local(task.snoozed_until, user.timezone)
+    await callback.answer(f"Отложено до {when}")
+
+
+@router.callback_query(F.data.startswith("block_confirm:"))
+async def on_block_confirm(callback: CallbackQuery) -> None:
+    if not await _check_allowed(callback):
+        await callback.answer()
+        return
+    block_id_raw = callback.data.split(":", 1)[1]
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(callback.from_user.id)
+        from lumi.services.calendar import CalendarService
+
+        calendar = CalendarService(session)
+        try:
+            event = await calendar.get_event(user, uuid.UUID(block_id_raw))
+        except ValueError:
+            event = None
+        if event is None or event.status != CalendarEventStatus.PROPOSED:
+            await callback.answer("Блок не найден или уже подтвержден")
+            return
+        await calendar.confirm_proposed_block(user, event)
+        from lumi.utils.time import fmt_local
+
+        text = (
+            f"✓ Фокус-блок в календаре: {event.title}, "
+            f"{fmt_local(event.start_at, user.timezone, '%d.%m %H:%M')}–"
+            f"{fmt_local(event.end_at, user.timezone, '%H:%M')}"
+        )
+    await callback.answer("Принято")
+    if callback.message:
+        await callback.message.answer(text)
+
+
+@router.callback_query(F.data == "email_create_tasks")
+async def on_email_create_tasks(callback: CallbackQuery) -> None:
+    if not await _check_allowed(callback):
+        await callback.answer()
+        return
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(callback.from_user.id)
+        from sqlalchemy import select
+
+        from lumi.db.models import EmailThread
+        from lumi.utils.time import local_to_utc
+
+        result = await session.execute(
+            select(EmailThread).where(
+                EmailThread.user_id == user.id,
+                EmailThread.triage_status == "triaged",
+            ).order_by(EmailThread.updated_at.desc()).limit(20)
+        )
+        tasks_service = TaskService(session)
+        created: list[str] = []
+        for thread in result.scalars():
+            candidate = thread.metadata_.get("task_candidate")
+            if not candidate or thread.metadata_.get("task_created"):
+                continue
+            due_at = None
+            if candidate.get("due_at_local"):
+                from datetime import datetime
+
+                try:
+                    due_at = local_to_utc(
+                        datetime.fromisoformat(candidate["due_at_local"]), user.timezone
+                    )
+                except ValueError:
+                    due_at = None
+            task = await tasks_service.create_task(
+                user,
+                title=candidate.get("title") or (thread.subject or "Письмо"),
+                priority=candidate.get("priority", "medium"),
+                due_at=due_at,
+                source="email",
+                created_by="agent",
+                actor="user",
+            )
+            thread.metadata_ = {**thread.metadata_, "task_created": str(task.id)}
+            created.append(task.title)
+    await callback.answer(f"Создано задач: {len(created)}")
+    if callback.message and created:
+        await callback.message.answer(
+            "Создал задачи из почты:\n" + "\n".join(f"• {t}" for t in created)
+        )
+    elif callback.message:
+        await callback.message.answer("Новых задач из почты не нашлось — всё уже создано.")
+
+
+@router.callback_query(F.data.startswith("access_grant:") | F.data.startswith("access_deny:"))
+async def on_access_decision(callback: CallbackQuery) -> None:
+    if callback.from_user is None or not _is_owner(callback.from_user.id):
+        await callback.answer()
+        return
+    action, _, raw_id = callback.data.partition(":")
+    try:
+        target_id = int(raw_id)
+    except ValueError:
+        await callback.answer("Ошибка")
+        return
+    grant = action == "access_grant"
+    async with session_scope() as session:
+        users = UserService(session)
+        target = await users.ensure_user(target_id)
+        target.is_allowed = grant
+        target_ref = target
+        from lumi.services.audit import AuditService
+
+        await AuditService(session).log(
+            user_id=target.id, actor="user", entity_type="user",
+            action="access_granted" if grant else "access_denied", details={},
+        )
+    await callback.answer("Принят" if grant else "Отклонен")
+    if callback.message:
+        await callback.message.edit_text(
+            (callback.message.text or "") + ("\n\n✓ Доступ выдан" if grant else "\n\n✗ Отклонено")
+        )
+    from lumi.services.notifier import send_telegram_message
+
+    if grant:
+        await send_telegram_message(
+            target_ref,
+            "Доступ открыт — добро пожаловать в Lumi! 🎉\n"
+            "Начни с /intro (короткое знакомство) или сразу пиши, что нужно сделать.",
+        )
+
+
+@router.callback_query(F.data.startswith("run:"))
+async def on_run_automation(callback: CallbackQuery) -> None:
+    if not await _check_allowed(callback):
+        await callback.answer()
+        return
+    automation_type = callback.data.split(":", 1)[1]
+    if automation_type not in JOB_BY_AUTOMATION_TYPE:
+        await callback.answer("Неизвестный тип")
+        return
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(callback.from_user.id)
+        run = await RunService(session).create(
+            user_id=user.id,
+            type_=AGENT_RUN_TYPE_BY_AUTOMATION[automation_type],
+            trigger="telegram_callback",
+        )
+        user_id, run_id = str(user.id), str(run.id)
+    job_id = await enqueue_job(
+        JOB_BY_AUTOMATION_TYPE[automation_type], user_id,
+        agent_run_id=run_id, trigger="telegram_callback",
+    )
+    await callback.answer("Запустил" if job_id else "Очередь недоступна")
+    if callback.message and job_id:
+        names = {
+            "news_digest": "Собираю дайджест…",
+            "email_triage": "Разбираю почту…",
+            "daily_planning": "Собираю план дня…",
+            "calendar_sync": "Синхронизирую календарь…",
+        }
+        await callback.message.answer(names.get(automation_type, "Запустил…"))
