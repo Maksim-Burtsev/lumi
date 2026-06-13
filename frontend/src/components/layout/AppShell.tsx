@@ -12,7 +12,6 @@ const TITLES: Record<string, string> = {
   '/more': 'Ещё',
   '/news': 'Новости',
   '/automations': 'Автоматизации',
-  '/memory': 'Память',
   '/settings': 'Настройки',
   '/runs': 'Запуски агента',
 };

@@ -289,6 +289,8 @@ class AssistantOrchestrator:
                 or (candidate.kind in ("preference", "instruction")
                     and candidate.confidence >= MEMORY_IMPLICIT_CONFIDENCE)
             ) and not candidate.requires_confirmation
+            if explicit and candidate.confidence >= MEMORY_EXPLICIT_CONFIDENCE:
+                auto = True
             if auto:
                 memory, created = await self.memory.store_candidate(
                     user, candidate, source_message_id=source_message_id,
@@ -304,21 +306,11 @@ class AssistantOrchestrator:
                     else "Обновил существующую заметку в памяти"
                 )
             elif candidate.confidence >= 0.6:
-                confirmation = await self.confirmations.create(
-                    user,
-                    action_type="store_memory",
-                    action_payload=candidate.model_dump(mode="json"),
-                    prompt=f"Запомнить: «{candidate.text[:120]}»?",
-                )
                 await self.runs.log_tool_call(
-                    run=run, tool_name="store_memory", status="requires_confirmation",
+                    run=run, tool_name="store_memory", status="skipped",
                     args=candidate.model_dump(mode="json"),
-                    requires_confirmation=True, confirmation_id=confirmation.id,
+                    result={"reason": "memory_auto_only"},
                 )
-                buttons.append([
-                    Button(text="💾 Запомнить", callback_data=f"confirm:{confirmation.id}"),
-                    Button(text="✗ Не надо", callback_data=f"reject:{confirmation.id}"),
-                ])
 
         # --- calendar ---------------------------------------------------
         for request in signals.calendar_requests:

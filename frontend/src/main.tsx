@@ -4,9 +4,10 @@ import '@fontsource-variable/golos-text';
 import '@fontsource-variable/unbounded';
 import './styles/globals.css';
 import App from './App';
-import { setupTelegramTheme } from './telegram/webapp';
+import { loadTelegramSdk, setupTelegramTheme } from './telegram/webapp';
 
 setupTelegramTheme();
+void loadTelegramSdk().then(setupTelegramTheme);
 
 const container = document.getElementById('root');
 if (!container) throw new Error('#root not found');

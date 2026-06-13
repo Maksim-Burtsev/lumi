@@ -28,7 +28,6 @@ import { Button } from '../components/ui/Button';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorState } from '../components/ui/ErrorState';
 import { SectionHeader } from '../components/ui/SectionHeader';
-import { Sheet } from '../components/ui/Sheet';
 import { Skeleton, SkeletonList, SkeletonTimeline } from '../components/ui/Skeleton';
 import { StatPill } from '../components/ui/StatPill';
 import { useToast } from '../components/ui/Toast';
@@ -199,7 +198,8 @@ export default function TodayPage() {
   const todayQuery = useToday();
   const navigate = useNavigate();
   const { show } = useToast();
-  const [selectedAttention, setSelectedAttention] = useState<AttentionItem | null>(null);
+  const [expandedAttentionId, setExpandedAttentionId] = useState<string | null>(null);
+  const [decisionInFlightId, setDecisionInFlightId] = useState<string | null>(null);
   const confirmBlock = useConfirmBlock();
   const decideConfirmation = useDecideConfirmation();
   const completeTask = useCompleteTask('today');
@@ -230,6 +230,27 @@ export default function TodayPage() {
     invalidate: [qk.digests],
     successMessage: 'Дайджест готов',
   });
+
+  const handleConfirmationDecision = (item: AttentionItem, accept: boolean) => {
+    const id = item.ref_id;
+    if (!id || decisionInFlightId) return;
+    setDecisionInFlightId(id);
+    decideConfirmation.mutate(
+      { id, accept },
+      {
+        onSuccess: (result) => {
+          haptic(accept ? 'success' : 'light');
+          show(result.result_text, accept ? 'success' : 'info');
+          setExpandedAttentionId((current) => (current === item.id ? null : current));
+        },
+        onError: () => {
+          show('Не удалось сохранить решение', 'error');
+          void todayQuery.refetch();
+        },
+        onSettled: () => setDecisionInFlightId(null),
+      },
+    );
+  };
 
   const handleConfirmBlock = (blockId: string) => {
     confirmBlock.mutate(blockId, {
@@ -264,67 +285,46 @@ export default function TodayPage() {
     }
   };
 
-  const closeAttention = () => setSelectedAttention(null);
-
   const handleAttentionNavigate = (route: string) => {
-    closeAttention();
+    setExpandedAttentionId(null);
     navigate(route);
   };
 
-  const handleConfirmationDecision = (accept: boolean) => {
-    const id = selectedAttention?.ref_id;
-    if (!id) return;
-    decideConfirmation.mutate(
-      { id, accept },
-      {
-        onSuccess: (result) => {
-          haptic(accept ? 'success' : 'light');
-          show(result.result_text, accept ? 'success' : 'info');
-          closeAttention();
-        },
-        onError: () => {
-          show('Не удалось сохранить решение', 'error');
-          void todayQuery.refetch();
-        },
-      },
-    );
-  };
-
-  const handleAttentionTaskComplete = () => {
-    const id = selectedAttention?.ref_id;
+  const handleAttentionTaskComplete = (item: AttentionItem) => {
+    const id = item.ref_id;
     if (!id) return;
     completeTask.mutate(id, {
       onSuccess: () => {
         haptic('success');
         show('Задача выполнена', 'success');
-        closeAttention();
+        setExpandedAttentionId((current) => (current === item.id ? null : current));
       },
       onError: () => show('Не удалось выполнить задачу', 'error'),
     });
   };
 
-  const handleAttentionTaskSnooze = () => {
-    const id = selectedAttention?.ref_id;
+  const handleAttentionTaskSnooze = (item: AttentionItem) => {
+    const id = item.ref_id;
     if (!id) return;
     snoozeTask.mutate(
       { id, input: { preset: 'tomorrow' } },
       {
         onSuccess: () => {
           show('Задача перенесена на завтра', 'success');
-          closeAttention();
+          setExpandedAttentionId((current) => (current === item.id ? null : current));
         },
         onError: () => show('Не удалось перенести задачу', 'error'),
       },
     );
   };
 
-  const handleAttentionEmailTask = () => {
-    const id = selectedAttention?.ref_id;
+  const handleAttentionEmailTask = (item: AttentionItem) => {
+    const id = item.ref_id;
     if (!id) return;
     createTaskFromThread.mutate(id, {
       onSuccess: (result) => {
         show(`Задача создана: ${result.task.title}`, 'success');
-        closeAttention();
+        setExpandedAttentionId((current) => (current === item.id ? null : current));
       },
       onError: () => show('Не удалось создать задачу', 'error'),
     });
@@ -459,30 +459,120 @@ export default function TodayPage() {
 
       {/* ----------------------------------------------------------- Needs attention */}
       {data.needs_attention.length > 0 && (
-        <Rise>
+        <div>
           <SectionHeader title="Ждет решения" />
           <Card className="card-strong divide-y divide-[var(--hairline)] overflow-hidden !p-0">
             {data.needs_attention.map((item) => {
+              const expanded = expandedAttentionId === item.id;
+              const detailRows = confirmationDetailRows(item);
               return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setSelectedAttention(item)}
-                  className="flex min-h-[52px] w-full items-center gap-3 px-4 py-2.5 text-left"
-                >
-                  <AttentionIcon item={item} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[14px] font-medium text-ink">{item.title}</span>
-                    {item.subtitle && <span className="block truncate text-[12.5px] text-hint">{item.subtitle}</span>}
-                  </span>
-                  <span className="shrink-0 rounded-full bg-[var(--secondary-bg)] px-2.5 py-1 text-[12px] font-medium text-[var(--secondary-text)]">
-                    {attentionCtaLabel(item)}
-                  </span>
-                </button>
+                <div key={item.id}>
+                  <button
+                    type="button"
+                    aria-expanded={expanded}
+                    onClick={() => setExpandedAttentionId((current) => (current === item.id ? null : item.id))}
+                    className="flex min-h-[52px] w-full items-center gap-3 px-4 py-2.5 text-left"
+                  >
+                    <AttentionIcon item={item} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[14px] font-medium text-ink">{item.title}</span>
+                      {item.subtitle && <span className="block truncate text-[12.5px] text-hint">{item.subtitle}</span>}
+                    </span>
+                    <span className="shrink-0 rounded-full bg-[var(--secondary-bg)] px-2.5 py-1 text-[12px] font-medium text-[var(--secondary-text)]">
+                      {attentionCtaLabel(item)}
+                    </span>
+                  </button>
+
+                  {expanded && (
+                    <div className="border-t border-hairline px-4 pb-4 pt-1">
+                      {item.kind === 'confirmation' && (
+                        <>
+                          <div className="rounded-2xl bg-[var(--accent-soft)] px-4 py-3">
+                            <p className="text-[12px] font-semibold uppercase tracking-wide text-accent-text">
+                              {riskLabel(item)}
+                            </p>
+                            <p className="mt-1 text-[13px] leading-relaxed text-ink">{riskHint(item)}</p>
+                          </div>
+
+                          {detailRows.length > 0 && (
+                            <dl className="mt-3 divide-y divide-hairline rounded-2xl border border-hairline">
+                              {detailRows.map((row) => (
+                                <div key={row.label} className="grid grid-cols-[96px_1fr] gap-3 px-3.5 py-2.5">
+                                  <dt className="text-[12.5px] text-hint">{row.label}</dt>
+                                  <dd className="min-w-0 break-words text-[13px] font-medium text-ink">{row.value}</dd>
+                                </div>
+                              ))}
+                            </dl>
+                          )}
+
+                          <div className="mt-4 flex flex-col gap-2.5">
+                            <Button
+                              fullWidth
+                              variant={item.ui_mode === 'strong_confirm' ? 'danger' : 'primary'}
+                              busy={decideConfirmation.isPending && decisionInFlightId === item.ref_id}
+                              icon={<Check size={16} />}
+                              onClick={() => handleConfirmationDecision(item, true)}
+                            >
+                              {item.primary_label ?? 'Подтвердить'}
+                            </Button>
+                            <Button
+                              fullWidth
+                              variant="ghost"
+                              busy={decideConfirmation.isPending && decisionInFlightId === item.ref_id}
+                              onClick={() => handleConfirmationDecision(item, false)}
+                            >
+                              {item.secondary_label ?? 'Отклонить'}
+                            </Button>
+                          </div>
+                        </>
+                      )}
+
+                      {(item.kind === 'overdue_task' || item.kind === 'due_task') && (
+                        <div className="flex flex-col gap-2.5">
+                          <Button
+                            fullWidth
+                            icon={<Check size={16} />}
+                            busy={completeTask.isPending}
+                            onClick={() => handleAttentionTaskComplete(item)}
+                          >
+                            Готово
+                          </Button>
+                          <Button
+                            fullWidth
+                            variant="secondary"
+                            icon={<Clock size={16} />}
+                            busy={snoozeTask.isPending}
+                            onClick={() => handleAttentionTaskSnooze(item)}
+                          >
+                            Завтра
+                          </Button>
+                          <Button fullWidth variant="ghost" onClick={() => handleAttentionNavigate(ATTENTION_ROUTES[item.kind])}>
+                            Открыть задачи
+                          </Button>
+                        </div>
+                      )}
+
+                      {item.kind === 'email' && (
+                        <div className="flex flex-col gap-2.5">
+                          <Button
+                            fullWidth
+                            busy={createTaskFromThread.isPending}
+                            onClick={() => handleAttentionEmailTask(item)}
+                          >
+                            Создать задачу
+                          </Button>
+                          <Button fullWidth variant="ghost" onClick={() => handleAttentionNavigate(ATTENTION_ROUTES.email)}>
+                            Открыть почту
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               );
             })}
           </Card>
-        </Rise>
+        </div>
       )}
 
       {/* ----------------------------------------------------------- Suggestions */}
@@ -528,96 +618,6 @@ export default function TodayPage() {
         </Rise>
       )}
 
-      <Sheet open={selectedAttention !== null} onClose={closeAttention} title="Решение">
-        {selectedAttention && (
-          <div className="pb-2">
-            <div className="flex items-start gap-3">
-              <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--secondary-bg)]">
-                <AttentionIcon item={selectedAttention} />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-[16px] font-semibold leading-snug text-ink">{selectedAttention.title}</p>
-                {selectedAttention.subtitle && (
-                  <p className="mt-1 text-[13px] leading-relaxed text-hint">{selectedAttention.subtitle}</p>
-                )}
-              </div>
-            </div>
-
-            {selectedAttention.kind === 'confirmation' && (
-              <>
-                <div className="mt-4 rounded-2xl bg-[var(--accent-soft)] px-4 py-3">
-                  <p className="text-[12px] font-semibold uppercase tracking-wide text-accent-text">
-                    {riskLabel(selectedAttention)}
-                  </p>
-                  <p className="mt-1 text-[13px] leading-relaxed text-ink">{riskHint(selectedAttention)}</p>
-                </div>
-
-                {confirmationDetailRows(selectedAttention).length > 0 && (
-                  <dl className="mt-4 divide-y divide-hairline rounded-2xl border border-hairline">
-                    {confirmationDetailRows(selectedAttention).map((row) => (
-                      <div key={row.label} className="grid grid-cols-[96px_1fr] gap-3 px-3.5 py-2.5">
-                        <dt className="text-[12.5px] text-hint">{row.label}</dt>
-                        <dd className="min-w-0 break-words text-[13px] font-medium text-ink">{row.value}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                )}
-
-                <div className="mt-5 flex flex-col gap-2.5">
-                  <Button
-                    fullWidth
-                    variant={selectedAttention.ui_mode === 'strong_confirm' ? 'danger' : 'primary'}
-                    busy={decideConfirmation.isPending}
-                    icon={<Check size={16} />}
-                    onClick={() => handleConfirmationDecision(true)}
-                  >
-                    {selectedAttention.primary_label ?? 'Подтвердить'}
-                  </Button>
-                  <Button
-                    fullWidth
-                    variant="ghost"
-                    busy={decideConfirmation.isPending}
-                    onClick={() => handleConfirmationDecision(false)}
-                  >
-                    {selectedAttention.secondary_label ?? 'Отклонить'}
-                  </Button>
-                </div>
-              </>
-            )}
-
-            {(selectedAttention.kind === 'overdue_task' || selectedAttention.kind === 'due_task') && (
-              <div className="mt-5 flex flex-col gap-2.5">
-                <Button fullWidth icon={<Check size={16} />} busy={completeTask.isPending} onClick={handleAttentionTaskComplete}>
-                  Готово
-                </Button>
-                <Button
-                  fullWidth
-                  variant="secondary"
-                  icon={<Clock size={16} />}
-                  busy={snoozeTask.isPending}
-                  onClick={handleAttentionTaskSnooze}
-                >
-                  Завтра
-                </Button>
-                <Button fullWidth variant="ghost" onClick={() => handleAttentionNavigate(ATTENTION_ROUTES[selectedAttention.kind])}>
-                  Открыть задачи
-                </Button>
-              </div>
-            )}
-
-            {selectedAttention.kind === 'email' && (
-              <div className="mt-5 flex flex-col gap-2.5">
-                <Button fullWidth busy={createTaskFromThread.isPending} onClick={handleAttentionEmailTask}>
-                  Создать задачу
-                </Button>
-                <Button fullWidth variant="ghost" onClick={() => handleAttentionNavigate(ATTENTION_ROUTES.email)}>
-                  Открыть почту
-                </Button>
-              </div>
-            )}
-          </div>
-        )}
-      </Sheet>
     </Stagger>
   );
 }

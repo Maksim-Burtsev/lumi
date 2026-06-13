@@ -7,8 +7,39 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
     <meta name="theme-color" content="#f3f5f8" />
+    <script>
+      (function () {
+        var hash = window.location.hash || "";
+        var hasTelegramParams = hash.indexOf("tgWebApp") !== -1;
+        var external = window.external;
+        var hasBridge =
+          window.TelegramWebviewProxy ||
+          (external && typeof external.notify === "function") ||
+          window.parent !== window;
+        if (!hasTelegramParams && !hasBridge) return;
+
+        function postReady() {
+          try {
+            if (window.Telegram && window.Telegram.WebApp) {
+              window.Telegram.WebApp.ready();
+            } else if (window.TelegramWebviewProxy) {
+              window.TelegramWebviewProxy.postEvent("web_app_ready", JSON.stringify(""));
+            } else if (external && typeof external.notify === "function") {
+              external.notify(JSON.stringify({ eventType: "web_app_ready", eventData: "" }));
+            } else if (window.parent !== window) {
+              window.parent.postMessage(JSON.stringify({ eventType: "web_app_ready", eventData: "" }), "*");
+            }
+          } catch (e) {
+            /* ignore Telegram bridge quirks */
+          }
+        }
+
+        postReady();
+        window.setTimeout(postReady, 250);
+        window.setTimeout(postReady, 1000);
+      })();
+    </script>
     <title>Lumi</title>
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
     <div id="root"></div>

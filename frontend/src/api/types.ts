@@ -113,8 +113,8 @@ export type RiskClass =
   | 'external_communication'
   | 'destructive'
   | 'unknown';
-export type ApprovalMode = 'auto_or_confirm' | 'confirm' | 'draft_then_confirm' | 'strong_confirm';
-export type AttentionUiMode = 'inline_confirm' | 'review_then_confirm' | 'strong_confirm';
+export type ApprovalMode = 'auto' | 'auto_or_confirm' | 'confirm' | 'draft_then_confirm' | 'strong_confirm';
+export type AttentionUiMode = 'none' | 'inline_confirm' | 'review_then_confirm' | 'strong_confirm';
 
 export interface AttentionItem {
   id: string;

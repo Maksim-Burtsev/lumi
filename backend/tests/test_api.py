@@ -60,6 +60,30 @@ async def test_today_shape(client):
     assert body["summary"]["tasks_active"] == 0
 
 
+async def test_today_hides_auto_memory_confirmations(client, db_session):
+    user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID)
+    service = ConfirmationService(db_session)
+    await service.create(
+        user,
+        action_type="store_memory",
+        action_payload={"kind": "fact", "text": "Скрытая память", "importance": 3, "confidence": 0.9},
+        prompt="Запомнить скрытый факт?",
+    )
+    task_confirmation = await service.create(
+        user,
+        action_type="create_task",
+        action_payload={"title": "Видимая задача", "confidence": 0.8, "requires_confirmation": True},
+        prompt="Создать видимую задачу?",
+    )
+    await db_session.commit()
+
+    response = await client.get("/api/today")
+    assert response.status_code == 200
+    items = response.json()["needs_attention"]
+    assert all(item.get("action_type") != "store_memory" for item in items)
+    assert any(item.get("ref_id") == str(task_confirmation.id) for item in items)
+
+
 async def test_tasks_crud(client):
     create = await client.post("/api/tasks", json={"title": "Тест из API", "priority": "high"})
     assert create.status_code == 201

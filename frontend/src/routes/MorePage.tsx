@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { Activity, Brain, Newspaper, Settings, Zap } from 'lucide-react';
+import { Activity, Newspaper, Settings, Zap } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useHealth } from '../api/hooks';
 import { Card } from '../components/ui/Card';
@@ -16,7 +16,6 @@ interface MoreLink {
 const LINKS: MoreLink[] = [
   { to: '/news', label: 'Новости', description: 'Темы и дайджесты', icon: Newspaper },
   { to: '/automations', label: 'Автоматизации', description: 'Сценарии по расписанию', icon: Zap },
-  { to: '/memory', label: 'Память', description: 'Что Lumi помнит о тебе', icon: Brain },
   { to: '/runs', label: 'Запуски агента', description: 'Журнал работы', icon: Activity },
   { to: '/settings', label: 'Настройки', description: 'Профиль и подключения', icon: Settings },
 ];

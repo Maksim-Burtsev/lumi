@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
-import { UNAUTHORIZED_EVENT } from './api/client';
+import { clearUnauthorizedResponse, hasUnauthorizedResponse, UNAUTHORIZED_EVENT } from './api/client';
 import { useAutoTimezone } from './api/hooks';
 import { AppShell } from './components/layout/AppShell';
 import { UnauthorizedScreen } from './components/layout/UnauthorizedScreen';
@@ -12,7 +12,6 @@ import CalendarPage from './routes/CalendarPage';
 import InboxPage from './routes/InboxPage';
 import NewsPage from './routes/NewsPage';
 import AutomationsPage from './routes/AutomationsPage';
-import MemoryPage from './routes/MemoryPage';
 import SettingsPage from './routes/SettingsPage';
 import AgentRunsPage from './routes/AgentRunsPage';
 import MorePage from './routes/MorePage';
@@ -29,7 +28,7 @@ const queryClient = new QueryClient({
 
 function AppRoutes() {
   useAutoTimezone();
-  const [unauthorized, setUnauthorized] = useState(false);
+  const [unauthorized, setUnauthorized] = useState(hasUnauthorizedResponse);
   const client = useQueryClient();
 
   useEffect(() => {
@@ -42,6 +41,7 @@ function AppRoutes() {
     return (
       <UnauthorizedScreen
         onRetry={() => {
+          clearUnauthorizedResponse();
           setUnauthorized(false);
           void client.resetQueries();
         }}
@@ -58,7 +58,7 @@ function AppRoutes() {
         <Route path="/inbox" element={<InboxPage />} />
         <Route path="/news" element={<NewsPage />} />
         <Route path="/automations" element={<AutomationsPage />} />
-        <Route path="/memory" element={<MemoryPage />} />
+        <Route path="/memory" element={<Navigate to="/more" replace />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/runs" element={<AgentRunsPage />} />
         <Route path="/more" element={<MorePage />} />

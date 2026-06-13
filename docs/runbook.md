@@ -12,7 +12,56 @@ make seed
 make smoke              # SMOKE OK = ядро живо (mock LLM, без ключей)
 ```
 
-Бот: `/start` в Telegram. Mini App: туннель + `APP_PUBLIC_URL` (см. README).
+Бот: `/start` в Telegram. Mini App: см. чеклист ниже.
+
+## Локальный Mini App в Telegram
+
+Браузерная проверка без Telegram:
+
+```bash
+make frontend-build
+make up-detached
+make dev-auth-up
+open http://localhost:8001/app/
+```
+
+Telegram-проверка:
+
+```bash
+make frontend-build
+make up-detached
+make tunnel
+```
+
+Скопируй HTTPS URL из `make tunnel` в `.env`:
+
+```dotenv
+APP_PUBLIC_URL=https://your-tunnel.trycloudflare.com
+FRONTEND_PUBLIC_PATH=/app/
+```
+
+Перечитай `.env` и пересинхронизируй кнопку Mini App:
+
+```bash
+docker compose restart api bot
+curl "$APP_PUBLIC_URL/health"
+```
+
+Открой `/app` у бота или кнопку меню. Если использовалась старая tunnel-ссылка,
+закрой старое окно Mini App в Telegram и открой свежую кнопку.
+
+Быстрая диагностика:
+
+```bash
+docker compose ps
+docker compose logs api bot -f --tail 100
+curl "$APP_PUBLIC_URL/app/"
+```
+
+В норме в логах `api` видны `GET /app`, загрузка ассетов и `GET /api/today` со статусом
+`200`. Если Telegram показывает только белый экран с роботом, почти всегда причина одна из
+трех: tunnel умер после сна Mac, `APP_PUBLIC_URL` указывает на старый tunnel, или Telegram
+WebView открыл закешированную старую кнопку.
 
 ## Ежедневные команды
 
@@ -36,8 +85,9 @@ tool calls, LLM calls, ошибки).
 | Бот молчит | 1) `docker compose logs bot` — крутится ли polling. 2) Твой id не в `ALLOWED_TELEGRAM_USER_IDS` — в логах будет `unauthorized telegram user` с id (включено `LOG_UNAUTHORIZED_TELEGRAM_IDS`). 3) Токен неверный. |
 | `bot` в Restarting | `TELEGRAM_BOT_TOKEN` пуст — заполни .env, `docker compose restart bot` |
 | Conflict: terminated by other getUpdates | Где-то запущен второй инстанс бота ИЛИ висит webhook. Бот сам делает deleteWebhook при старте; вручную: `curl https://api.telegram.org/bot<TOKEN>/deleteWebhook?drop_pending_updates=true` |
-| Mini App: «Открой Lumi внутри Telegram» (401) | Mini App открыт не из Telegram, или id не в allowlist, или `APP_PUBLIC_URL` не совпадает с туннелем |
-| Mini App не открывается с кнопки | URL должен быть **https** (туннель), бот перезапущен после смены `APP_PUBLIC_URL` |
+| Mini App: «Открой Lumi внутри Telegram» (401) | Mini App открыт не из Telegram. Для браузера используй `make dev-auth-up` и `http://localhost:8001/app/`. |
+| Mini App не открывается с кнопки | URL должен быть **https** (туннель), `APP_PUBLIC_URL` должен быть текущим, после смены нужен `docker compose restart api bot`. |
+| Mini App висит на белом экране с роботом | Старый/мертвый tunnel или stale Telegram WebView. Проверь `curl "$APP_PUBLIC_URL/health"`, логи `api`, закрой старое окно Mini App и открой свежую кнопку `/app`. |
 | Ответы «Готово, я это зафиксировал» на всё | Работает mock LLM: `MINIMAX_API_KEY` пуст или `LLM_PROVIDER=mock`. В логах api/worker: `falling back to mock` |
 | MiniMax error в ответах | `docker compose logs worker api \| grep -i minimax` — ключ/квота/таймаут; ретраи и фоллбеки уже встроены |
 | «Очередь задач недоступна» | Redis упал: `docker compose ps redis`, `docker compose up -d redis` |

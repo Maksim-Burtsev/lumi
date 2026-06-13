@@ -16,7 +16,7 @@ const ITEMS: NavItem[] = [
   { to: '/tasks', label: 'Задачи', icon: ListChecks },
   { to: '/calendar', label: 'Календарь', icon: CalendarDays },
   { to: '/inbox', label: 'Почта', icon: Mail },
-  { to: '/more', label: 'Ещё', icon: LayoutGrid, also: ['/news', '/automations', '/memory', '/settings', '/runs'] },
+  { to: '/more', label: 'Ещё', icon: LayoutGrid, also: ['/news', '/automations', '/settings', '/runs'] },
 ];
 
 /** Floating pill bottom navigation with safe-area padding. */

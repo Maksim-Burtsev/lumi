@@ -185,6 +185,8 @@ POST  /api/automations/{id}/run → {"run_id": uuid, "status": "queued"}
 
 ## Memory
 
+Memory endpoints are internal/admin surface for now; the Mini App does not expose memory management in user navigation.
+
 ```
 Memory = {
   "id": uuid, "kind": "preference"|"fact"|"project"|"instruction"|"contact"|"workflow"|"other",

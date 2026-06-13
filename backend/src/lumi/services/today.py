@@ -113,6 +113,8 @@ class TodayService:
             })
         for confirmation in await self.confirmations.list_pending(user, limit=3):
             policy = policy_for_action(confirmation.action_type)
+            if policy.approval_mode == "auto":
+                continue
             needs_attention.append({
                 "id": f"confirmation-{confirmation.id}",
                 "kind": "confirmation",

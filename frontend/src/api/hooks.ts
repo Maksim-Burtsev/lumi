@@ -17,6 +17,7 @@ import type {
   Task,
   TaskFilter,
   TasksResponse,
+  TodayResponse,
 } from './types';
 import { haptic } from '../telegram/webapp';
 import { useToast } from '../components/ui/Toast';
@@ -276,13 +277,31 @@ export function useConfirmBlock() {
   });
 }
 
+function removeConfirmationFromTodayCache(queryClient: ReturnType<typeof useQueryClient>, id: string) {
+  const previous = queryClient.getQueryData<TodayResponse>(qk.today);
+  if (previous) {
+    queryClient.setQueryData<TodayResponse>(qk.today, {
+      ...previous,
+      needs_attention: previous.needs_attention.filter((item) => item.ref_id !== id),
+    });
+  }
+  return previous;
+}
+
 export function useDecideConfirmation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, accept }: { id: string; accept: boolean }) =>
       accept ? api.acceptConfirmation(id) : api.rejectConfirmation(id),
+    onMutate: async ({ id }) => {
+      await queryClient.cancelQueries({ queryKey: qk.today });
+      return { previousToday: removeConfirmationFromTodayCache(queryClient, id) };
+    },
+    onError: (_error, _vars, context) => {
+      if (context?.previousToday) queryClient.setQueryData(qk.today, context.previousToday);
+    },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: qk.today });
+      void queryClient.invalidateQueries({ queryKey: qk.today, refetchType: 'none' });
       void queryClient.invalidateQueries({ queryKey: qk.eventsAll });
       void queryClient.invalidateQueries({ queryKey: qk.freeSlotsAll });
       void queryClient.invalidateQueries({ queryKey: qk.tasksAll });

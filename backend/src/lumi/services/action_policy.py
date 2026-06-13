@@ -26,9 +26,9 @@ ACTION_POLICIES: dict[str, ActionPolicy] = {
     "store_memory": ActionPolicy(
         action_type="store_memory",
         risk_class="write_internal_memory",
-        approval_mode="confirm",
-        ui_mode="inline_confirm",
-        primary_label="Запомнить",
+        approval_mode="auto",
+        ui_mode="none",
+        primary_label="",
     ),
     "create_automation": ActionPolicy(
         action_type="create_automation",

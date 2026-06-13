@@ -39,16 +39,178 @@ declare global {
     Telegram?: {
       WebApp?: TelegramWebApp;
     };
+    TelegramWebviewProxy?: {
+      postEvent: (eventType: string, eventData: string) => void;
+    };
   }
 }
+
+type TelegramInitParams = Record<string, string>;
+
+const INIT_PARAMS_STORAGE_KEY = '__telegram__initParams';
+const THEME_PARAMS_STORAGE_KEY = '__telegram__themeParams';
+
+let telegramSdkLoad: Promise<void> | null = null;
 
 export function getTelegramWebApp(): TelegramWebApp | null {
   if (typeof window === 'undefined') return null;
   return window.Telegram?.WebApp ?? null;
 }
 
+function readStoredInitParams(): TelegramInitParams {
+  try {
+    const raw = window.sessionStorage.getItem(INIT_PARAMS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') return {};
+    const params: TelegramInitParams = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === 'string') params[key] = value;
+    }
+    return params;
+  } catch {
+    return {};
+  }
+}
+
+function readHashInitParams(): TelegramInitParams {
+  const hash = window.location.hash.startsWith('#')
+    ? window.location.hash.slice(1)
+    : window.location.hash;
+  if (!hash) return {};
+
+  const params = new URLSearchParams(hash);
+  const result: TelegramInitParams = {};
+  params.forEach((value, key) => {
+    if (key.startsWith('tgWebApp')) result[key] = value;
+  });
+  return result;
+}
+
+function getTelegramInitParams(): TelegramInitParams {
+  if (typeof window === 'undefined') return {};
+
+  const params = { ...readStoredInitParams(), ...readHashInitParams() };
+  if (Object.keys(params).length > 0) {
+    try {
+      window.sessionStorage.setItem(INIT_PARAMS_STORAGE_KEY, JSON.stringify(params));
+    } catch {
+      /* sessionStorage can be unavailable in embedded clients */
+    }
+  }
+  return params;
+}
+
+function hasTelegramBridge(): boolean {
+  if (typeof window === 'undefined') return false;
+  const external = window.external as { notify?: (payload: string) => void } | undefined;
+  return Boolean(
+    window.TelegramWebviewProxy ||
+      (external && typeof external.notify === 'function') ||
+      window.parent !== window,
+  );
+}
+
+function hasTelegramLaunchParams(): boolean {
+  return Object.keys(getTelegramInitParams()).length > 0;
+}
+
+function postTelegramEvent(eventType: string, eventData: unknown = ''): boolean {
+  if (typeof window === 'undefined') return false;
+
+  try {
+    if (window.TelegramWebviewProxy) {
+      window.TelegramWebviewProxy.postEvent(eventType, JSON.stringify(eventData));
+      return true;
+    }
+
+    const external = window.external as { notify?: (payload: string) => void } | undefined;
+    if (external && typeof external.notify === 'function') {
+      external.notify(JSON.stringify({ eventType, eventData }));
+      return true;
+    }
+
+    if (window.parent !== window) {
+      window.parent.postMessage(JSON.stringify({ eventType, eventData }), '*');
+      return true;
+    }
+  } catch {
+    return false;
+  }
+
+  return false;
+}
+
+function notifyReady(): void {
+  const tg = getTelegramWebApp();
+  try {
+    if (tg) {
+      tg.ready();
+      return;
+    }
+    if (hasTelegramLaunchParams() || hasTelegramBridge()) postTelegramEvent('web_app_ready');
+  } catch {
+    /* never crash on SDK quirks */
+  }
+}
+
+function scheduleReadyFallbacks(): void {
+  if (typeof window === 'undefined') return;
+  if (!hasTelegramLaunchParams() && !hasTelegramBridge()) return;
+  window.setTimeout(notifyReady, 250);
+  window.setTimeout(notifyReady, 1000);
+}
+
 export function getInitData(): string {
-  return getTelegramWebApp()?.initData ?? '';
+  return getTelegramWebApp()?.initData ?? getTelegramInitParams().tgWebAppData ?? '';
+}
+
+function getFallbackThemeParams(): TelegramThemeParams | undefined {
+  if (typeof window === 'undefined') return undefined;
+
+  const raw = getTelegramInitParams().tgWebAppThemeParams;
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as TelegramThemeParams;
+      window.sessionStorage.setItem(THEME_PARAMS_STORAGE_KEY, JSON.stringify(parsed));
+      return parsed;
+    } catch {
+      /* bad theme payload */
+    }
+  }
+
+  try {
+    const stored = window.sessionStorage.getItem(THEME_PARAMS_STORAGE_KEY);
+    return stored ? (JSON.parse(stored) as TelegramThemeParams) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function loadTelegramSdk(): Promise<void> {
+  if (typeof window === 'undefined') return Promise.resolve();
+  if (getTelegramWebApp()) return Promise.resolve();
+  if (!hasTelegramLaunchParams() && !hasTelegramBridge()) return Promise.resolve();
+  if (telegramSdkLoad) return telegramSdkLoad;
+
+  telegramSdkLoad = new Promise((resolve) => {
+    const existing = document.querySelector<HTMLScriptElement>('script[data-telegram-webapp-sdk]');
+    if (existing) {
+      existing.addEventListener('load', () => resolve(), { once: true });
+      existing.addEventListener('error', () => resolve(), { once: true });
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = 'https://telegram.org/js/telegram-web-app.js';
+    script.async = true;
+    script.dataset.telegramWebappSdk = 'true';
+    script.onload = () => resolve();
+    script.onerror = () => resolve();
+    document.head.appendChild(script);
+  });
+
+  return telegramSdkLoad;
 }
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
@@ -71,7 +233,7 @@ function applyTheme(): void {
   const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
   if (meta) meta.content = isDark ? '#141310' : '#F6F4EF';
 
-  const params = tg?.themeParams;
+  const params = tg?.themeParams ?? getFallbackThemeParams();
   if (params?.button_color) {
     root.style.setProperty('--tg-button', params.button_color);
     // Telegram button color becomes a *tint* for secondary CTAs;
@@ -93,11 +255,8 @@ function applyTheme(): void {
 
 export function setupTelegramTheme(): void {
   const tg = getTelegramWebApp();
-  try {
-    tg?.ready();
-  } catch {
-    /* never crash on SDK quirks */
-  }
+  notifyReady();
+  scheduleReadyFallbacks();
 
   applyTheme();
 

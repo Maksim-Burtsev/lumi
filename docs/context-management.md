@@ -38,8 +38,8 @@ memory candidates, календарные запросы, автоматизац
 Задача:        confidence ≥ 0.85 и !requires_confirmation → создать
                0.50–0.85 → pending confirmation + кнопки
 Память:        явное «запомни» и ≥ 0.85 → сохранить
-               preference/instruction и ≥ 0.92 → сохранить
-               ≥ 0.60 → pending confirmation; иначе игнор
+               preference/instruction и ≥ 0.92 + !requires_confirmation → сохранить
+               иначе игнор без pending confirmation
 Внутр. блок:   явная просьба и ≥ 0.75 → создать
 Внешний календарь: ВСЕГДА pending confirmation
 Автоматизация: ≥ 0.60 → pending confirmation (включение только руками)
@@ -60,7 +60,8 @@ score = importance*3 + keyword_overlap(query, text)*5 + tag_overlap*4
 ```
 
 Top-10 попадают в контекст; у использованных обновляется `last_accessed_at`.
-Просмотр/архив/удаление — страница Memory в Mini App. Замена на pgvector — один метод.
+Память не вынесена в пользовательскую навигацию Mini App; это внутренняя часть контекста.
+Замена на pgvector — один метод.
 
 ## Compaction
 

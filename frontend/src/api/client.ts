@@ -56,6 +56,15 @@ export class ApiError extends Error {
 
 /** Event the app shell listens to in order to show the "open inside Telegram" screen. */
 export const UNAUTHORIZED_EVENT = 'lumi:unauthorized';
+let unauthorizedSeen = false;
+
+export function hasUnauthorizedResponse(): boolean {
+  return unauthorizedSeen;
+}
+
+export function clearUnauthorizedResponse(): void {
+  unauthorizedSeen = false;
+}
 
 type Method = 'GET' | 'POST' | 'PATCH' | 'DELETE';
 
@@ -102,6 +111,7 @@ async function request<T>(method: Method, path: string, options: RequestOptions 
       /* non-JSON error body */
     }
     if (response.status === 401) {
+      unauthorizedSeen = true;
       window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
     }
     throw new ApiError(response.status, code, detail);
