@@ -569,6 +569,109 @@ async def test_snooze_task_sets_reminder_and_backend_reply_with_time():
     )
 
 
+async def test_snooze_prefers_visible_candidate_over_already_snoozed_match():
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "tool_calls": [
+            {
+                "name": "snooze_task",
+                "args": {"task_query": "real-time обновления в люми", "preset": "tomorrow"},
+                "confidence": 0.7,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        already_snoozed = await TaskService(session).create_task(
+            user,
+            title="Сделать real-time обновления в mini-app Lumi",
+            project="Работа",
+            tags=["backlog", "mini-app", "lumi", "real-time"],
+        )
+        already_snoozed = await TaskService(session).snooze_task(
+            user,
+            already_snoozed,
+            preset="tomorrow",
+        )
+        already_snoozed_id = already_snoozed.id
+        already_snoozed_until = already_snoozed.snoozed_until
+        visible = await TaskService(session).create_task(
+            user,
+            title="Сделать real-time обновления в Lumi",
+        )
+        visible_id = visible.id
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=48,
+            text="отложи задачу про real-time обновления в люми на завтра",
+        )
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        old_task = await TaskService(session).get(user, already_snoozed_id)
+        new_task = await TaskService(session).get(user, visible_id)
+
+    assert provider.final_chat_calls == 0
+    assert old_task.snoozed_until == already_snoozed_until
+    assert new_task.snoozed_until is not None
+    assert new_task.reminder_at == new_task.snoozed_until
+    assert result.reply_text.startswith("Готово: отложил «Сделать real-time обновления в Lumi» до ")
+
+
+async def test_snooze_ambiguous_visible_matches_returns_choice_buttons():
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "tool_calls": [
+            {
+                "name": "snooze_task",
+                "args": {"task_query": "real-time обновления", "preset": "tomorrow"},
+                "confidence": 0.7,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        first = await TaskService(session).create_task(
+            user,
+            title="Сделать real-time обновления в Lumi",
+        )
+        second = await TaskService(session).create_task(
+            user,
+            title="Сделать real-time обновления в mini-app Lumi",
+            project="Работа",
+            tags=["mini-app"],
+        )
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=49,
+            text="отложи задачу про real-time обновления на завтра",
+        )
+
+        confirmations = (await session.execute(select(PendingConfirmation))).scalars().all()
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+
+    assert provider.final_chat_calls == 0
+    assert result.reply_text == "Нашёл несколько похожих задач. Какую отложить?"
+    assert len(result.buttons) == 2
+    assert result.buttons[0][0].callback_data.startswith("snooze_pick:")
+    assert confirmations[0].action_type == "snooze_task_choice"
+    assert set(confirmations[0].action_payload["candidate_task_ids"]) == {
+        str(first.id),
+        str(second.id),
+    }
+    assert any(c.tool_name == "snooze_task" and c.status == "requires_confirmation" for c in tool_calls)
+
+
 async def test_low_confidence_rename_not_found_does_not_call_final_llm_or_claim_done():
     provider = RenameTaskProvider(
         current_title="несуществующая задача",

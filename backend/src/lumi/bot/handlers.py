@@ -571,6 +571,81 @@ async def on_task_snooze(callback: CallbackQuery) -> None:
     await callback.answer(f"Отложено до {when}")
 
 
+@router.callback_query(F.data.startswith("snooze_pick:"))
+async def on_snooze_pick(callback: CallbackQuery) -> None:
+    if not await _check_allowed(callback):
+        await callback.answer()
+        return
+    _, _, rest = (callback.data or "").partition(":")
+    token, _, index_raw = rest.partition(":")
+    try:
+        index = int(index_raw)
+    except ValueError:
+        await callback.answer("Неизвестное действие")
+        return
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(callback.from_user.id)
+        confirmations = ConfirmationService(session)
+        pending = await confirmations.list_pending(user, limit=100)
+        matches = [
+            confirmation for confirmation in pending
+            if confirmation.action_type == "snooze_task_choice"
+            and confirmation.id.hex.startswith(token)
+        ]
+        if len(matches) != 1:
+            await callback.answer("Уже неактуально")
+            return
+        confirmation = matches[0]
+        payload = confirmation.action_payload
+        candidate_ids = list(payload.get("candidate_task_ids") or [])
+        preset = str(payload.get("preset") or "tomorrow")
+        if index < 0 or index >= len(candidate_ids):
+            await callback.answer("Неизвестное действие")
+            return
+        try:
+            task_id = uuid.UUID(candidate_ids[index])
+        except ValueError:
+            await callback.answer("Неизвестное действие")
+            return
+        agent_run_id = None
+        if payload.get("agent_run_id"):
+            try:
+                agent_run_id = uuid.UUID(str(payload["agent_run_id"]))
+            except ValueError:
+                agent_run_id = None
+
+        tasks = TaskService(session)
+        task = await tasks.get(user, task_id)
+        if task is None:
+            await callback.answer("Задача не найдена")
+            return
+        task = await tasks.snooze_task(user, task, preset=preset, actor="user")
+        await confirmations.decide(user, confirmation, accept=True)
+        if agent_run_id:
+            run = await RunService(session).get(agent_run_id, user.id)
+            if run is not None:
+                await RunService(session).log_tool_call(
+                    run=run,
+                    tool_name="snooze_task",
+                    status="completed",
+                    args=payload,
+                    result={
+                        "task_id": str(task.id),
+                        "snoozed_until": task.snoozed_until.isoformat()
+                        if task.snoozed_until else None,
+                    },
+                )
+        from lumi.utils.time import fmt_local
+
+        when = fmt_local(task.snoozed_until, user.timezone)
+        text = f"Готово: отложил «{task.title}» до {when}."
+
+    await callback.answer(f"Отложено до {when}")
+    if callback.message:
+        await callback.message.answer(text)
+
+
 @router.callback_query(F.data.startswith("block_confirm:"))
 async def on_block_confirm(callback: CallbackQuery) -> None:
     if not await _check_allowed(callback):

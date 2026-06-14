@@ -43,7 +43,7 @@ from lumi.services.runs import RunService
 from lumi.services.tasks import TaskService
 from lumi.services.users import UserService
 from lumi.utils.text import truncate
-from lumi.utils.time import fmt_local, local_to_utc, utc_to_local
+from lumi.utils.time import fmt_local, local_to_utc, utc_now, utc_to_local
 from lumi.worker.queue import enqueue_job
 
 log = get_logger(__name__)
@@ -82,6 +82,10 @@ def _rename_choice_button_text(task: Task) -> str:
 
 def _rename_choice_callback(confirmation_id: uuid.UUID, index: int) -> str:
     return f"rename_pick:{confirmation_id.hex[:12]}:{index}"
+
+
+def _snooze_choice_callback(confirmation_id: uuid.UUID, index: int) -> str:
+    return f"snooze_pick:{confirmation_id.hex[:12]}:{index}"
 
 
 def _args_with_call_defaults(call: PlannedToolCall) -> dict:
@@ -372,7 +376,9 @@ class AssistantOrchestrator:
             elif call.name == "complete_task":
                 await self._apply_complete_task_tool(user=user, run=run, call=call, results=results)
             elif call.name == "snooze_task":
-                await self._apply_snooze_task_tool(user=user, run=run, call=call, results=results)
+                await self._apply_snooze_task_tool(
+                    user=user, run=run, call=call, results=results, buttons=buttons
+                )
             elif call.name == "store_memory":
                 candidate = MemoryCandidate.model_validate(_args_with_call_defaults(call))
                 await self._apply_store_memory_tool(user=user, run=run, candidate=candidate,
@@ -582,6 +588,7 @@ class AssistantOrchestrator:
         run,
         call: PlannedToolCall,
         results: list[str],
+        buttons: list[list[Button]],
     ) -> None:
         query = _task_query_from_call(call)
         candidates = await self.tasks.find_open_rename_candidates(
@@ -621,6 +628,7 @@ class AssistantOrchestrator:
         run,
         call: PlannedToolCall,
         results: list[str],
+        buttons: list[list[Button]],
     ) -> None:
         query = _task_query_from_call(call)
         candidates = await self.tasks.find_open_rename_candidates(
@@ -632,6 +640,13 @@ class AssistantOrchestrator:
         preset = str(call.args.get("preset") or "tomorrow")
         if preset not in {"1h", "3h", "tomorrow", "next_week"}:
             preset = "tomorrow"
+        now = utc_now()
+        visible_candidates = [
+            task for task in candidates
+            if task.snoozed_until is None or task.snoozed_until <= now
+        ]
+        if visible_candidates:
+            candidates = visible_candidates
         if len(candidates) == 1:
             task = await self.tasks.snooze_task(user, candidates[0], preset=preset, actor="agent")
             await self.runs.log_tool_call(
@@ -646,6 +661,38 @@ class AssistantOrchestrator:
             )
             when = fmt_local(task.snoozed_until, user.timezone) if task.snoozed_until else "позже"
             results.append(f"Готово: отложил «{task.title}» до {when}.")
+            return
+        if len(candidates) > 1:
+            confirmation = await self.confirmations.create(
+                user,
+                action_type="snooze_task_choice",
+                action_payload={
+                    "task_query": query,
+                    "preset": preset,
+                    "project": call.args.get("project"),
+                    "tags": call.args.get("tags") or [],
+                    "candidate_task_ids": [str(task.id) for task in candidates],
+                    "agent_run_id": str(run.id),
+                },
+                prompt="Выбери задачу для откладывания.",
+            )
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name="snooze_task",
+                status="requires_confirmation",
+                args={**call.args, "preset": preset},
+                result={"candidate_task_ids": [str(task.id) for task in candidates]},
+                requires_confirmation=True,
+                confirmation_id=confirmation.id,
+            )
+            results.append("Нашёл несколько похожих задач. Какую отложить?")
+            for index, task in enumerate(candidates[:5]):
+                buttons.append([
+                    Button(
+                        text=_rename_choice_button_text(task),
+                        callback_data=_snooze_choice_callback(confirmation.id, index),
+                    )
+                ])
             return
         await self.runs.log_tool_call(
             run=run,
