@@ -28,6 +28,42 @@ class ExtractedTask(BaseModel):
         return v[:300]
 
 
+class TaskUpdate(BaseModel):
+    operation: Literal["rename"]
+    current_title: str
+    new_title: str
+    project: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+    requires_confirmation: bool = True
+
+    @field_validator("current_title", "new_title")
+    @classmethod
+    def title_not_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("empty task title")
+        return v[:300]
+
+    @field_validator("project")
+    @classmethod
+    def project_non_empty(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        return v[:100] or None
+
+    @field_validator("tags")
+    @classmethod
+    def tags_clean(cls, v: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for tag in v:
+            tag = tag.strip().lstrip("#")
+            if tag:
+                cleaned.append(tag[:50])
+        return cleaned
+
+
 class MemoryCandidate(BaseModel):
     kind: Literal["preference", "fact", "project", "instruction", "contact", "workflow", "other"] = "other"
     text: str
@@ -82,12 +118,42 @@ class NewsRequest(BaseModel):
     confidence: float = 0.0
 
 
+class PlannedToolCall(BaseModel):
+    name: str
+    args: dict[str, Any] = Field(default_factory=dict)
+    confidence: float = 0.0
+    requires_confirmation: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def name_not_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("empty tool name")
+        return v
+
+
+class AgentPlan(BaseModel):
+    """Planner output: model chooses a final answer or typed backend tools."""
+
+    mode: Literal["final_answer", "tool_calls", "ask_user"] = "final_answer"
+    tool_calls: list[PlannedToolCall] = Field(default_factory=list)
+    final_answer: str | None = None
+    should_answer_normally: bool = True
+    language: str = "ru"
+
+    @classmethod
+    def empty(cls) -> AgentPlan:
+        return cls()
+
+
 class ExtractedSignals(BaseModel):
     """Validated output of the SignalExtractor LLM call."""
 
     language: str = "ru"
     intents: list[str] = Field(default_factory=lambda: ["chat"])
     tasks: list[ExtractedTask] = Field(default_factory=list)
+    task_updates: list[TaskUpdate] = Field(default_factory=list)
     memory_candidates: list[MemoryCandidate] = Field(default_factory=list)
     calendar_requests: list[CalendarRequest] = Field(default_factory=list)
     automation_requests: list[AutomationRequest] = Field(default_factory=list)

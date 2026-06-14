@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any
+from difflib import SequenceMatcher
+from typing import Any, Literal
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,9 +14,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lumi.assistant.schemas import ExtractedTask
 from lumi.db.models import Priority, Task, TaskEvent, TaskStatus, User
 from lumi.services.audit import AuditService
+from lumi.utils.text import keyword_overlap, normalize_for_match
 from lumi.utils.time import local_day_bounds, local_to_utc, utc_now
 
 SNOOZE_PRESETS = {"1h": timedelta(hours=1), "3h": timedelta(hours=3)}
+RENAME_FUZZY_MIN_SCORE = 0.58
+RENAME_FUZZY_CLEAR_MARGIN = 0.16
+RENAME_MAX_CANDIDATES = 5
+
+
+@dataclass(slots=True)
+class RenameTaskResult:
+    status: Literal["renamed", "not_found", "ambiguous"]
+    task: Task | None = None
+    old_title: str | None = None
+    new_title: str | None = None
+    candidates: list[Task] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class _ScoredRenameCandidate:
+    task: Task
+    score: float
+    index: int
 
 
 def _task_snapshot(task: Task) -> dict[str, Any]:
@@ -22,10 +44,35 @@ def _task_snapshot(task: Task) -> dict[str, Any]:
         "title": task.title,
         "status": task.status.value if isinstance(task.status, TaskStatus) else task.status,
         "priority": task.priority.value if isinstance(task.priority, Priority) else task.priority,
+        "project": task.project,
+        "tags": task.tags or [],
         "due_at": task.due_at.isoformat() if task.due_at else None,
         "reminder_at": task.reminder_at.isoformat() if task.reminder_at else None,
         "snoozed_until": task.snoozed_until.isoformat() if task.snoozed_until else None,
     }
+
+
+def _rename_score(wanted: str, title: str) -> float:
+    overlap = keyword_overlap(wanted, title)
+    ratio = SequenceMatcher(None, wanted, title).ratio()
+    score = (overlap * 0.72) + (ratio * 0.28)
+    if wanted in title or title in wanted:
+        score = max(score, 0.88 + min(overlap, 1.0) * 0.08)
+    if overlap >= 0.66:
+        score = max(score, 0.74)
+    return min(score, 1.0)
+
+
+def _normalized_tags(tags: list[str] | None) -> set[str]:
+    return {
+        normalized
+        for tag in tags or []
+        if (normalized := normalize_for_match(tag.lstrip("#")))
+    }
+
+
+def _not_snoozed(now: datetime):
+    return or_(Task.snoozed_until.is_(None), Task.snoozed_until <= now)
 
 
 class TaskService:
@@ -75,13 +122,138 @@ class TaskService:
         return task
 
     async def find_active_by_title(self, user: User, title: str) -> Task | None:
-        from lumi.utils.text import normalize_for_match
-
         wanted = normalize_for_match(title)
         for task in await self.list_active(user, limit=200):
             if normalize_for_match(task.title) == wanted:
                 return task
         return None
+
+    async def find_open_rename_candidates(
+        self,
+        user: User,
+        current_title: str,
+        *,
+        project: str | None = None,
+        tags: list[str] | None = None,
+        limit: int = 200,
+    ) -> list[Task]:
+        wanted = normalize_for_match(current_title)
+        if not wanted:
+            return []
+        tasks = await self._list_open_for_rename(user, limit=limit)
+        tasks = self._apply_rename_filters(tasks, project=project, tags=tags)
+
+        exact = [task for task in tasks if normalize_for_match(task.title) == wanted]
+        if exact:
+            return exact[:RENAME_MAX_CANDIDATES]
+
+        scored = [
+            candidate for candidate in (
+                _ScoredRenameCandidate(
+                    task=task,
+                    score=_rename_score(wanted, normalize_for_match(task.title)),
+                    index=index,
+                )
+                for index, task in enumerate(tasks)
+            )
+            if candidate.score >= RENAME_FUZZY_MIN_SCORE
+        ]
+        if not scored:
+            return []
+        scored.sort(key=lambda candidate: (-candidate.score, candidate.index))
+        top = scored[0]
+        close = [
+            candidate for candidate in scored
+            if top.score - candidate.score <= RENAME_FUZZY_CLEAR_MARGIN
+        ]
+        if len(close) > 1:
+            return [candidate.task for candidate in close[:RENAME_MAX_CANDIDATES]]
+        return [top.task]
+
+    async def rename_active_task_by_title(
+        self,
+        user: User,
+        *,
+        current_title: str,
+        new_title: str,
+        project: str | None = None,
+        tags: list[str] | None = None,
+        actor: str = "user",
+        agent_run_id: uuid.UUID | None = None,
+    ) -> RenameTaskResult:
+        candidates = await self.find_open_rename_candidates(
+            user,
+            current_title,
+            project=project,
+            tags=tags,
+        )
+        if not candidates:
+            return RenameTaskResult(status="not_found")
+        if len(candidates) > 1:
+            return RenameTaskResult(status="ambiguous", candidates=candidates)
+
+        return await self._rename_open_task(
+            user,
+            candidates[0],
+            new_title,
+            actor=actor,
+            agent_run_id=agent_run_id,
+        )
+
+    async def rename_open_task_by_id(
+        self,
+        user: User,
+        task_id: uuid.UUID,
+        *,
+        new_title: str,
+        actor: str = "user",
+        agent_run_id: uuid.UUID | None = None,
+    ) -> RenameTaskResult:
+        task = await self.get(user, task_id)
+        if task is None or task.status == TaskStatus.DONE:
+            return RenameTaskResult(status="not_found")
+        return await self._rename_open_task(
+            user,
+            task,
+            new_title,
+            actor=actor,
+            agent_run_id=agent_run_id,
+        )
+
+    async def _rename_open_task(
+        self,
+        user: User,
+        task: Task,
+        new_title: str,
+        *,
+        actor: str,
+        agent_run_id: uuid.UUID | None = None,
+    ) -> RenameTaskResult:
+        old_title = task.title
+        before = _task_snapshot(task)
+        task.title = new_title.strip()[:300]
+        await self._record_event(
+            task,
+            "updated",
+            actor=actor,
+            before=before,
+            after=_task_snapshot(task),
+            agent_run_id=agent_run_id,
+        )
+        await self.audit.log(
+            user_id=user.id,
+            actor=actor,
+            entity_type="task",
+            entity_id=task.id,
+            action="updated",
+            details={"old_title": old_title, "new_title": task.title},
+        )
+        return RenameTaskResult(
+            status="renamed",
+            task=task,
+            old_title=old_title,
+            new_title=task.title,
+        )
 
     async def create_task_from_signal(
         self,
@@ -141,32 +313,72 @@ class TaskService:
         now = utc_now()
         day_start, day_end = local_day_bounds(now, user.timezone)
         active = Task.status.in_([TaskStatus.ACTIVE, TaskStatus.INBOX])
+        visible_active = active & _not_snoozed(now)
 
         if filter_ == "today":
-            stmt = stmt.where(active, Task.due_at.is_not(None), Task.due_at < day_end)
+            stmt = stmt.where(visible_active, Task.due_at.is_not(None), Task.due_at < day_end)
             stmt = stmt.order_by(Task.due_at.asc())
         elif filter_ == "upcoming":
-            stmt = stmt.where(active, or_(Task.due_at.is_(None), Task.due_at >= day_end))
+            stmt = stmt.where(visible_active, or_(Task.due_at.is_(None), Task.due_at >= day_end))
             stmt = stmt.order_by(Task.due_at.asc().nulls_last(), Task.created_at.desc())
         elif filter_ == "inbox":
-            stmt = stmt.where(Task.status == TaskStatus.INBOX).order_by(Task.created_at.desc())
+            stmt = stmt.where(
+                Task.status == TaskStatus.INBOX,
+                _not_snoozed(now),
+            ).order_by(Task.created_at.desc())
         elif filter_ == "done":
             stmt = stmt.where(Task.status == TaskStatus.DONE).order_by(Task.completed_at.desc())
         else:
-            stmt = stmt.where(active).order_by(
+            stmt = stmt.where(visible_active).order_by(
                 Task.due_at.asc().nulls_last(), Task.created_at.desc()
             )
         result = await self.session.execute(stmt.limit(limit))
         return list(result.scalars())
 
     async def list_active(self, user: User, limit: int = 50) -> list[Task]:
+        now = utc_now()
         result = await self.session.execute(
             select(Task)
-            .where(Task.user_id == user.id, Task.status.in_([TaskStatus.ACTIVE, TaskStatus.INBOX]))
+            .where(
+                Task.user_id == user.id,
+                Task.status.in_([TaskStatus.ACTIVE, TaskStatus.INBOX]),
+                _not_snoozed(now),
+            )
             .order_by(Task.due_at.asc().nulls_last(), Task.priority.desc(), Task.created_at.desc())
             .limit(limit)
         )
         return list(result.scalars())
+
+    async def _list_open_for_rename(self, user: User, limit: int = 200) -> list[Task]:
+        result = await self.session.execute(
+            select(Task)
+            .where(Task.user_id == user.id, Task.status != TaskStatus.DONE)
+            .order_by(Task.due_at.asc().nulls_last(), Task.priority.desc(), Task.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars())
+
+    @staticmethod
+    def _apply_rename_filters(
+        tasks: list[Task],
+        *,
+        project: str | None,
+        tags: list[str] | None,
+    ) -> list[Task]:
+        filtered = tasks
+        if project:
+            wanted_project = normalize_for_match(project)
+            filtered = [
+                task for task in filtered
+                if normalize_for_match(task.project or "") == wanted_project
+            ]
+        wanted_tags = _normalized_tags(tags)
+        if wanted_tags:
+            filtered = [
+                task for task in filtered
+                if wanted_tags.issubset(_normalized_tags(task.tags))
+            ]
+        return filtered
 
     async def count_summary(self, user: User) -> dict[str, int]:
         now = utc_now()
@@ -227,9 +439,8 @@ class TaskService:
             else:
                 until = utc_now() + timedelta(hours=1)
         task.snoozed_until = until
-        if task.reminder_at is not None:
-            task.reminder_at = until
-            task.metadata_ = {k: v for k, v in task.metadata_.items() if k != "reminder_sent_at"}
+        task.reminder_at = until
+        task.metadata_ = {k: v for k, v in task.metadata_.items() if k != "reminder_sent_at"}
         await self._record_event(task, "snoozed", actor=actor, before=before,
                                  after=_task_snapshot(task))
         return task

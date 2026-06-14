@@ -10,7 +10,7 @@ from aiogram.types import CallbackQuery
 from aiogram.types import Message as TgMessage
 
 from lumi.assistant.orchestrator import AssistantOrchestrator
-from lumi.bot.formatting import HELP_TEXT, format_tasks, format_today
+from lumi.bot.formatting import HELP_TEXT, format_tasks, format_today, telegram_plain_text
 from lumi.bot.keyboards import markup_from_buttons, mini_app_button, start_keyboard
 from lumi.config import get_settings
 from lumi.db.models import CalendarEventStatus, ConfirmationStatus
@@ -99,6 +99,7 @@ async def _request_access(message: TgMessage) -> None:
 
 
 async def _reply_chunks(message: TgMessage, text: str, reply_markup=None) -> None:
+    text = telegram_plain_text(text)
     chunks = chunk_telegram(text)
     for i, chunk in enumerate(chunks):
         await message.answer(chunk, reply_markup=reply_markup if i == len(chunks) - 1 else None)
@@ -324,6 +325,7 @@ async def on_text(message: TgMessage, bot: Bot) -> None:
     _stream = {"last_edit": 0.0, "shown": "", "t0": _time.monotonic(), "think_last": 0.0}
 
     async def _edit(text: str) -> None:
+        text = telegram_plain_text(text)
         if status_msg is None or not text or text == _stream["shown"]:
             return
         _stream["shown"] = text
@@ -383,7 +385,7 @@ async def on_text(message: TgMessage, bot: Bot) -> None:
     if status_msg is not None and len(reply_text) <= 4096:
         # Finalize the streamed message in place: full text + buttons.
         try:
-            await status_msg.edit_text(reply_text, reply_markup=markup)
+            await status_msg.edit_text(telegram_plain_text(reply_text), reply_markup=markup)
         except Exception:  # noqa: BLE001 — fall back to a fresh message
             try:
                 await status_msg.delete()
@@ -441,6 +443,82 @@ async def on_confirmation(callback: CallbackQuery) -> None:
         else:
             text = "Ок, не делаю."
     await callback.answer("Готово" if accept else "Отменено")
+    if callback.message:
+        await callback.message.answer(text)
+
+
+@router.callback_query(F.data.startswith("rename_pick:"))
+async def on_rename_pick(callback: CallbackQuery) -> None:
+    if not await _check_allowed(callback):
+        await callback.answer()
+        return
+    _, _, rest = (callback.data or "").partition(":")
+    token, _, index_raw = rest.partition(":")
+    try:
+        index = int(index_raw)
+    except ValueError:
+        await callback.answer("Неизвестное действие")
+        return
+
+    async with session_scope() as session:
+        users = UserService(session)
+        user = await users.ensure_user(callback.from_user.id)
+        confirmations = ConfirmationService(session)
+        pending = await confirmations.list_pending(user, limit=100)
+        matches = [
+            confirmation for confirmation in pending
+            if confirmation.action_type == "rename_task_choice"
+            and confirmation.id.hex.startswith(token)
+        ]
+        if len(matches) != 1:
+            await callback.answer("Уже неактуально")
+            return
+        confirmation = matches[0]
+        payload = confirmation.action_payload
+        candidate_ids = list(payload.get("candidate_task_ids") or [])
+        new_title = str(payload.get("new_title") or "").strip()
+        if index < 0 or index >= len(candidate_ids) or not new_title:
+            await callback.answer("Неизвестное действие")
+            return
+        try:
+            task_id = uuid.UUID(candidate_ids[index])
+        except ValueError:
+            await callback.answer("Неизвестное действие")
+            return
+        agent_run_id = None
+        if payload.get("agent_run_id"):
+            try:
+                agent_run_id = uuid.UUID(str(payload["agent_run_id"]))
+            except ValueError:
+                agent_run_id = None
+
+        result = await TaskService(session).rename_open_task_by_id(
+            user,
+            task_id,
+            new_title=new_title,
+            actor="user",
+            agent_run_id=agent_run_id,
+        )
+        await confirmations.decide(user, confirmation, accept=True)
+        if agent_run_id:
+            run = await RunService(session).get(agent_run_id, user.id)
+            if run is not None:
+                await RunService(session).log_tool_call(
+                    run=run,
+                    tool_name="rename_task",
+                    status="completed" if result.status == "renamed" else "skipped",
+                    args=payload,
+                    result={
+                        "status": result.status,
+                        "task_id": str(result.task.id) if result.task else str(task_id),
+                    },
+                )
+        if result.status == "renamed":
+            text = f"Готово: переименовал «{result.old_title}» → «{result.new_title}»."
+        else:
+            text = "Эта задача уже закрыта или удалена — переименовывать нечего."
+
+    await callback.answer("Готово" if result.status == "renamed" else "Неактуально")
     if callback.message:
         await callback.message.answer(text)
 

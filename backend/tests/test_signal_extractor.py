@@ -1,11 +1,14 @@
+import uuid
+from types import SimpleNamespace
+
 from lumi.assistant.signal_extractor import SignalExtractor
-from lumi.db.session import session_scope
 from lumi.llm.base import LLMResponse
 from lumi.llm.gateway import LLMGateway
 from lumi.llm.mock import MockLLMProvider
-from lumi.services.users import UserService
 
-from .conftest import TEST_TELEGRAM_ID
+
+def _test_user():
+    return SimpleNamespace(id=uuid.uuid4(), timezone="Europe/Moscow")
 
 
 class GarbageProvider:
@@ -22,9 +25,8 @@ class GarbageProvider:
         raise ValueError("no json")
 
 
-async def test_extracts_task_with_reminder(user):
-    async with session_scope() as session:
-        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+async def test_extracts_task_with_reminder():
+    u = _test_user()
     extractor = SignalExtractor(LLMGateway(MockLLMProvider()))
     signals = await extractor.extract(user=u, text="Напомни завтра в 10 написать Саше")
     assert len(signals.tasks) == 1
@@ -35,28 +37,58 @@ async def test_extracts_task_with_reminder(user):
     assert task.confidence >= 0.85
 
 
-async def test_extracts_memory_candidate(user):
-    async with session_scope() as session:
-        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+async def test_extracts_memory_candidate():
+    u = _test_user()
     extractor = SignalExtractor(LLMGateway(MockLLMProvider()))
     signals = await extractor.extract(user=u, text="Запомни: дайджесты лучше до 09:30")
     assert len(signals.memory_candidates) == 1
     assert "09:30" in signals.memory_candidates[0].text
 
 
-async def test_garbage_output_degrades_gracefully(user):
-    async with session_scope() as session:
-        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+async def test_garbage_output_degrades_gracefully():
+    u = _test_user()
     extractor = SignalExtractor(LLMGateway(GarbageProvider()))
     signals = await extractor.extract(user=u, text="Напомни завтра в 10 написать Саше")
     assert signals.tasks == []
     assert signals.should_answer_normally is True
 
 
-async def test_plain_chat_no_actions(user):
-    async with session_scope() as session:
-        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+async def test_plain_chat_no_actions():
+    u = _test_user()
     extractor = SignalExtractor(LLMGateway(MockLLMProvider()))
     signals = await extractor.extract(user=u, text="Как дела?")
     assert signals.tasks == []
     assert signals.memory_candidates == []
+
+
+async def test_extracts_action_only_backlog_task():
+    u = _test_user()
+    extractor = SignalExtractor(LLMGateway(MockLLMProvider()))
+    signals = await extractor.extract(
+        user=u,
+        text="добавь в бэклог задачу свой аналог session в Lumi интегрировать",
+    )
+    assert len(signals.tasks) == 1
+    assert signals.tasks[0].title == "Свой аналог session в Lumi интегрировать"
+    assert signals.tasks[0].requires_confirmation is True
+    assert signals.should_answer_normally is False
+
+
+async def test_extracts_task_rename_update():
+    u = _test_user()
+    extractor = SignalExtractor(LLMGateway(MockLLMProvider()))
+    signals = await extractor.extract(
+        user=u,
+        text=(
+            "Задачу «Написать короткий сценарий теста accept/reject» переименуй "
+            "в «Свой аналог session в Lumi интегрировать»"
+        ),
+    )
+    assert signals.tasks == []
+    assert len(signals.task_updates) == 1
+    update = signals.task_updates[0]
+    assert update.operation == "rename"
+    assert update.current_title == "Написать короткий сценарий теста accept/reject"
+    assert update.new_title == "Свой аналог session в Lumi интегрировать"
+    assert update.requires_confirmation is False
+    assert signals.should_answer_normally is False

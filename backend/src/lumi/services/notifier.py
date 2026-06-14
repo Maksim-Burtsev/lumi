@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from lumi.bot.formatting import telegram_plain_text
 from lumi.config import get_settings
 from lumi.db.models import User
 from lumi.logging import get_logger
@@ -27,7 +28,7 @@ async def send_telegram_message(
 
     bot = Bot(token=settings.telegram_bot_token)
     try:
-        chunks = chunk_telegram(text)
+        chunks = chunk_telegram(telegram_plain_text(text))
         for i, chunk in enumerate(chunks):
             await bot.send_message(
                 chat_id=chat_id,

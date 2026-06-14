@@ -62,9 +62,11 @@ async def test_context_contains_all_sections(user):
     joined = "\n".join(s for s in context.debug_snapshot["sections"])
     assert "Макс" in joined                      # profile
     assert "Архитектура Lumi" in joined          # active tasks
+    assert "Existing active tasks (state, not actions performed now):" in joined
     assert "Standup" in joined                   # calendar
     assert "Дайджесты до 09:30" in joined        # memory
     assert "Создана задача" in joined            # action results
+    assert "Only backend actions performed for the current message:" in joined
     assert "Permissions:" in joined
     assert "СТАРОЕ-СЖАТОЕ-СООБЩЕНИЕ" not in joined
 

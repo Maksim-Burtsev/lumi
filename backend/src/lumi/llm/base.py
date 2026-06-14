@@ -59,6 +59,8 @@ class LLMProvider(Protocol):
         json_schema_hint: dict[str, Any] | None = None,
         request_kind: str,
         metadata: dict[str, Any] | None = None,
+        temperature: float = 0.0,
+        max_tokens: int = 4096,
     ) -> dict[str, Any]: ...
 
 

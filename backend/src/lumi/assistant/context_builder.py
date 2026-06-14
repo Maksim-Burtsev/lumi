@@ -95,7 +95,7 @@ class ContextBuilder:
         if all_projects:
             sections.append("Projects (области задач пользователя): " + ", ".join(all_projects))
         if active_tasks:
-            lines = ["Active tasks:"]
+            lines = ["Existing active tasks (state, not actions performed now):"]
             now = utc_now()
             for t in active_tasks:
                 line = f"- [{t.priority.value}] {t.title}"
@@ -107,7 +107,9 @@ class ContextBuilder:
                 lines.append(line)
             sections.append("\n".join(lines))
         else:
-            sections.append("Active tasks: нет активных задач.")
+            sections.append(
+                "Existing active tasks (state, not actions performed now): нет активных задач."
+            )
 
         # 6-7. Calendar today
         day_start, day_end = local_day_bounds(utc_now(), user.timezone)
@@ -181,7 +183,7 @@ class ContextBuilder:
         # 11. Action results
         if action_results:
             sections.append(
-                "Backend actions already performed for this message:\n"
+                "Only backend actions performed for the current message:\n"
                 + "\n".join(f"- {r}" for r in action_results)
             )
 

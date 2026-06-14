@@ -43,15 +43,24 @@ async def run_bot() -> None:
     if settings.mini_app_url and settings.mini_app_url.startswith("https://"):
         from aiogram.types import MenuButtonWebApp, WebAppInfo
 
+        menu_button = MenuButtonWebApp(text="Lumi", web_app=WebAppInfo(url=settings.mini_app_url))
         try:
-            await bot.set_chat_menu_button(
-                menu_button=MenuButtonWebApp(
-                    text="Lumi", web_app=WebAppInfo(url=settings.mini_app_url)
-                )
-            )
+            await bot.set_chat_menu_button(menu_button=menu_button)
             log.info("mini app menu button set", fields={"url": settings.mini_app_url})
         except Exception:  # noqa: BLE001
             log.exception("could not set menu button")
+
+        for telegram_user_id in settings.allowed_telegram_user_ids:
+            try:
+                await bot.set_chat_menu_button(chat_id=telegram_user_id, menu_button=menu_button)
+                log.info(
+                    "mini app chat menu button set",
+                    fields={"chat_id": telegram_user_id, "url": settings.mini_app_url},
+                )
+            except Exception:  # noqa: BLE001
+                log.exception(
+                    "could not set chat menu button", fields={"chat_id": telegram_user_id}
+                )
 
     me = await bot.get_me()
     log.info("lumi bot started", fields={"bot_username": me.username})

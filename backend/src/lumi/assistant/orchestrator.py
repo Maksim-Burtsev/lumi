@@ -14,13 +14,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from lumi.assistant.context_builder import ContextBuilder
 from lumi.assistant.memory_service import MemoryService
-from lumi.assistant.schemas import CalendarRequest, ExtractedSignals
-from lumi.assistant.signal_extractor import SignalExtractor
+from lumi.assistant.planner import AgentPlanner
+from lumi.assistant.schemas import (
+    AgentPlan,
+    AutomationRequest,
+    CalendarRequest,
+    EmailRequest,
+    ExtractedTask,
+    MemoryCandidate,
+    NewsRequest,
+    PlannedToolCall,
+    TaskUpdate,
+)
 from lumi.db.models import (
     AgentRunType,
     CalendarEventStatus,
     Message,
     MessageRole,
+    Task,
     User,
 )
 from lumi.llm.gateway import LLMGateway
@@ -31,7 +42,9 @@ from lumi.services.planning import PlanningService
 from lumi.services.runs import RunService
 from lumi.services.tasks import TaskService
 from lumi.services.users import UserService
+from lumi.utils.text import truncate
 from lumi.utils.time import fmt_local, local_to_utc, utc_to_local
+from lumi.worker.queue import enqueue_job
 
 log = get_logger(__name__)
 
@@ -59,6 +72,43 @@ class AssistantResult:
     open_app_button: bool = False
 
 
+def _rename_choice_button_text(task: Task) -> str:
+    parts = [truncate(task.title, 56)]
+    if task.project:
+        parts.append(task.project)
+    parts.extend(f"#{tag.lstrip('#')}" for tag in (task.tags or []) if tag)
+    return " · ".join(parts)
+
+
+def _rename_choice_callback(confirmation_id: uuid.UUID, index: int) -> str:
+    return f"rename_pick:{confirmation_id.hex[:12]}:{index}"
+
+
+def _args_with_call_defaults(call: PlannedToolCall) -> dict:
+    args = dict(call.args)
+    args.setdefault("confidence", call.confidence)
+    args.setdefault("requires_confirmation", call.requires_confirmation)
+    return args
+
+
+def _calendar_request_from_tool_call(call: PlannedToolCall) -> CalendarRequest:
+    kind = {
+        "plan_day": "plan_day",
+        "find_focus_slot": "find_focus_slot",
+        "create_internal_calendar_block": "create_internal_block",
+        "create_external_calendar_event": "create_external_event",
+    }[call.name]
+    return CalendarRequest.model_validate({
+        "kind": kind,
+        **_args_with_call_defaults(call),
+    })
+
+
+def _task_query_from_call(call: PlannedToolCall) -> str:
+    query = str(call.args.get("task_query") or call.args.get("current_title") or "").strip()
+    return query or "—"
+
+
 class AssistantOrchestrator:
     def __init__(self, session: AsyncSession, *, llm: LLMGateway | None = None) -> None:
         self.session = session
@@ -69,7 +119,7 @@ class AssistantOrchestrator:
         self.calendar = CalendarService(session)
         self.confirmations = ConfirmationService(session)
         self.runs = RunService(session)
-        self.extractor = SignalExtractor(self.llm)
+        self.planner = AgentPlanner(self.llm)
         self.context_builder = ContextBuilder(session)
         self.planning = PlanningService(session, llm=self.llm)
 
@@ -128,20 +178,59 @@ class AssistantOrchestrator:
         await self.runs.mark_running(run)
         agent_run_id_var.set(str(run.id))
 
-        # 4. Signal extraction (separate small call — reliable and predictable;
+        # 4. Planner call (separate small call — reliable and predictable;
         # a combined signals+reply call made M3 reason for minutes, parked for now)
         await progress("🧠 Разбираю сообщение…")
-        signals = await self.extractor.extract(
+        plan = await self.planner.plan(
             user=user, text=text, agent_run_id=run.id, session=self.session
         )
 
         # 5. Apply safe actions
-        if signals.tasks or signals.memory_candidates or signals.calendar_requests \
-                or signals.automation_requests:
+        if plan.tool_calls:
             await progress("⚙️ Выполняю: задачи, память, календарь…")
-        action_results, buttons = await self._apply_signals(
-            user=user, run=run, signals=signals, source_message_id=inbound.id
+        action_results, buttons = await self._apply_tool_calls(
+            user=user, run=run, plan=plan, source_message_id=inbound.id
         )
+
+        if action_results and not plan.should_answer_normally:
+            reply_text = self._format_action_results_reply(action_results)
+            outbound = Message(
+                conversation_id=conversation.id,
+                user_id=user.id,
+                role=MessageRole.ASSISTANT,
+                content=reply_text,
+                char_count=len(reply_text),
+                telegram_chat_id=telegram_chat_id,
+            )
+            self.session.add(outbound)
+            await self.runs.mark_completed(run, result_summary="; ".join(action_results))
+            needs_compaction = await self._needs_compaction(conversation)
+            return AssistantResult(
+                reply_text=reply_text,
+                buttons=buttons,
+                agent_run_id=run.id,
+                needs_compaction=needs_compaction,
+            )
+
+        if not action_results and plan.mode in ("final_answer", "ask_user") and plan.final_answer:
+            reply_text = plan.final_answer
+            outbound = Message(
+                conversation_id=conversation.id,
+                user_id=user.id,
+                role=MessageRole.ASSISTANT,
+                content=reply_text,
+                char_count=len(reply_text),
+                telegram_chat_id=telegram_chat_id,
+            )
+            self.session.add(outbound)
+            await self.runs.mark_completed(run, result_summary=reply_text[:2000])
+            needs_compaction = await self._needs_compaction(conversation)
+            return AssistantResult(
+                reply_text=reply_text,
+                buttons=buttons,
+                agent_run_id=run.id,
+                needs_compaction=needs_compaction,
+            )
 
         # 6-7. Final reply
         await progress(
@@ -215,11 +304,7 @@ class AssistantOrchestrator:
         )
 
         # 9. Compaction check
-        from lumi.assistant.compaction import CompactionService
-
-        needs_compaction = await CompactionService(self.session, llm=self.llm).needs_compaction(
-            conversation
-        )
+        needs_compaction = await self._needs_compaction(conversation)
 
         return AssistantResult(
             reply_text=reply_text,
@@ -230,122 +315,469 @@ class AssistantOrchestrator:
 
     # ------------------------------------------------------------------
 
-    async def _apply_signals(
+    @staticmethod
+    def _format_action_results_reply(action_results: list[str]) -> str:
+        if len(action_results) == 1:
+            return action_results[0]
+        return "Сделал:\n" + "\n".join(f"• {result}" for result in action_results)
+
+    async def _needs_compaction(self, conversation) -> bool:
+        from lumi.assistant.compaction import CompactionService
+
+        return await CompactionService(self.session, llm=self.llm).needs_compaction(conversation)
+
+    # ------------------------------------------------------------------
+
+    async def _apply_tool_calls(
         self,
         *,
         user: User,
         run,
-        signals: ExtractedSignals,
+        plan: AgentPlan,
         source_message_id: uuid.UUID,
     ) -> tuple[list[str], list[list[Button]]]:
         results: list[str] = []
         buttons: list[list[Button]] = []
 
-        # --- tasks -----------------------------------------------------
-        for task_signal in signals.tasks:
-            if task_signal.confidence >= TASK_AUTO_CREATE_CONFIDENCE and not task_signal.requires_confirmation:
-                task = await self.tasks.create_task_from_signal(
-                    user, task_signal, source_message_id=source_message_id, agent_run_id=run.id
+        for call in plan.tool_calls:
+            if call.name == "create_task":
+                task_signal = ExtractedTask.model_validate(_args_with_call_defaults(call))
+                await self._apply_create_task_tool(
+                    user=user,
+                    run=run,
+                    task_signal=task_signal,
+                    source_message_id=source_message_id,
+                    results=results,
+                    buttons=buttons,
                 )
-                await self.runs.log_tool_call(
-                    run=run, tool_name="create_task", status="completed",
-                    args=task_signal.model_dump(mode="json"),
-                    result={"task_id": str(task.id)},
+            elif call.name == "read_tasks":
+                await self._apply_read_tasks_tool(
+                    user=user,
+                    run=run,
+                    call=call,
+                    results=results,
                 )
-                desc = f"Создана задача: «{task.title}»"
-                if task.reminder_at:
-                    desc += f", напоминание {fmt_local(task.reminder_at, user.timezone)}"
-                elif task.due_at:
-                    desc += f", срок {fmt_local(task.due_at, user.timezone)}"
-                results.append(desc)
-                buttons.append([
-                    Button(text="✓ Выполнено", callback_data=f"task_done:{task.id}"),
-                    Button(text="⏰ Отложить", callback_data=f"task_snooze:{task.id}:tomorrow"),
-                ])
-            elif task_signal.confidence >= TASK_CONFIRM_CONFIDENCE:
-                confirmation = await self.confirmations.create(
-                    user,
-                    action_type="create_task",
-                    action_payload=task_signal.model_dump(mode="json"),
-                    prompt=f"Создать задачу «{task_signal.title}»?",
+            elif call.name == "rename_task":
+                update = TaskUpdate.model_validate({
+                    "operation": "rename",
+                    **_args_with_call_defaults(call),
+                })
+                await self._apply_rename_task_tool(
+                    user=user,
+                    run=run,
+                    update=update,
+                    results=results,
+                    buttons=buttons,
                 )
-                await self.runs.log_tool_call(
-                    run=run, tool_name="create_task", status="requires_confirmation",
-                    args=task_signal.model_dump(mode="json"),
-                    requires_confirmation=True, confirmation_id=confirmation.id,
+            elif call.name == "complete_task":
+                await self._apply_complete_task_tool(user=user, run=run, call=call, results=results)
+            elif call.name == "snooze_task":
+                await self._apply_snooze_task_tool(user=user, run=run, call=call, results=results)
+            elif call.name == "store_memory":
+                candidate = MemoryCandidate.model_validate(_args_with_call_defaults(call))
+                await self._apply_store_memory_tool(user=user, run=run, candidate=candidate,
+                                                    source_message_id=source_message_id,
+                                                    results=results)
+            elif call.name in {
+                "plan_day",
+                "find_focus_slot",
+                "create_internal_calendar_block",
+                "create_external_calendar_event",
+            }:
+                request = _calendar_request_from_tool_call(call)
+                await self._apply_calendar_request(
+                    user=user, run=run, request=request, results=results, buttons=buttons
                 )
-                results.append(f"Предложена задача «{task_signal.title}» — ждет подтверждения")
-                buttons.append([
-                    Button(text=f"✓ Создать: {task_signal.title[:28]}",
-                           callback_data=f"confirm:{confirmation.id}"),
-                    Button(text="✗ Не надо", callback_data=f"reject:{confirmation.id}"),
-                ])
+            elif call.name == "create_automation":
+                automation = AutomationRequest.model_validate(_args_with_call_defaults(call))
+                await self._apply_create_automation_tool(user=user, run=run,
+                                                         automation=automation,
+                                                         results=results, buttons=buttons)
+            elif call.name == "email_triage":
+                request = EmailRequest.model_validate({"kind": "triage", **call.args})
+                if request.confidence >= 0.0:
+                    buttons.append([Button(text="📬 Разобрать почту", callback_data="run:email_triage")])
+            elif call.name == "news_digest":
+                request = NewsRequest.model_validate({
+                    "kind": "digest",
+                    **call.args,
+                    "confidence": call.confidence,
+                })
+                await self._apply_news_digest_tool(
+                    user=user,
+                    run=run,
+                    request=request,
+                    results=results,
+                )
 
-        # --- memories ---------------------------------------------------
-        for candidate in signals.memory_candidates:
-            explicit = "store_memory" in signals.intents
-            auto = (
-                (explicit and candidate.confidence >= MEMORY_EXPLICIT_CONFIDENCE)
-                or (candidate.kind in ("preference", "instruction")
-                    and candidate.confidence >= MEMORY_IMPLICIT_CONFIDENCE)
-            ) and not candidate.requires_confirmation
-            if explicit and candidate.confidence >= MEMORY_EXPLICIT_CONFIDENCE:
-                auto = True
-            if auto:
-                memory, created = await self.memory.store_candidate(
-                    user, candidate, source_message_id=source_message_id,
-                    source_agent_run_id=run.id,
-                )
-                await self.runs.log_tool_call(
-                    run=run, tool_name="store_memory", status="completed",
-                    args=candidate.model_dump(mode="json"),
-                    result={"memory_id": str(memory.id), "created": created},
-                )
-                results.append(
-                    "Запомнил: " + candidate.text if created
-                    else "Обновил существующую заметку в памяти"
-                )
-            elif candidate.confidence >= 0.6:
-                await self.runs.log_tool_call(
-                    run=run, tool_name="store_memory", status="skipped",
-                    args=candidate.model_dump(mode="json"),
-                    result={"reason": "memory_auto_only"},
-                )
+        return results, buttons
 
-        # --- calendar ---------------------------------------------------
-        for request in signals.calendar_requests:
-            await self._apply_calendar_request(
-                user=user, run=run, request=request, results=results, buttons=buttons
-            )
-
-        # --- automations -------------------------------------------------
-        for automation in signals.automation_requests:
-            if automation.confidence < 0.6 or not automation.cron_expression:
-                continue
-            confirmation = await self.confirmations.create(
-                user,
-                action_type="create_automation",
-                action_payload=automation.model_dump(mode="json"),
-                prompt=f"Включить автоматизацию «{automation.title}» ({automation.cron_expression})?",
+    async def _apply_create_task_tool(
+        self,
+        *,
+        user: User,
+        run,
+        task_signal: ExtractedTask,
+        source_message_id: uuid.UUID,
+        results: list[str],
+        buttons: list[list[Button]],
+    ) -> None:
+        if task_signal.confidence >= TASK_AUTO_CREATE_CONFIDENCE and not task_signal.requires_confirmation:
+            task = await self.tasks.create_task_from_signal(
+                user, task_signal, source_message_id=source_message_id, agent_run_id=run.id
             )
             await self.runs.log_tool_call(
-                run=run, tool_name="create_scheduled_task", status="requires_confirmation",
-                args=automation.model_dump(mode="json"),
+                run=run, tool_name="create_task", status="completed",
+                args=task_signal.model_dump(mode="json"),
+                result={"task_id": str(task.id)},
+            )
+            desc = f"Создана задача: «{task.title}»"
+            if task.reminder_at:
+                desc += f", напоминание {fmt_local(task.reminder_at, user.timezone)}"
+            elif task.due_at:
+                desc += f", срок {fmt_local(task.due_at, user.timezone)}"
+            results.append(desc)
+            buttons.append([
+                Button(text="✓ Выполнено", callback_data=f"task_done:{task.id}"),
+                Button(text="⏰ Отложить", callback_data=f"task_snooze:{task.id}:tomorrow"),
+            ])
+        elif task_signal.confidence >= TASK_CONFIRM_CONFIDENCE:
+            confirmation = await self.confirmations.create(
+                user,
+                action_type="create_task",
+                action_payload=task_signal.model_dump(mode="json"),
+                prompt=f"Создать задачу «{task_signal.title}»?",
+            )
+            await self.runs.log_tool_call(
+                run=run, tool_name="create_task", status="requires_confirmation",
+                args=task_signal.model_dump(mode="json"),
                 requires_confirmation=True, confirmation_id=confirmation.id,
             )
-            results.append(f"Автоматизация «{automation.title}» подготовлена — нужно подтверждение")
+            results.append(f"Предложена задача «{task_signal.title}» — ждет подтверждения")
             buttons.append([
-                Button(text="✓ Включить", callback_data=f"confirm:{confirmation.id}"),
+                Button(text=f"✓ Создать: {task_signal.title[:28]}",
+                       callback_data=f"confirm:{confirmation.id}"),
                 Button(text="✗ Не надо", callback_data=f"reject:{confirmation.id}"),
             ])
 
-        # --- email / news intents ----------------------------------------
-        if any(r.kind == "triage" for r in signals.email_requests):
-            buttons.append([Button(text="📬 Разобрать почту", callback_data="run:email_triage")])
-        if any(r.kind == "digest" for r in signals.news_requests):
-            buttons.append([Button(text="📰 Собрать дайджест", callback_data="run:news_digest")])
+    async def _apply_read_tasks_tool(
+        self,
+        *,
+        user: User,
+        run,
+        call: PlannedToolCall,
+        results: list[str],
+    ) -> None:
+        filter_ = str(call.args.get("filter") or "all")
+        if filter_ not in {"all", "today", "upcoming", "inbox", "done"}:
+            filter_ = "all"
+        limit = int(call.args.get("limit") or 10)
+        limit = max(1, min(limit, 20))
+        tasks = await self.tasks.list_tasks(user, filter_=filter_, limit=limit)
+        await self.runs.log_tool_call(
+            run=run,
+            tool_name="read_tasks",
+            status="completed",
+            args={"filter": filter_, "limit": limit},
+            result={"count": len(tasks)},
+        )
+        if not tasks:
+            results.append("Открытых задач нет." if filter_ != "done" else "Готовых задач нет.")
+            return
+        lines = ["Открытые задачи:" if filter_ != "done" else "Готовые задачи:"]
+        for index, task in enumerate(tasks, start=1):
+            meta: list[str] = [task.priority.value]
+            if task.project:
+                meta.append(task.project)
+            meta.extend(f"#{tag}" for tag in (task.tags or [])[:3])
+            lines.append(f"{index}. {task.title} — " + ", ".join(meta))
+        results.append("\n".join(lines))
 
-        return results, buttons
+    async def _apply_rename_task_tool(
+        self,
+        *,
+        user: User,
+        run,
+        update: TaskUpdate,
+        results: list[str],
+        buttons: list[list[Button]],
+    ) -> None:
+        if update.operation == "rename":
+            renamed = await self.tasks.rename_active_task_by_title(
+                user,
+                current_title=update.current_title,
+                new_title=update.new_title,
+                project=update.project,
+                tags=update.tags,
+                actor="agent",
+                agent_run_id=run.id,
+            )
+            result_payload = {
+                "status": renamed.status,
+                "task_id": str(renamed.task.id) if renamed.task else None,
+                "candidate_task_ids": [str(task.id) for task in renamed.candidates],
+            }
+            if renamed.status == "renamed":
+                await self.runs.log_tool_call(
+                    run=run,
+                    tool_name="rename_task",
+                    status="completed",
+                    args=update.model_dump(mode="json"),
+                    result=result_payload,
+                )
+                results.append(f"Готово: переименовал «{renamed.old_title}» → «{renamed.new_title}».")
+            elif renamed.status == "not_found":
+                await self.runs.log_tool_call(
+                    run=run,
+                    tool_name="rename_task",
+                    status="skipped",
+                    args=update.model_dump(mode="json"),
+                    result=result_payload,
+                )
+                results.append(f"Не нашёл активную задачу «{update.current_title}». Уточни название.")
+            else:
+                confirmation = await self.confirmations.create(
+                    user,
+                    action_type="rename_task_choice",
+                    action_payload={
+                        "current_title": update.current_title,
+                        "new_title": update.new_title,
+                        "project": update.project,
+                        "tags": update.tags,
+                        "candidate_task_ids": [str(task.id) for task in renamed.candidates],
+                        "agent_run_id": str(run.id),
+                    },
+                    prompt="Выбери задачу для переименования.",
+                )
+                await self.runs.log_tool_call(
+                    run=run,
+                    tool_name="rename_task",
+                    status="requires_confirmation",
+                    args=update.model_dump(mode="json"),
+                    result=result_payload,
+                    requires_confirmation=True,
+                    confirmation_id=confirmation.id,
+                )
+                results.append("Нашёл несколько похожих задач. Какую переименовать?")
+                for index, task in enumerate(renamed.candidates[:5]):
+                    buttons.append([
+                        Button(
+                            text=_rename_choice_button_text(task),
+                            callback_data=_rename_choice_callback(confirmation.id, index),
+                        )
+                    ])
+        else:
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name="rename_task",
+                status="skipped",
+                args=update.model_dump(mode="json"),
+                result={"reason": "rename_confirmation_not_supported"},
+            )
+
+    async def _apply_complete_task_tool(
+        self,
+        *,
+        user: User,
+        run,
+        call: PlannedToolCall,
+        results: list[str],
+    ) -> None:
+        query = _task_query_from_call(call)
+        candidates = await self.tasks.find_open_rename_candidates(
+            user,
+            query,
+            project=call.args.get("project"),
+            tags=call.args.get("tags") or [],
+        )
+        if len(candidates) == 1:
+            task = await self.tasks.complete_task(user, candidates[0], actor="agent")
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name="complete_task",
+                status="completed",
+                args=call.args,
+                result={"task_id": str(task.id)},
+            )
+            results.append(f"Готово: отметил «{task.title}» выполненной.")
+            return
+        await self.runs.log_tool_call(
+            run=run,
+            tool_name="complete_task",
+            status="skipped",
+            args=call.args,
+            result={"candidate_task_ids": [str(task.id) for task in candidates]},
+        )
+        results.append(
+            "Не нашёл открытую задачу. Уточни название."
+            if not candidates else
+            "Нашёл несколько похожих задач. Уточни, какую отметить выполненной."
+        )
+
+    async def _apply_snooze_task_tool(
+        self,
+        *,
+        user: User,
+        run,
+        call: PlannedToolCall,
+        results: list[str],
+    ) -> None:
+        query = _task_query_from_call(call)
+        candidates = await self.tasks.find_open_rename_candidates(
+            user,
+            query,
+            project=call.args.get("project"),
+            tags=call.args.get("tags") or [],
+        )
+        preset = str(call.args.get("preset") or "tomorrow")
+        if preset not in {"1h", "3h", "tomorrow", "next_week"}:
+            preset = "tomorrow"
+        if len(candidates) == 1:
+            task = await self.tasks.snooze_task(user, candidates[0], preset=preset, actor="agent")
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name="snooze_task",
+                status="completed",
+                args={**call.args, "preset": preset},
+                result={
+                    "task_id": str(task.id),
+                    "snoozed_until": task.snoozed_until.isoformat() if task.snoozed_until else None,
+                },
+            )
+            when = fmt_local(task.snoozed_until, user.timezone) if task.snoozed_until else "позже"
+            results.append(f"Готово: отложил «{task.title}» до {when}.")
+            return
+        await self.runs.log_tool_call(
+            run=run,
+            tool_name="snooze_task",
+            status="skipped",
+            args=call.args,
+            result={"candidate_task_ids": [str(task.id) for task in candidates]},
+        )
+        results.append(
+            "Не нашёл открытую задачу. Уточни название."
+            if not candidates else
+            "Нашёл несколько похожих задач. Уточни, какую отложить."
+        )
+
+    async def _apply_news_digest_tool(
+        self,
+        *,
+        user: User,
+        run,
+        request: NewsRequest,
+        results: list[str],
+    ) -> None:
+        from lumi.services.news import NewsService
+
+        service = NewsService(self.session, llm=self.llm)
+        topics = [topic for topic in await service.list_topics(user) if topic.enabled]
+        if not topics:
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name="news_digest",
+                status="skipped",
+                args=request.model_dump(mode="json"),
+                result={"reason": "no_topics"},
+            )
+            results.append("Новостных тем пока нет — добавь тему или RSS-источник в Mini App.")
+            return
+
+        digest_run = await self.runs.create(
+            user_id=user.id,
+            type_=AgentRunType.NEWS_DIGEST,
+            trigger="telegram_message",
+            conversation_id=run.conversation_id,
+            source_message_id=run.source_message_id,
+            input_summary=", ".join(request.topics)[:300] if request.topics else "news_digest",
+        )
+        digest_run_id = str(digest_run.id)
+        await self.session.commit()
+        job_id = await enqueue_job(
+            "run_news_digest",
+            str(user.id),
+            agent_run_id=digest_run_id,
+            trigger="telegram_message",
+            notify=True,
+        )
+        status = "completed" if job_id else "failed"
+        await self.runs.log_tool_call(
+            run=run,
+            tool_name="news_digest",
+            status=status,
+            args=request.model_dump(mode="json"),
+            result={"run_id": digest_run_id, "job_id": job_id},
+        )
+        if job_id:
+            results.append("Запустил сбор дайджеста — пришлю результат отдельным сообщением.")
+        else:
+            results.append("Очередь задач недоступна — дайджест сейчас не запустился.")
+
+    async def _apply_store_memory_tool(
+        self,
+        *,
+        user: User,
+        run,
+        candidate: MemoryCandidate,
+        source_message_id: uuid.UUID,
+        results: list[str],
+    ) -> None:
+        explicit = True
+        auto = (
+            (explicit and candidate.confidence >= MEMORY_EXPLICIT_CONFIDENCE)
+            or (candidate.kind in ("preference", "instruction")
+                and candidate.confidence >= MEMORY_IMPLICIT_CONFIDENCE)
+        ) and not candidate.requires_confirmation
+        if explicit and candidate.confidence >= MEMORY_EXPLICIT_CONFIDENCE:
+            auto = True
+        if auto:
+            memory, created = await self.memory.store_candidate(
+                user, candidate, source_message_id=source_message_id,
+                source_agent_run_id=run.id,
+            )
+            await self.runs.log_tool_call(
+                run=run, tool_name="store_memory", status="completed",
+                args=candidate.model_dump(mode="json"),
+                result={"memory_id": str(memory.id), "created": created},
+            )
+            results.append(
+                "Запомнил: " + candidate.text if created
+                else "Обновил существующую заметку в памяти"
+            )
+        elif candidate.confidence >= 0.6:
+            await self.runs.log_tool_call(
+                run=run, tool_name="store_memory", status="skipped",
+                args=candidate.model_dump(mode="json"),
+                result={"reason": "memory_auto_only"},
+            )
+
+    async def _apply_create_automation_tool(
+        self,
+        *,
+        user: User,
+        run,
+        automation: AutomationRequest,
+        results: list[str],
+        buttons: list[list[Button]],
+    ) -> None:
+        if automation.confidence < 0.6 or not automation.cron_expression:
+            return
+        confirmation = await self.confirmations.create(
+            user,
+            action_type="create_automation",
+            action_payload=automation.model_dump(mode="json"),
+            prompt=f"Включить автоматизацию «{automation.title}» ({automation.cron_expression})?",
+        )
+        await self.runs.log_tool_call(
+            run=run, tool_name="create_scheduled_task", status="requires_confirmation",
+            args=automation.model_dump(mode="json"),
+            requires_confirmation=True, confirmation_id=confirmation.id,
+        )
+        results.append(f"Автоматизация «{automation.title}» подготовлена — нужно подтверждение")
+        buttons.append([
+            Button(text="✓ Включить", callback_data=f"confirm:{confirmation.id}"),
+            Button(text="✗ Не надо", callback_data=f"reject:{confirmation.id}"),
+        ])
 
     async def _apply_calendar_request(
         self,
