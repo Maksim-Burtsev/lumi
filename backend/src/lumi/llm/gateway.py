@@ -170,6 +170,8 @@ class LLMGateway:
         user_id: uuid.UUID | None = None,
         agent_run_id: uuid.UUID | None = None,
         session: AsyncSession | None = None,
+        temperature: float = 0.0,
+        max_tokens: int = 4096,
     ) -> dict[str, Any]:
         started = time.monotonic()
         input_chars = sum(len(m.content) for m in messages) + len(system or "")
@@ -179,6 +181,8 @@ class LLMGateway:
                 system=system,
                 json_schema_hint=json_schema_hint,
                 request_kind=request_kind,
+                temperature=temperature,
+                max_tokens=max_tokens,
             )
         except LLMError as exc:
             await self._log_call(

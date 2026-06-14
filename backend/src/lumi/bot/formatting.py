@@ -2,9 +2,22 @@
 
 from __future__ import annotations
 
+import re
+
 from lumi.db.models import Task
 from lumi.utils.text import ru_plural
 from lumi.utils.time import fmt_local
+
+
+def telegram_plain_text(text: str) -> str:
+    """Best-effort cleanup when an LLM leaks Markdown into Telegram plain text."""
+    text = re.sub(r"```[a-zA-Z0-9_-]*\n?(.*?)```", r"\1", text, flags=re.DOTALL)
+    text = re.sub(r"`([^`\n]+)`", r"\1", text)
+    text = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", text)
+    text = re.sub(r"(\*\*|__)(.*?)\1", r"\2", text, flags=re.DOTALL)
+    text = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"\1", text)
+    text = re.sub(r"(?m)^\s*[-*]\s+", "• ", text)
+    return text.strip()
 
 
 def format_today(payload: dict, tz: str) -> str:

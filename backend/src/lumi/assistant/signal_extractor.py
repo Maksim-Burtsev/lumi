@@ -65,6 +65,13 @@ class SignalExtractor:
                         salvaged.tasks.append(ExtractedTask.model_validate(task_raw))
                     except Exception:  # noqa: BLE001
                         continue
+                for update_raw in raw.get("task_updates", []) or []:
+                    try:
+                        from lumi.assistant.schemas import TaskUpdate
+
+                        salvaged.task_updates.append(TaskUpdate.model_validate(update_raw))
+                    except Exception:  # noqa: BLE001
+                        continue
                 for mem_raw in raw.get("memory_candidates", []) or []:
                     try:
                         from lumi.assistant.schemas import MemoryCandidate

@@ -123,13 +123,21 @@ function postTelegramEvent(eventType: string, eventData: unknown = ''): boolean 
       window.TelegramWebviewProxy.postEvent(eventType, JSON.stringify(eventData));
       return true;
     }
+  } catch {
+    /* try the next bridge */
+  }
 
+  try {
     const external = window.external as { notify?: (payload: string) => void } | undefined;
     if (external && typeof external.notify === 'function') {
       external.notify(JSON.stringify({ eventType, eventData }));
       return true;
     }
+  } catch {
+    /* try the next bridge */
+  }
 
+  try {
     if (window.parent !== window) {
       window.parent.postMessage(JSON.stringify({ eventType, eventData }), '*');
       return true;
@@ -143,11 +151,16 @@ function postTelegramEvent(eventType: string, eventData: unknown = ''): boolean 
 
 function notifyReady(): void {
   const tg = getTelegramWebApp();
-  try {
-    if (tg) {
+  if (tg) {
+    try {
       tg.ready();
       return;
+    } catch {
+      /* fall back to lower-level bridges */
     }
+  }
+
+  try {
     if (hasTelegramLaunchParams() || hasTelegramBridge()) postTelegramEvent('web_app_ready');
   } catch {
     /* never crash on SDK quirks */
@@ -156,9 +169,12 @@ function notifyReady(): void {
 
 function scheduleReadyFallbacks(): void {
   if (typeof window === 'undefined') return;
-  if (!hasTelegramLaunchParams() && !hasTelegramBridge()) return;
+  window.setTimeout(notifyReady, 0);
+  window.setTimeout(notifyReady, 50);
   window.setTimeout(notifyReady, 250);
   window.setTimeout(notifyReady, 1000);
+  window.setTimeout(notifyReady, 2000);
+  window.setTimeout(notifyReady, 5000);
 }
 
 export function getInitData(): string {
@@ -255,7 +271,6 @@ function applyTheme(): void {
 
 export function setupTelegramTheme(): void {
   const tg = getTelegramWebApp();
-  notifyReady();
   scheduleReadyFallbacks();
 
   applyTheme();

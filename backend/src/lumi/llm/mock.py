@@ -28,6 +28,20 @@ def _extract_user_message(text: str) -> str:
     return text.strip()
 
 
+def _extract_tags(text: str) -> list[str]:
+    return [tag for tag in re.findall(r"#([\w-]+)", text, flags=re.UNICODE) if tag]
+
+
+def _extract_project(text: str) -> str | None:
+    without_quotes = re.sub(r"«.*?»", "", text)
+    explicit = re.search(r"\bв\s+проекте\s+([\w-]+)", without_quotes, flags=re.IGNORECASE)
+    if explicit:
+        return explicit.group(1)
+    if re.search(r"\bв\s+Lumi\b", without_quotes, flags=re.IGNORECASE):
+        return "Lumi"
+    return None
+
+
 class MockLLMProvider:
     name = "mock"
     model = "mock-1"
@@ -90,6 +104,8 @@ class MockLLMProvider:
         json_schema_hint: dict[str, Any] | None = None,
         request_kind: str,
         metadata: dict[str, Any] | None = None,
+        temperature: float = 0.0,
+        max_tokens: int = 4096,
     ) -> dict[str, Any]:
         response = await self.complete(
             messages=messages, system=system, request_kind=request_kind, metadata=metadata
@@ -100,6 +116,8 @@ class MockLLMProvider:
 
     def _respond(self, request_kind: str, messages: list[LLMMessage]) -> str:
         joined = "\n".join(m.content for m in messages)
+        if request_kind == "agent_planner":
+            return json.dumps(self._extract_signals(joined), ensure_ascii=False)
         if request_kind == "signal_extraction":
             return json.dumps(self._extract_signals(joined), ensure_ascii=False)
         if request_kind == "chat_turn":
@@ -177,6 +195,56 @@ class MockLLMProvider:
                     "requires_confirmation": False,
                 }
             ]
+        task_match = re.match(
+            r"\s*(?:добавь|создай|запиши)(?:\s+в\s+бэклог)?\s+задач[ау]\s+(.+?)\s*$",
+            message,
+            flags=re.IGNORECASE,
+        )
+        if task_match:
+            title = task_match.group(1).strip(" ,.")
+            title = title[:1].upper() + title[1:] if title else message
+            result["intents"] = ["create_task"]
+            result["tasks"] = [
+                {
+                    "title": title[:200],
+                    "description": None,
+                    "due_at_local": None,
+                    "reminder_at_local": None,
+                    "priority": "medium",
+                    "project": "Работа" if "lumi" in lowered else None,
+                    "tags": [],
+                    "confidence": 0.7,
+                    "requires_confirmation": True,
+                }
+            ]
+            result["should_answer_normally"] = False
+        rename_match = (
+            re.search(
+                r"задач[ау]\s+«(.+?)»\s+переименуй(?:те)?\s+в\s+«(.+?)»",
+                message,
+                flags=re.IGNORECASE,
+            )
+            or re.search(
+                r"переименуй(?:те)?\s+задач[ау]\s+«(.+?)»\s+в\s+«(.+?)»",
+                message,
+                flags=re.IGNORECASE,
+            )
+        )
+        if rename_match:
+            result["intents"] = ["update_task"]
+            result["tasks"] = []
+            result["task_updates"] = [
+                {
+                    "operation": "rename",
+                    "current_title": rename_match.group(1).strip(),
+                    "new_title": rename_match.group(2).strip(),
+                    "project": _extract_project(message),
+                    "tags": _extract_tags(message),
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                }
+            ]
+            result["should_answer_normally"] = False
         if "запомни" in lowered:
             memory_text = re.sub(r"запомни[:,]?\s*", "", message, flags=re.IGNORECASE).strip()
             result["intents"] = [*result["intents"], "store_memory"]

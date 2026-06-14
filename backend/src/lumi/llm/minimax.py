@@ -280,6 +280,8 @@ class MiniMaxProvider:
         json_schema_hint: dict[str, Any] | None = None,
         request_kind: str,
         metadata: dict[str, Any] | None = None,
+        temperature: float = 0.0,
+        max_tokens: int = 4096,
     ) -> dict[str, Any]:
         json_system = (system or "") + (
             "\n\nОтветь строго одним валидным JSON-объектом. Без markdown, без комментариев, без текста до или после."
@@ -292,8 +294,8 @@ class MiniMaxProvider:
             response = await self.complete(
                 messages=messages,
                 system=json_system,
-                temperature=0.0 if attempt == 0 else 0.1,
-                max_tokens=4096,
+                temperature=temperature if attempt == 0 else max(temperature, 0.1),
+                max_tokens=max_tokens,
                 request_kind=request_kind,
                 metadata=metadata,
                 force_json=True,

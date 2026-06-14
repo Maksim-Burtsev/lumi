@@ -43,6 +43,25 @@ async def test_create_complete_snooze(user):
         assert types == ["created", "snoozed", "completed"]
 
 
+async def test_snoozed_tasks_hidden_from_active_lists_but_searchable(user):
+    async with session_scope() as session:
+        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        service = TaskService(session)
+        snoozed = await service.create_task(u, title="Отложенная задача")
+        visible = await service.create_task(u, title="Видимая задача")
+        snoozed = await service.snooze_task(u, snoozed, preset="tomorrow")
+
+        assert snoozed.snoozed_until is not None
+        assert snoozed.reminder_at == snoozed.snoozed_until
+        assert [t.id for t in await service.list_active(u)] == [visible.id]
+        assert [t.id for t in await service.list_tasks(u, filter_="all")] == [visible.id]
+        summary = await service.count_summary(u)
+        assert summary["tasks_active"] == 1
+
+        candidates = await service.find_open_rename_candidates(u, "отложенная задача")
+        assert [task.id for task in candidates] == [snoozed.id]
+
+
 async def test_due_reminders_query_and_mark_sent(user):
     async with session_scope() as session:
         u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
@@ -83,3 +102,169 @@ async def test_list_filters(user):
         assert "Через неделю" in [t.title for t in upcoming]
         done_list = await service.list_tasks(u, filter_="done")
         assert [t.title for t in done_list] == ["Готово"]
+
+
+async def test_rename_active_task_by_title_returns_not_found_for_done_task(user):
+    async with session_scope() as session:
+        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        service = TaskService(session)
+        task = await service.create_task(u, title="Закрытая задача")
+        await service.complete_task(u, task)
+
+        result = await service.rename_active_task_by_title(
+            u,
+            current_title="Закрытая задача",
+            new_title="Новое название",
+            actor="agent",
+        )
+
+        assert result.status == "not_found"
+        assert result.task is None
+        assert task.title == "Закрытая задача"
+
+
+async def test_rename_active_task_by_title_updates_exact_match_and_audits(user):
+    async with session_scope() as session:
+        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        service = TaskService(session)
+        task = await service.create_task(u, title="Написать короткий сценарий теста accept/reject")
+        task_id = task.id
+
+        result = await service.rename_active_task_by_title(
+            u,
+            current_title="Написать короткий сценарий теста accept/reject",
+            new_title="Свой аналог session в Lumi интегрировать",
+            actor="agent",
+        )
+
+        assert result.status == "renamed"
+        assert result.task is not None
+        assert result.task.id == task_id
+        assert result.old_title == "Написать короткий сценарий теста accept/reject"
+        assert result.new_title == "Свой аналог session в Lumi интегрировать"
+
+    async with session_scope() as session:
+        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        task = await TaskService(session).get(u, task_id)
+        assert task.title == "Свой аналог session в Lumi интегрировать"
+
+        events = await session.execute(
+            select(TaskEvent).where(TaskEvent.task_id == task_id).order_by(TaskEvent.created_at)
+        )
+        created, updated = list(events.scalars())
+        assert created.event_type == "created"
+        assert updated.event_type == "updated"
+        assert updated.actor == "agent"
+        assert updated.before_json["title"] == "Написать короткий сценарий теста accept/reject"
+        assert updated.after_json["title"] == "Свой аналог session в Lumi интегрировать"
+
+
+async def test_rename_active_task_by_title_returns_ambiguous_for_duplicate_matches(user):
+    async with session_scope() as session:
+        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        service = TaskService(session)
+        first = await service.create_task(u, title="Одинаковая задача")
+        second = await service.create_task(u, title="  одинаковая   задача  ")
+
+        result = await service.rename_active_task_by_title(
+            u,
+            current_title="одинаковая задача",
+            new_title="Новое название",
+            actor="agent",
+        )
+
+        assert result.status == "ambiguous"
+        assert result.task is None
+        assert {first.title, second.title} == {"Одинаковая задача", "одинаковая   задача"}
+
+
+async def test_rename_active_task_by_title_updates_single_fuzzy_match(user):
+    async with session_scope() as session:
+        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        service = TaskService(session)
+        task = await service.create_task(u, title="Свой аналог session в Lumi интегрировать")
+        task_id = task.id
+        await service.create_task(u, title="Сделать real-time обновления в mini-app Lumi")
+
+        result = await service.rename_active_task_by_title(
+            u,
+            current_title="аналог сешн в lumi",
+            new_title="Интегрировать свой session в Lumi",
+            actor="agent",
+        )
+
+        assert result.status == "renamed"
+        assert result.task is not None
+        assert result.task.id == task_id
+        assert result.old_title == "Свой аналог session в Lumi интегрировать"
+
+
+async def test_rename_active_task_by_title_uses_project_and_tags_to_pick_match(user):
+    async with session_scope() as session:
+        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        service = TaskService(session)
+        await service.create_task(
+            u,
+            title="Написать короткий сценарий теста accept/reject",
+            project="Работа",
+            tags=["qa"],
+        )
+        expected = await service.create_task(
+            u,
+            title="Написать короткий сценарий теста accept/reject",
+            project="Lumi",
+            tags=["test"],
+        )
+
+        result = await service.rename_active_task_by_title(
+            u,
+            current_title="короткий сценарий теста",
+            new_title="Сценарий accept reject готов",
+            project="Lumi",
+            tags=["test"],
+            actor="agent",
+        )
+
+        assert result.status == "renamed"
+        assert result.task is not None
+        assert result.task.id == expected.id
+
+
+async def test_rename_active_task_by_title_returns_ambiguous_for_multiple_fuzzy_matches(user):
+    async with session_scope() as session:
+        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        service = TaskService(session)
+        first = await service.create_task(u, title="Написать сценарий теста accept reject")
+        second = await service.create_task(u, title="Написать сценарий теста approve reject")
+
+        result = await service.rename_active_task_by_title(
+            u,
+            current_title="написать сценарий теста",
+            new_title="Новый сценарий",
+            actor="agent",
+        )
+
+    assert result.status == "ambiguous"
+    assert result.task is None
+    assert {candidate.id for candidate in result.candidates} == {first.id, second.id}
+
+
+async def test_rename_open_task_by_id_renames_only_selected_candidate(user):
+    async with session_scope() as session:
+        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        service = TaskService(session)
+        first = await service.create_task(u, title="Написать сценарий теста accept reject")
+        second = await service.create_task(u, title="Написать сценарий теста approve reject")
+
+        result = await service.rename_open_task_by_id(
+            u,
+            second.id,
+            new_title="Новый сценарий",
+            actor="user",
+        )
+
+        assert result.status == "renamed"
+        assert result.task is not None
+        assert result.task.id == second.id
+        assert first.title == "Написать сценарий теста accept reject"
+        assert second.title == "Новый сценарий"
