@@ -1,5 +1,5 @@
 .PHONY: setup up up-detached down logs migrate revision seed test lint smoke \
-	frontend-install frontend-build frontend-dev dev-auth-up dev-auth-down tunnel \
+	frontend-install frontend-build frontend-dev miniapp-local-up dev-auth-up dev-auth-down tunnel \
 	google-auth-local reset-local-db help
 
 help:
@@ -7,6 +7,7 @@ help:
 	@echo ""
 	@echo "  make setup             copy .env.example -> .env, create data dirs"
 	@echo "  make frontend-build    build the Mini App (frontend/dist)"
+	@echo "  make miniapp-local-up  build, tunnel, sync Telegram menu, verify Mini App"
 	@echo "  make dev-auth-up       local Mini App at http://localhost:8001/app/"
 	@echo "  make tunnel            HTTPS tunnel to api:8000 for Telegram Mini App"
 	@echo "  make up                docker compose up --build (foreground)"
@@ -67,6 +68,9 @@ frontend-build:
 
 frontend-dev:
 	cd frontend && npm run dev
+
+miniapp-local-up:
+	python3 scripts/miniapp_local_up.py
 
 dev-auth-up:
 	@if [ ! -f .env ]; then echo "Missing .env. Run: make setup"; exit 1; fi

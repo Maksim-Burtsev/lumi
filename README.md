@@ -81,7 +81,7 @@ Backend отдает собранный `frontend/dist` на `/app`. После 
 
 ```bash
 make frontend-build
-docker compose restart api
+docker compose up -d --force-recreate api
 ```
 
 Проверка в обычном браузере без Telegram `initData`:
@@ -92,7 +92,15 @@ make dev-auth-up
 open http://localhost:8001/app/
 ```
 
-Проверка именно в Telegram требует HTTPS-туннель:
+Самый быстрый путь поднять Mini App для Telegram:
+
+```bash
+make miniapp-local-up
+```
+
+Команда соберет фронтенд, поднимет Docker, создаст fresh `cloudflared` tunnel в `tmux`,
+запишет `APP_PUBLIC_URL`, пересоздаст `api/bot` и проверит default/per-chat Telegram menu.
+Ручной вариант:
 
 ```bash
 make tunnel
@@ -108,13 +116,13 @@ FRONTEND_PUBLIC_PATH=/app/
 Потом синхронизируй API и кнопку Mini App:
 
 ```bash
-docker compose restart api bot
+docker compose up -d --force-recreate api bot
 curl "$APP_PUBLIC_URL/health"
 ```
 
 Открой `/app` у бота или кнопку меню. Если Telegram показывает пустой экран с роботом,
-закрой старое окно Mini App и открой свежую кнопку: Telegram WebView может держать старый
-туннель.
+проверь не только default menu, но и chat-specific menu: Telegram может держать старую
+кнопку для конкретного чата.
 
 ### Яндекс.Календарь (опционально)
 
