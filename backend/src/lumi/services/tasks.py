@@ -395,7 +395,13 @@ class TaskService:
     # --- mutations -----------------------------------------------------
 
     async def update_task(
-        self, user: User, task: Task, updates: dict[str, Any], *, actor: str = "user"
+        self,
+        user: User,
+        task: Task,
+        updates: dict[str, Any],
+        *,
+        actor: str = "user",
+        agent_run_id: uuid.UUID | None = None,
     ) -> Task:
         before = _task_snapshot(task)
         allowed = {"title", "description", "priority", "project", "tags",
@@ -408,8 +414,14 @@ class TaskService:
             if key == "status" and value is not None:
                 value = TaskStatus(value)
             setattr(task, key, value)
-        await self._record_event(task, "updated", actor=actor, before=before,
-                                 after=_task_snapshot(task))
+        await self._record_event(
+            task,
+            "updated",
+            actor=actor,
+            before=before,
+            after=_task_snapshot(task),
+            agent_run_id=agent_run_id,
+        )
         return task
 
     async def complete_task(self, user: User, task: Task, *, actor: str = "user") -> Task:

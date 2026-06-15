@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from lumi.assistant.media import MediaCandidate
 from lumi.assistant.prompts import AGENT_PLANNER_SYSTEM
@@ -25,6 +26,7 @@ log = get_logger(__name__)
 class AgentPlanner:
     def __init__(self, llm: LLMGateway | None = None) -> None:
         self.llm = llm or LLMGateway()
+        self.last_trace: dict[str, Any] = {}
 
     async def plan(
         self,
@@ -85,18 +87,61 @@ class AgentPlanner:
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("agent planner LLM call failed", fields={"error": str(exc)})
+            self.last_trace = _planner_trace(
+                raw=None,
+                plan=AgentPlan.empty(),
+                validation_status="llm_error",
+                validation_error=str(exc),
+                media_context=media_context,
+                available_media=available_media,
+            )
             return AgentPlan.empty()
 
         try:
             if _looks_like_legacy_signals(raw):
-                return _signals_to_plan(ExtractedSignals.model_validate(raw))
-            return AgentPlan.model_validate(raw)
-        except Exception:
-            try:
-                return _signals_to_plan(ExtractedSignals.model_validate(raw))
-            except Exception as exc:  # noqa: BLE001
-                log.warning("agent planner validation failed", fields={"error": str(exc)[:300]})
-                return AgentPlan.empty()
+                plan = _signals_to_plan(ExtractedSignals.model_validate(raw))
+                self.last_trace = _planner_trace(
+                    raw=raw,
+                    plan=plan,
+                    validation_status="legacy_validated",
+                    media_context=media_context,
+                    available_media=available_media,
+                )
+                return plan
+            plan = AgentPlan.model_validate(raw)
+            self.last_trace = _planner_trace(
+                raw=raw,
+                plan=plan,
+                validation_status="validated",
+                media_context=media_context,
+                available_media=available_media,
+            )
+            return plan
+        except Exception as plan_exc:
+            if _looks_like_legacy_signals(raw):
+                try:
+                    plan = _signals_to_plan(ExtractedSignals.model_validate(raw))
+                    self.last_trace = _planner_trace(
+                        raw=raw,
+                        plan=plan,
+                        validation_status="legacy_validated_after_error",
+                        validation_error=str(plan_exc),
+                        media_context=media_context,
+                        available_media=available_media,
+                    )
+                    return plan
+                except Exception as exc:  # noqa: BLE001
+                    plan_exc = exc
+            log.warning("agent planner validation failed", fields={"error": str(plan_exc)[:300]})
+            self.last_trace = _planner_trace(
+                raw=raw,
+                plan=AgentPlan.empty(),
+                validation_status="validation_error",
+                validation_error=str(plan_exc),
+                media_context=media_context,
+                available_media=available_media,
+            )
+            return AgentPlan.empty()
 
 
 def _looks_like_legacy_signals(raw: object) -> bool:
@@ -111,6 +156,53 @@ def _looks_like_legacy_signals(raw: object) -> bool:
             "news_requests",
         )
     )
+
+
+def _short_text(value: str, *, limit: int = 500) -> str:
+    value = " ".join(value.split()).strip()
+    return value[:limit]
+
+
+def _sanitize_raw_plan(value: object, *, depth: int = 0) -> object:
+    if depth >= 5:
+        return "..."
+    if isinstance(value, dict):
+        sanitized: dict[str, object] = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= 40:
+                sanitized["..."] = "truncated"
+                break
+            sanitized[str(key)[:80]] = _sanitize_raw_plan(item, depth=depth + 1)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_raw_plan(item, depth=depth + 1) for item in value[:20]]
+    if isinstance(value, str):
+        return _short_text(value, limit=1000)
+    if isinstance(value, int | float | bool) or value is None:
+        return value
+    return _short_text(str(value), limit=500)
+
+
+def _planner_trace(
+    *,
+    raw: object,
+    plan: AgentPlan,
+    validation_status: str,
+    media_context: MediaUnderstanding | None,
+    available_media: list[MediaCandidate] | None,
+    validation_error: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "has_media_context": media_context is not None,
+        "available_media_count": len(available_media or []),
+        "validation_status": validation_status,
+        "validation_error": _short_text(validation_error, limit=800) if validation_error else None,
+        "mode": plan.mode,
+        "tool_names": [call.name for call in plan.tool_calls],
+        "tool_count": len(plan.tool_calls),
+        "final_answer_present": bool(plan.final_answer),
+        "raw_plan_sanitized": _sanitize_raw_plan(raw),
+    }
 
 
 def _signals_to_plan(signals: ExtractedSignals) -> AgentPlan:

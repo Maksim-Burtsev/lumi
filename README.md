@@ -170,6 +170,7 @@ make reset-local-db  # снести volumes и начать заново
 - [docs/context-management.md](docs/context-management.md) — контекст, память, compaction
 - [docs/connectors.md](docs/connectors.md) — Google, RSS, как добавить Outlook
 - [docs/runbook.md](docs/runbook.md) — операции, отладка, типовые проблемы
+- [docs/agent-qa.md](docs/agent-qa.md) — самостоятельная QA-проверка агентом через Telegram Web, Mini App, БД и логи
 - [docs/security.md](docs/security.md) — модель угроз и контроли
 - [docs/api-contract.md](docs/api-contract.md) — контракт API Mini App
 

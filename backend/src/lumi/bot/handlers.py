@@ -29,6 +29,7 @@ from lumi.logging import get_logger, telegram_update_id_var
 from lumi.services.confirmation_executor import ConfirmationExecutor
 from lumi.services.confirmations import ConfirmationService
 from lumi.services.runs import RunService
+from lumi.services.task_update_replies import format_task_update_reply
 from lumi.services.tasks import TaskService
 from lumi.services.today import TodayService
 from lumi.services.users import UserService
@@ -657,6 +658,85 @@ async def on_rename_pick(callback: CallbackQuery) -> None:
             text = "Эта задача уже закрыта или удалена — переименовывать нечего."
 
     await callback.answer("Готово" if result.status == "renamed" else "Неактуально")
+    if callback.message:
+        await callback.message.answer(text)
+
+
+@router.callback_query(F.data.startswith("update_pick:"))
+async def on_update_pick(callback: CallbackQuery) -> None:
+    if not await _check_allowed(callback):
+        await callback.answer()
+        return
+    _, _, rest = (callback.data or "").partition(":")
+    token, _, index_raw = rest.partition(":")
+    try:
+        index = int(index_raw)
+    except ValueError:
+        await callback.answer("Неизвестное действие")
+        return
+
+    async with session_scope() as session:
+        users = UserService(session)
+        user = await users.ensure_user(callback.from_user.id)
+        confirmations = ConfirmationService(session)
+        pending = await confirmations.list_pending(user, limit=100)
+        matches = [
+            confirmation for confirmation in pending
+            if confirmation.action_type == "update_task_choice"
+            and confirmation.id.hex.startswith(token)
+        ]
+        if len(matches) != 1:
+            await callback.answer("Уже неактуально")
+            return
+        confirmation = matches[0]
+        payload = confirmation.action_payload
+        candidate_ids = list(payload.get("candidate_task_ids") or [])
+        updates = payload.get("updates")
+        if index < 0 or index >= len(candidate_ids) or not isinstance(updates, dict) or not updates:
+            await callback.answer("Неизвестное действие")
+            return
+        try:
+            task_id = uuid.UUID(candidate_ids[index])
+        except ValueError:
+            await callback.answer("Неизвестное действие")
+            return
+        agent_run_id = None
+        if payload.get("agent_run_id"):
+            try:
+                agent_run_id = uuid.UUID(str(payload["agent_run_id"]))
+            except ValueError:
+                agent_run_id = None
+
+        tasks = TaskService(session)
+        task = await tasks.get(user, task_id)
+        if task is None:
+            await callback.answer("Задача не найдена")
+            return
+        task = await tasks.update_task(
+            user,
+            task,
+            updates,
+            actor="user",
+            agent_run_id=agent_run_id,
+        )
+        await confirmations.decide(user, confirmation, accept=True)
+        if agent_run_id:
+            run = await RunService(session).get(agent_run_id, user.id)
+            if run is not None:
+                await RunService(session).log_tool_call(
+                    run=run,
+                    tool_name="update_task",
+                    status="completed",
+                    args=payload,
+                    result={"task_id": str(task.id), "updated_fields": sorted(updates)},
+                )
+        text = format_task_update_reply(
+            task,
+            updates,
+            language=str(payload.get("language") or ""),
+        )
+
+    await callback.answer("Готово")
     if callback.message:
         await callback.message.answer(text)
 
