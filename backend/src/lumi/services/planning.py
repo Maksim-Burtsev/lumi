@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from lumi.assistant.prompts import DAILY_PLANNING_SYSTEM
 from lumi.assistant.schemas import PlanResult
+from lumi.config import get_settings
 from lumi.db.models import (
     CalendarEventStatus,
     CalendarSource,
@@ -130,13 +131,42 @@ class CalendarSyncService:
         self.session = session
         self.calendar = CalendarService(session)
 
-    async def sync_google_calendar(self, user: User, *, days_ahead: int = 14) -> int:
+    @staticmethod
+    def _sync_window(
+        *,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        days_ahead: int | None = None,
+        days_back: int | None = None,
+    ) -> tuple[datetime, datetime]:
+        settings = get_settings()
+        start = start_at or (
+            utc_now() - timedelta(days=days_back if days_back is not None else settings.calendar_sync_days_back)
+        )
+        end = end_at or (
+            utc_now() + timedelta(days=days_ahead if days_ahead is not None else settings.calendar_sync_days_ahead)
+        )
+        return start, end
+
+    async def sync_google_calendar(
+        self,
+        user: User,
+        *,
+        days_ahead: int | None = None,
+        days_back: int | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+    ) -> int:
         """Pull upcoming Google events into calendar_events. Raises GoogleNotConnectedError."""
         from lumi.connectors.google.calendar import GoogleCalendarConnector
 
         connector = GoogleCalendarConnector()
-        start = utc_now() - timedelta(days=1)
-        end = utc_now() + timedelta(days=days_ahead)
+        start, end = self._sync_window(
+            start_at=start_at,
+            end_at=end_at,
+            days_ahead=days_ahead,
+            days_back=days_back,
+        )
         dtos = await connector.list_events(start=start, end=end)
         synced = 0
         seen_by_calendar: dict[str, set[str]] = defaultdict(set)
@@ -192,7 +222,15 @@ class CalendarSyncService:
             await self._ensure_google_watch(user, connector_row)
         return synced + cancelled
 
-    async def sync_yandex_calendar(self, user: User, *, days_ahead: int = 14) -> int:
+    async def sync_yandex_calendar(
+        self,
+        user: User,
+        *,
+        days_ahead: int | None = None,
+        days_back: int | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+    ) -> int:
         """Pull upcoming Yandex (CalDAV) events. Raises YandexNotConnectedError."""
         from lumi.connectors.yandex.caldav_client import (
             get_yandex_connector_row,
@@ -200,8 +238,12 @@ class CalendarSyncService:
         )
 
         client = await load_yandex_client(self.session, user)
-        start = utc_now() - timedelta(days=1)
-        end = utc_now() + timedelta(days=days_ahead)
+        start, end = self._sync_window(
+            start_at=start_at,
+            end_at=end_at,
+            days_ahead=days_ahead,
+            days_back=days_back,
+        )
         dtos = await client.list_events(start=start, end=end)
         synced = 0
         seen_by_calendar: dict[str, set[str]] = defaultdict(set)
@@ -252,7 +294,15 @@ class CalendarSyncService:
             connector.last_error = None
         return synced + cancelled
 
-    async def sync_all_calendars(self, user: User, *, days_ahead: int = 14) -> dict[str, int | str]:
+    async def sync_all_calendars(
+        self,
+        user: User,
+        *,
+        days_ahead: int | None = None,
+        days_back: int | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+    ) -> dict[str, int | str]:
         """Sync every configured external calendar. Raises only if NONE is configured."""
         from lumi.connectors.google.auth import GoogleNotConnectedError, token_file_exists
         from lumi.connectors.yandex.caldav_client import (
@@ -274,12 +324,24 @@ class CalendarSyncService:
 
         if google_configured:
             try:
-                results["google"] = await self.sync_google_calendar(user, days_ahead=days_ahead)
+                results["google"] = await self.sync_google_calendar(
+                    user,
+                    days_ahead=days_ahead,
+                    days_back=days_back,
+                    start_at=start_at,
+                    end_at=end_at,
+                )
             except GoogleNotConnectedError as exc:
                 results["google"] = f"error: {exc}"
         if yandex_configured:
             try:
-                results["yandex"] = await self.sync_yandex_calendar(user, days_ahead=days_ahead)
+                results["yandex"] = await self.sync_yandex_calendar(
+                    user,
+                    days_ahead=days_ahead,
+                    days_back=days_back,
+                    start_at=start_at,
+                    end_at=end_at,
+                )
             except YandexNotConnectedError as exc:
                 results["yandex"] = f"error: {exc}"
                 if yandex_row is not None:

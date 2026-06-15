@@ -57,9 +57,10 @@ ignore → важность 1–5, summary, suggested_action, task_candidate →
 1. Создай пароль приложения: id.yandex.ru → Безопасность → Пароли приложений → «Календарь CalDAV».
 2. Введи логин Яндекса и этот пароль в форму — Lumi проверит доступ (листинг календарей)
    и сохранит креды **зашифрованными Fernet** в таблице `connectors`.
-3. Синк каждые 14 дней вперёд входит в общий `calendar_sync` (вместе с Google, если он
-   тоже подключен): события появляются в `calendar_events (source=yandex)` и учитываются
-   в свободных слотах и плане дня.
+3. Регулярный sync берёт окно `CALENDAR_SYNC_DAYS_BACK` / `CALENDAR_SYNC_DAYS_AHEAD`
+   (по умолчанию 1 день назад и 90 дней вперёд) в общем `calendar_sync` вместе с Google,
+   если он тоже подключен. Agent tool `read_calendar_events` дополнительно делает
+   on-demand sync точного запрошенного окна перед чтением из `calendar_events`.
 
 Только чтение: записи в Яндекс.Календарь нет вообще (даже с подтверждением).
 Реализация: `connectors/yandex/caldav_client.py` (библиотека caldav, развёрнутые

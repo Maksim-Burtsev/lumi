@@ -12,7 +12,7 @@ from lumi.db.models import PendingConfirmation, TaskStatus, User
 from lumi.logging import get_logger
 from lumi.services.automations import AutomationService
 from lumi.services.calendar import CalendarService
-from lumi.services.task_update_replies import format_task_update_reply
+from lumi.services.task_update_replies import format_task_bulk_update_reply, format_task_update_reply
 from lumi.services.tasks import TaskService
 from lumi.utils.time import fmt_local, local_to_utc
 
@@ -80,6 +80,55 @@ class ConfirmationExecutor:
 
             if action == "update_task_choice":
                 return "Выбери задачу кнопкой в Telegram."
+
+            if action == "bulk_update_tasks":
+                raw_ids = payload.get("candidate_task_ids")
+                if not isinstance(raw_ids, list) or not raw_ids:
+                    return "Не нашёл подходящих задач. Уточни фильтр."
+                tasks = []
+                for raw_id in raw_ids[:100]:
+                    try:
+                        task_id = uuid.UUID(str(raw_id))
+                    except ValueError:
+                        continue
+                    task = await self.tasks.get(user, task_id)
+                    if task is not None and task.status != TaskStatus.DONE:
+                        tasks.append(task)
+                if not tasks:
+                    return "Эти задачи уже закрыты или удалены — обновлять нечего."
+                updates = payload.get("updates")
+                if not isinstance(updates, dict):
+                    updates = {}
+                tags_add = payload.get("tags_add")
+                tags_remove = payload.get("tags_remove")
+                if not isinstance(tags_add, list):
+                    tags_add = None
+                if not isinstance(tags_remove, list):
+                    tags_remove = None
+                if not updates and not tags_add and not tags_remove:
+                    return "Не понял, что изменить в задачах. Уточни изменение."
+                agent_run_id = None
+                if payload.get("agent_run_id"):
+                    try:
+                        agent_run_id = uuid.UUID(str(payload["agent_run_id"]))
+                    except ValueError:
+                        agent_run_id = None
+                updated = await self.tasks.bulk_update_tasks(
+                    user,
+                    tasks,
+                    updates,
+                    tags_add=tags_add,
+                    tags_remove=tags_remove,
+                    actor="user",
+                    agent_run_id=agent_run_id,
+                )
+                return format_task_bulk_update_reply(
+                    len(updated),
+                    updates,
+                    tags_add=tags_add,
+                    tags_remove=tags_remove,
+                    language=str(payload.get("language") or ""),
+                )
 
             if action == "create_automation":
                 request = AutomationRequest.model_validate(payload)

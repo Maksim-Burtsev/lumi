@@ -92,6 +92,8 @@ class Settings(BaseSettings):
             "https://www.googleapis.com/auth/calendar.events",
         ]
     )
+    calendar_sync_days_ahead: int = 90
+    calendar_sync_days_back: int = 1
     store_email_bodies: bool = False
 
     # --- News ---

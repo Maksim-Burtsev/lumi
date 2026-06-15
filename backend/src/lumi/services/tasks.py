@@ -71,6 +71,37 @@ def _normalized_tags(tags: list[str] | None) -> set[str]:
     }
 
 
+def _dedupe_tags(tags: list[str] | None) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for tag in tags or []:
+        text = str(tag).strip().lstrip("#")
+        normalized = normalize_for_match(text)
+        if text and normalized and normalized not in seen:
+            cleaned.append(text[:50])
+            seen.add(normalized)
+    return cleaned
+
+
+def _bulk_query_matches(task: Task, wanted: str) -> bool:
+    if not wanted:
+        return True
+    fields = [
+        normalize_for_match(task.title),
+        normalize_for_match(task.description or ""),
+        normalize_for_match(task.project or ""),
+        " ".join(sorted(_normalized_tags(task.tags))),
+    ]
+    for value in fields:
+        if not value:
+            continue
+        if wanted in value or value in wanted:
+            return True
+        if keyword_overlap(wanted, value) >= 0.5:
+            return True
+    return False
+
+
 def _not_snoozed(now: datetime):
     return or_(Task.snoozed_until.is_(None), Task.snoozed_until <= now)
 
@@ -349,6 +380,48 @@ class TaskService:
         )
         return list(result.scalars())
 
+    async def find_bulk_update_candidates(
+        self,
+        user: User,
+        *,
+        task_query: str | None = None,
+        from_project: str | None = None,
+        from_tags: list[str] | None = None,
+        status: Literal["open", "all"] = "open",
+        limit: int = 50,
+    ) -> list[Task]:
+        fetch_limit = max(200, min(max(limit, 1) * 5, 1000))
+        stmt = select(Task).where(Task.user_id == user.id)
+        if status == "open":
+            stmt = stmt.where(Task.status.in_([TaskStatus.ACTIVE, TaskStatus.INBOX]))
+        stmt = stmt.order_by(
+            Task.due_at.asc().nulls_last(),
+            Task.priority.desc(),
+            Task.created_at.desc(),
+        )
+        result = await self.session.execute(stmt.limit(fetch_limit))
+        tasks = list(result.scalars())
+
+        wanted_project = normalize_for_match(from_project or "")
+        if wanted_project:
+            tasks = [
+                task for task in tasks
+                if normalize_for_match(task.project or "") == wanted_project
+            ]
+
+        wanted_tags = _normalized_tags(from_tags)
+        if wanted_tags:
+            tasks = [
+                task for task in tasks
+                if wanted_tags.issubset(_normalized_tags(task.tags))
+            ]
+
+        wanted_query = normalize_for_match(task_query or "")
+        if wanted_query:
+            tasks = [task for task in tasks if _bulk_query_matches(task, wanted_query)]
+
+        return tasks[:max(1, min(limit, 100))]
+
     async def _list_open_for_rename(self, user: User, limit: int = 200) -> list[Task]:
         result = await self.session.execute(
             select(Task)
@@ -423,6 +496,67 @@ class TaskService:
             agent_run_id=agent_run_id,
         )
         return task
+
+    async def update_task_with_tag_ops(
+        self,
+        user: User,
+        task: Task,
+        updates: dict[str, Any],
+        *,
+        tags_add: list[str] | None = None,
+        tags_remove: list[str] | None = None,
+        actor: str = "user",
+        agent_run_id: uuid.UUID | None = None,
+    ) -> Task:
+        effective_updates = dict(updates)
+        if tags_add or tags_remove:
+            current_tags = _dedupe_tags(
+                effective_updates["tags"] if "tags" in effective_updates else task.tags
+            )
+            remove = _normalized_tags(tags_remove)
+            if remove:
+                current_tags = [
+                    tag for tag in current_tags
+                    if normalize_for_match(tag) not in remove
+                ]
+            existing = _normalized_tags(current_tags)
+            for tag in _dedupe_tags(tags_add):
+                normalized = normalize_for_match(tag)
+                if normalized and normalized not in existing:
+                    current_tags.append(tag)
+                    existing.add(normalized)
+            effective_updates["tags"] = current_tags
+        return await self.update_task(
+            user,
+            task,
+            effective_updates,
+            actor=actor,
+            agent_run_id=agent_run_id,
+        )
+
+    async def bulk_update_tasks(
+        self,
+        user: User,
+        tasks: list[Task],
+        updates: dict[str, Any],
+        *,
+        tags_add: list[str] | None = None,
+        tags_remove: list[str] | None = None,
+        actor: str = "user",
+        agent_run_id: uuid.UUID | None = None,
+    ) -> list[Task]:
+        updated: list[Task] = []
+        for task in tasks:
+            updated.append(await self.update_task_with_tag_ops(
+                user,
+                task,
+                updates,
+                tags_add=tags_add,
+                tags_remove=tags_remove,
+                actor=actor,
+                agent_run_id=agent_run_id,
+            ))
+        return updated
 
     async def complete_task(self, user: User, task: Task, *, actor: str = "user") -> Task:
         before = _task_snapshot(task)

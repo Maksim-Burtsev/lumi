@@ -268,3 +268,60 @@ async def test_rename_open_task_by_id_renames_only_selected_candidate(user):
         assert result.task.id == second.id
         assert first.title == "Написать сценарий теста accept reject"
         assert second.title == "Новый сценарий"
+
+
+async def test_bulk_update_candidates_and_tag_operations(user):
+    async with session_scope() as session:
+        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        service = TaskService(session)
+        first = await service.create_task(
+            u,
+            title="Решить вопрос с мониторингом в Lumi",
+            project="Работа",
+            tags=["lumi", "old"],
+        )
+        second = await service.create_task(
+            u,
+            title="Поддержать несколько фото к сообщению",
+            project="Работа",
+            tags=["lumi", "feature"],
+        )
+        unrelated = await service.create_task(
+            u,
+            title="Купить капсулы для стирки",
+            project="Работа",
+            tags=["покупки"],
+        )
+        done = await service.create_task(
+            u,
+            title="Lumi закрытая задача",
+            project="Работа",
+            tags=["lumi"],
+        )
+        await service.complete_task(u, done)
+
+        candidates = await service.find_bulk_update_candidates(
+            u,
+            task_query="Lumi",
+            from_project="Работа",
+            status="open",
+        )
+        assert {task.id for task in candidates} == {first.id, second.id}
+
+        updated = await service.bulk_update_tasks(
+            u,
+            candidates,
+            {"project": None},
+            tags_add=["feature", "qa"],
+            tags_remove=["old"],
+            actor="agent",
+        )
+
+        assert {task.id for task in updated} == {first.id, second.id}
+        assert first.project is None
+        assert second.project is None
+        assert first.tags == ["lumi", "feature", "qa"]
+        assert second.tags == ["lumi", "feature", "qa"]
+        assert unrelated.project == "Работа"
+        assert unrelated.tags == ["покупки"]
+        assert done.project == "Работа"

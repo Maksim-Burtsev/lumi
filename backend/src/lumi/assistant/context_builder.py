@@ -106,6 +106,7 @@ class PlannerContext:
             "Use task_id or recency_hint for short follow-ups that refer to a recent "
             "backend task action.",
             "For project/metadata changes to tasks use update_task, not rename_task.",
+            "For multi-task/filter/all matching task changes use bulk_update_tasks.",
         ]
         lines.append("recent_task_refs:")
         if self.recent_task_refs:

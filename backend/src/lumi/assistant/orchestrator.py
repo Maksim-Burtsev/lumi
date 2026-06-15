@@ -28,6 +28,8 @@ from lumi.assistant.planner import AgentPlanner
 from lumi.assistant.schemas import (
     AgentPlan,
     AutomationRequest,
+    BulkTaskPatchRequest,
+    CalendarEventsRequest,
     CalendarRequest,
     EmailRequest,
     ExtractedTask,
@@ -52,9 +54,10 @@ from lumi.llm.gateway import LLMGateway
 from lumi.logging import agent_run_id_var, get_logger
 from lumi.services.calendar import CalendarService
 from lumi.services.confirmations import ConfirmationService
-from lumi.services.planning import PlanningService
+from lumi.services.planning import CalendarSyncService, PlanningService
 from lumi.services.runs import RunService
 from lumi.services.task_update_replies import (
+    format_task_bulk_update_reply,
     format_task_update_ambiguous_reply,
     format_task_update_choice_prompt,
     format_task_update_confirmation_prompt,
@@ -84,6 +87,7 @@ MEDIA_REQUIRED_REPLY = "Пришли картинку или ответь на �
 IMAGE_SOURCED_CONFIRM_TOOLS = {
     "create_task",
     "update_task",
+    "bulk_update_tasks",
     "rename_task",
     "complete_task",
     "snooze_task",
@@ -116,6 +120,16 @@ def _rename_choice_button_text(task: Task) -> str:
         parts.append(task.project)
     parts.extend(f"#{tag.lstrip('#')}" for tag in (task.tags or []) if tag)
     return " · ".join(parts)
+
+
+def _ru_task_plural(count: int) -> str:
+    if 10 < count % 100 < 20:
+        return "задач"
+    if count % 10 == 1:
+        return "задачу"
+    if count % 10 in {2, 3, 4}:
+        return "задачи"
+    return "задач"
 
 
 def _rename_choice_callback(confirmation_id: uuid.UUID, index: int) -> str:
@@ -1045,6 +1059,17 @@ class AssistantOrchestrator:
                     results=results,
                     buttons=buttons,
                 )
+            elif call.name == "bulk_update_tasks":
+                patch = BulkTaskPatchRequest.model_validate(_args_with_call_defaults(call))
+                await self._apply_bulk_update_tasks_tool(
+                    user=user,
+                    run=run,
+                    call=call,
+                    patch=patch,
+                    language=plan.language,
+                    results=results,
+                    buttons=buttons,
+                )
             elif call.name == "rename_task":
                 update = TaskUpdate.model_validate({
                     "operation": "rename",
@@ -1080,6 +1105,15 @@ class AssistantOrchestrator:
                 await self._apply_calendar_request(
                     user=user, run=run, call=call, request=request, results=results,
                     buttons=buttons
+                )
+            elif call.name == "read_calendar_events":
+                request = CalendarEventsRequest.model_validate(_args_with_call_defaults(call))
+                await self._apply_read_calendar_events_tool(
+                    user=user,
+                    run=run,
+                    call=call,
+                    request=request,
+                    results=results,
                 )
             elif call.name == "create_automation":
                 automation = AutomationRequest.model_validate(_args_with_call_defaults(call))
@@ -1356,6 +1390,134 @@ class AssistantOrchestrator:
             result={"task_id": str(task.id), "updated_fields": sorted(updates)},
         )
         results.append(format_task_update_reply(task, updates, language=language))
+
+    async def _apply_bulk_update_tasks_tool(
+        self,
+        *,
+        user: User,
+        run,
+        call: PlannedToolCall,
+        patch: BulkTaskPatchRequest,
+        language: str,
+        results: list[str],
+        buttons: list[list[Button]],
+    ) -> None:
+        updates = patch.update_fields()
+        args = {
+            **patch.model_dump(mode="json"),
+            "updates": updates,
+            **_call_source_payload(call),
+        }
+        if not patch.has_updates():
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name="bulk_update_tasks",
+                status="skipped",
+                args=args,
+                result={"reason": "no_updates"},
+            )
+            results.append(format_task_update_no_updates_reply(language=language))
+            return
+
+        candidates = await self.tasks.find_bulk_update_candidates(
+            user,
+            task_query=patch.task_query,
+            from_project=patch.from_project,
+            from_tags=patch.from_tags,
+            status=patch.status,
+            limit=patch.limit,
+        )
+        if not candidates:
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name="bulk_update_tasks",
+                status="skipped",
+                args=args,
+                result={"candidate_task_ids": []},
+            )
+            if _language_is_english(language):
+                results.append("I could not find matching tasks. Please clarify the filter.")
+            else:
+                results.append("Не нашёл подходящих задач. Уточни фильтр.")
+            return
+
+        if len(candidates) == 1 and not _image_sourced_write(call):
+            task = await self.tasks.update_task_with_tag_ops(
+                user,
+                candidates[0],
+                updates,
+                tags_add=patch.tags_add,
+                tags_remove=patch.tags_remove,
+                actor="agent",
+                agent_run_id=run.id,
+            )
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name="bulk_update_tasks",
+                status="completed",
+                args=args,
+                result={"task_ids": [str(task.id)], "updated_fields": sorted(updates)},
+            )
+            if patch.tags_add or patch.tags_remove:
+                results.append(format_task_bulk_update_reply(
+                    1,
+                    updates,
+                    tags_add=patch.tags_add,
+                    tags_remove=patch.tags_remove,
+                    language=language,
+                ))
+            else:
+                results.append(format_task_update_reply(task, updates, language=language))
+            return
+
+        payload = {
+            "task_query": patch.task_query,
+            "from_project": patch.from_project,
+            "from_tags": patch.from_tags,
+            "status": patch.status,
+            "updates": updates,
+            "tags_add": patch.tags_add,
+            "tags_remove": patch.tags_remove,
+            "candidate_task_ids": [str(task.id) for task in candidates],
+            "agent_run_id": str(run.id),
+            "language": language,
+            **_call_source_payload(call),
+        }
+        confirmation = await self.confirmations.create(
+            user,
+            action_type="bulk_update_tasks",
+            action_payload=payload,
+            prompt=_prompt_with_evidence(
+                f"Обновить {len(candidates)} задач?",
+                call,
+            ),
+        )
+        await self.runs.log_tool_call(
+            run=run,
+            tool_name="bulk_update_tasks",
+            status="requires_confirmation",
+            args=args,
+            result={"candidate_task_ids": [str(task.id) for task in candidates]},
+            requires_confirmation=True,
+            confirmation_id=confirmation.id,
+        )
+        if _language_is_english(language):
+            results.append(
+                f"Found {len(candidates)} tasks for bulk update. Confirm the action."
+            )
+            confirm_text = f"✓ Update {len(candidates)}"
+            reject_text = "✗ No"
+        else:
+            results.append(
+                f"Нашёл {len(candidates)} {_ru_task_plural(len(candidates))} "
+                "для массового обновления. Подтверди действие."
+            )
+            confirm_text = f"✓ Обновить {len(candidates)}"
+            reject_text = "✗ Не надо"
+        buttons.append([
+            Button(text=confirm_text, callback_data=f"confirm:{confirmation.id}"),
+            Button(text=reject_text, callback_data=f"reject:{confirmation.id}"),
+        ])
 
     async def _resolve_update_task_candidates(
         self,
@@ -1827,6 +1989,79 @@ class AssistantOrchestrator:
             Button(text="✓ Включить", callback_data=f"confirm:{confirmation.id}"),
             Button(text="✗ Не надо", callback_data=f"reject:{confirmation.id}"),
         ])
+
+    async def _apply_read_calendar_events_tool(
+        self,
+        *,
+        user: User,
+        run,
+        call: PlannedToolCall,
+        request: CalendarEventsRequest,
+        results: list[str],
+    ) -> None:
+        start = local_to_utc(request.start_at_local, user.timezone)
+        end = local_to_utc(request.end_at_local, user.timezone)
+        sync_result: dict[str, int | str] | None = None
+        sync_error: str | None = None
+        if request.sync_if_needed:
+            try:
+                sync_result = await CalendarSyncService(self.session).sync_all_calendars(
+                    user,
+                    start_at=start,
+                    end_at=end,
+                )
+            except Exception as exc:  # noqa: BLE001 - read DB cache even if sync is unavailable
+                sync_error = str(exc)[:500]
+                log.warning(
+                    "calendar on-demand sync failed",
+                    fields={"user_id": str(user.id), "error": sync_error},
+                )
+
+        events = await self.calendar.list_events(user, start, end)
+        await self.runs.log_tool_call(
+            run=run,
+            tool_name="read_calendar_events",
+            status="completed",
+            args={
+                **request.model_dump(mode="json"),
+                **_call_source_payload(call),
+            },
+            result={
+                "count": len(events),
+                "sync": sync_result,
+                "sync_error": sync_error,
+            },
+        )
+        if not events:
+            if sync_error:
+                results.append(
+                    "В календаре за это окно событий не нашёл. "
+                    "Внешний sync сейчас недоступен."
+                )
+            else:
+                results.append("В календаре за это окно событий не нашёл.")
+            return
+
+        lines = ["Встречи в календаре:"]
+        for event in events[:20]:
+            start_local = utc_to_local(event.start_at, user.timezone)
+            end_local = utc_to_local(event.end_at, user.timezone)
+            when = (
+                "весь день"
+                if event.all_day
+                else f"{start_local.strftime('%H:%M')}–{end_local.strftime('%H:%M')}"
+            )
+            line = f"{when} — {event.title}"
+            location = event.metadata_.get("location")
+            meeting_url = event.metadata_.get("meeting_url")
+            if location:
+                line += f" ({location})"
+            if request.include_details and meeting_url:
+                line += f" — {meeting_url}"
+            lines.append(line)
+        if len(events) > 20:
+            lines.append(f"Еще {len(events) - 20} событий не показал.")
+        results.append("\n".join(lines))
 
     async def _apply_calendar_request(
         self,

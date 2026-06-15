@@ -141,6 +141,104 @@ class TaskPatchRequest(BaseModel):
         return fields
 
 
+class BulkTaskPatchRequest(BaseModel):
+    task_query: str | None = None
+    from_project: str | None = None
+    from_tags: list[str] | None = None
+    status: Literal["open", "all"] = "open"
+    limit: int = Field(default=50, ge=1, le=100)
+    description: str | None = None
+    project: str | None = None
+    tags: list[str] | None = None
+    tags_add: list[str] | None = None
+    tags_remove: list[str] | None = None
+    priority: Literal["low", "medium", "high", "urgent"] | None = None
+    status_update: Literal["active", "inbox", "done", "cancelled"] | None = None
+    confidence: float = 0.0
+    requires_confirmation: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def merge_nested_updates(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        updates = data.get("updates")
+        if not isinstance(updates, dict):
+            return data
+        merged = {key: value for key, value in data.items() if key != "updates"}
+        for key in (
+            "description",
+            "project",
+            "tags",
+            "tags_add",
+            "tags_remove",
+            "priority",
+            "status_update",
+        ):
+            if key in updates and key not in merged:
+                merged[key] = updates[key]
+        if "status" in updates and "status_update" not in merged:
+            merged["status_update"] = updates["status"]
+        return merged
+
+    @field_validator("task_query", "from_project")
+    @classmethod
+    def clean_optional_short_text(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = " ".join(v.split()).strip()
+        if not v:
+            return None
+        return v[:300]
+
+    @field_validator("project")
+    @classmethod
+    def clean_optional_project(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = " ".join(v.split()).strip()
+        if not v:
+            return None
+        return v[:100]
+
+    @field_validator("description")
+    @classmethod
+    def clean_optional_description(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = " ".join(v.split()).strip()
+        if not v:
+            return None
+        return v[:2000]
+
+    @field_validator("from_tags", "tags", "tags_add", "tags_remove")
+    @classmethod
+    def clean_optional_tags(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for tag in v:
+            tag = " ".join(str(tag).split()).strip().lstrip("#")
+            normalized = tag.casefold()
+            if tag and normalized not in seen:
+                cleaned.append(tag[:50])
+                seen.add(normalized)
+        return cleaned
+
+    def update_fields(self) -> dict[str, Any]:
+        fields: dict[str, Any] = {}
+        for key in ("description", "project", "tags", "priority"):
+            if key in self.model_fields_set:
+                fields[key] = getattr(self, key)
+        if "status_update" in self.model_fields_set:
+            fields["status"] = self.status_update
+        return fields
+
+    def has_updates(self) -> bool:
+        return bool(self.update_fields() or self.tags_add or self.tags_remove)
+
+
 class MemoryCandidate(BaseModel):
     kind: Literal["preference", "fact", "project", "instruction", "contact", "workflow", "other"] = "other"
     text: str
@@ -171,6 +269,21 @@ class CalendarRequest(BaseModel):
     time_window_local: TimeWindow | None = None
     requires_confirmation: bool = True
     confidence: float = 0.0
+
+
+class CalendarEventsRequest(BaseModel):
+    start_at_local: datetime
+    end_at_local: datetime
+    include_details: bool = False
+    sync_if_needed: bool = True
+    confidence: float = 0.0
+    requires_confirmation: bool = False
+
+    @model_validator(mode="after")
+    def end_after_start(self) -> CalendarEventsRequest:
+        if self.end_at_local <= self.start_at_local:
+            raise ValueError("end_at_local must be after start_at_local")
+        return self
 
 
 class AutomationRequest(BaseModel):

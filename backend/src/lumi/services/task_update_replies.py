@@ -18,6 +18,16 @@ def _format_tags(tags: object) -> str:
     return ", ".join(f"#{str(tag).lstrip('#')}" for tag in tags if str(tag).strip())
 
 
+def _ru_task_plural(count: int) -> str:
+    if 10 < count % 100 < 20:
+        return "задач"
+    if count % 10 == 1:
+        return "задачу"
+    if count % 10 in {2, 3, 4}:
+        return "задачи"
+    return "задач"
+
+
 def format_task_update_reply(
     task: Task,
     updates: Mapping[str, Any],
@@ -57,6 +67,44 @@ def format_task_update_reply(
     if english:
         return f"Updated task “{title}”: {', '.join(changes)}."
     return f"Обновил задачу «{title}»: {', '.join(changes)}."
+
+
+def format_task_bulk_update_reply(
+    count: int,
+    updates: Mapping[str, Any],
+    *,
+    tags_add: list[str] | None = None,
+    tags_remove: list[str] | None = None,
+    language: str | None = None,
+) -> str:
+    english = _is_english(language)
+    changes: list[str] = []
+    if "project" in updates:
+        project = updates.get("project")
+        changes.append(f"project {project}" if english and project else "removed project" if english else f"проект — {project}" if project else "проект убран")
+    if "priority" in updates and updates.get("priority"):
+        priority = updates["priority"]
+        changes.append(f"priority {priority}" if english else f"приоритет — {priority}")
+    if "tags" in updates:
+        tags = _format_tags(updates.get("tags"))
+        changes.append(f"tags {tags}" if english and tags else "removed tags" if english else f"теги — {tags}" if tags else "теги убраны")
+    if tags_add:
+        tags = _format_tags(tags_add)
+        changes.append(f"added tags {tags}" if english else f"добавлены теги — {tags}")
+    if tags_remove:
+        tags = _format_tags(tags_remove)
+        changes.append(f"removed tags {tags}" if english else f"удалены теги — {tags}")
+    if "description" in updates:
+        changes.append("description updated" if english else "описание обновлено")
+    if "status" in updates and updates.get("status"):
+        status = updates["status"]
+        changes.append(f"status {status}" if english else f"статус — {status}")
+
+    if not changes:
+        return f"Updated {count} tasks." if english else f"Обновил {count} {_ru_task_plural(count)}."
+    if english:
+        return f"Updated {count} tasks: {', '.join(changes)}."
+    return f"Обновил {count} {_ru_task_plural(count)}: {', '.join(changes)}."
 
 
 def format_task_update_no_updates_reply(*, language: str | None = None) -> str:

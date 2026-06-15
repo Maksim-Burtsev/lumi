@@ -23,6 +23,13 @@ ACTION_POLICIES: dict[str, ActionPolicy] = {
         ui_mode="inline_confirm",
         primary_label="Создать",
     ),
+    "bulk_update_tasks": ActionPolicy(
+        action_type="bulk_update_tasks",
+        risk_class="write_internal",
+        approval_mode="confirm",
+        ui_mode="inline_confirm",
+        primary_label="Обновить",
+    ),
     "store_memory": ActionPolicy(
         action_type="store_memory",
         risk_class="write_internal_memory",

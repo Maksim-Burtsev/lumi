@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy import select
 
 from lumi.assistant.media import ImageInput
@@ -5,6 +7,7 @@ from lumi.assistant.orchestrator import AssistantOrchestrator
 from lumi.db.models import (
     AgentRun,
     AgentRunType,
+    CalendarSource,
     Message,
     MessageRole,
     PendingConfirmation,
@@ -17,8 +20,11 @@ from lumi.db.session import session_scope
 from lumi.llm.base import LLMResponse, content_to_text
 from lumi.llm.gateway import LLMGateway
 from lumi.llm.mock import MockLLMProvider
+from lumi.services.calendar import CalendarService
+from lumi.services.confirmation_executor import ConfirmationExecutor
 from lumi.services.tasks import TaskService
 from lumi.services.users import UserService
+from lumi.utils.time import local_to_utc
 
 from .conftest import TEST_TELEGRAM_ID
 
@@ -1378,6 +1384,78 @@ async def test_agent_planner_read_tasks_does_not_send_task_list_to_first_llm_cal
     assert any(c.tool_name == "read_tasks" and c.status == "completed" for c in tool_calls)
 
 
+async def test_agent_planner_read_calendar_events_syncs_requested_range_without_final_llm(
+    monkeypatch,
+):
+    sync_calls = []
+
+    async def fake_sync_all_calendars(
+        self,
+        user,
+        *,
+        start_at=None,
+        end_at=None,
+        days_ahead: int | None = None,
+        days_back: int | None = None,
+    ):
+        sync_calls.append({
+            "start_at": start_at,
+            "end_at": end_at,
+            "days_ahead": days_ahead,
+            "days_back": days_back,
+        })
+        await CalendarService(self.session).upsert_external_event(
+            user,
+            source=CalendarSource.YANDEX,
+            external_calendar_id="work",
+            external_event_id="recurring-planning-2026-07-13",
+            title="Lumi weekly planning",
+            start_at=local_to_utc(datetime(2026, 7, 13, 10, 0), user.timezone),
+            end_at=local_to_utc(datetime(2026, 7, 13, 11, 0), user.timezone),
+            meeting_url="https://meet.example/lumi",
+        )
+        return {"yandex": 1}
+
+    monkeypatch.setattr(
+        "lumi.services.planning.CalendarSyncService.sync_all_calendars",
+        fake_sync_all_calendars,
+    )
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "tool_calls": [
+            {
+                "name": "read_calendar_events",
+                "args": {
+                    "start_at_local": "2026-07-13T00:00:00",
+                    "end_at_local": "2026-07-14T00:00:00",
+                    "sync_if_needed": True,
+                },
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=43,
+            text="Какие встречи в понедельник через месяц?",
+        )
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+
+    assert provider.final_chat_calls == 0
+    assert len(sync_calls) == 1
+    assert sync_calls[0]["start_at"] == local_to_utc(datetime(2026, 7, 13), "Europe/Moscow")
+    assert sync_calls[0]["end_at"] == local_to_utc(datetime(2026, 7, 14), "Europe/Moscow")
+    assert "Lumi weekly planning" in result.reply_text
+    assert "10:00" in result.reply_text
+    assert any(c.tool_name == "read_calendar_events" and c.status == "completed" for c in tool_calls)
+
+
 async def test_update_task_followup_uses_recent_created_task_context_without_final_llm():
     provider = AgentPlannerProvider([
         {
@@ -1669,6 +1747,82 @@ async def test_update_task_ambiguous_query_returns_choice_buttons_without_fake_s
     }
     assert "Обновлена задача" not in result.reply_text
     assert any(c.tool_name == "update_task" and c.status == "requires_confirmation" for c in tool_calls)
+
+
+async def test_bulk_update_tasks_requires_confirmation_and_updates_only_filtered_tasks():
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "tool_calls": [
+            {
+                "name": "bulk_update_tasks",
+                "args": {
+                    "task_query": "Lumi",
+                    "from_project": "Работа",
+                    "updates": {"project": "Lumi"},
+                    "limit": 50,
+                },
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        first = await TaskService(session).create_task(
+            user,
+            title="Решить вопрос с мониторингом в Lumi",
+            project="Работа",
+            tags=["monitoring"],
+        )
+        second = await TaskService(session).create_task(
+            user,
+            title="Научить Lumi работать с пересланными сообщениями",
+            project="Работа",
+            tags=["feature"],
+        )
+        unrelated_project = await TaskService(session).create_task(
+            user,
+            title="Lumi: задача уже в другом проекте",
+            project="Личное",
+        )
+        unrelated_query = await TaskService(session).create_task(
+            user,
+            title="Подготовить отчет",
+            project="Работа",
+        )
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=53,
+            text="Все задачи которые к Lumi относятся из проекта Работа перенеси в проект Lumi",
+        )
+        confirmations = (await session.execute(select(PendingConfirmation))).scalars().all()
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+
+        assert first.project == "Работа"
+        assert second.project == "Работа"
+        assert result.reply_text == "Нашёл 2 задачи для массового обновления. Подтверди действие."
+        assert confirmations[0].action_type == "bulk_update_tasks"
+        assert set(confirmations[0].action_payload["candidate_task_ids"]) == {
+            str(first.id),
+            str(second.id),
+        }
+        assert [button.text for button in result.buttons[0]] == ["✓ Обновить 2", "✗ Не надо"]
+        assert any(
+            c.tool_name == "bulk_update_tasks" and c.status == "requires_confirmation"
+            for c in tool_calls
+        )
+
+        confirmation_text = await ConfirmationExecutor(session).execute(user, confirmations[0])
+
+        assert confirmation_text == "Обновил 2 задачи: проект — Lumi."
+        assert first.project == "Lumi"
+        assert second.project == "Lumi"
+        assert unrelated_project.project == "Личное"
+        assert unrelated_query.project == "Работа"
 
 
 async def test_update_task_missing_candidate_asks_safely_without_fake_success():
