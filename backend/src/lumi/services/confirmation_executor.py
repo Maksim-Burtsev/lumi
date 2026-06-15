@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import uuid
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lumi.assistant.memory_service import MemoryService
 from lumi.assistant.schemas import AutomationRequest, CalendarRequest, ExtractedTask, MemoryCandidate
-from lumi.db.models import PendingConfirmation, User
+from lumi.db.models import PendingConfirmation, TaskStatus, User
 from lumi.logging import get_logger
 from lumi.services.automations import AutomationService
 from lumi.services.calendar import CalendarService
+from lumi.services.task_update_replies import format_task_update_reply
 from lumi.services.tasks import TaskService
 from lumi.utils.time import fmt_local, local_to_utc
 
@@ -44,6 +47,39 @@ class ConfirmationExecutor:
                     user, candidate, actor="user"
                 )
                 return "Запомнил." if created else "Обновил существующую заметку."
+
+            if action == "update_task":
+                try:
+                    task_id = uuid.UUID(str(payload.get("task_id") or ""))
+                except ValueError:
+                    return "Не нашёл активную задачу. Уточни название."
+                task = await self.tasks.get(user, task_id)
+                if task is None or task.status == TaskStatus.DONE:
+                    return "Эта задача уже закрыта или удалена — обновлять нечего."
+                updates = payload.get("updates")
+                if not isinstance(updates, dict) or not updates:
+                    return "Не понял, что изменить в задаче. Уточни изменение."
+                agent_run_id = None
+                if payload.get("agent_run_id"):
+                    try:
+                        agent_run_id = uuid.UUID(str(payload["agent_run_id"]))
+                    except ValueError:
+                        agent_run_id = None
+                task = await self.tasks.update_task(
+                    user,
+                    task,
+                    updates,
+                    actor="user",
+                    agent_run_id=agent_run_id,
+                )
+                return format_task_update_reply(
+                    task,
+                    updates,
+                    language=str(payload.get("language") or ""),
+                )
+
+            if action == "update_task_choice":
+                return "Выбери задачу кнопкой в Telegram."
 
             if action == "create_automation":
                 request = AutomationRequest.model_validate(payload)

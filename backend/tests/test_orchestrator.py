@@ -135,8 +135,9 @@ class AgentPlannerProvider:
     name = "agent-planner"
     model = "agent-planner-1"
 
-    def __init__(self, plan: dict) -> None:
-        self.plan = plan
+    def __init__(self, plan: dict | list[dict], *, final_text: str = "final answer") -> None:
+        self.plans = list(plan) if isinstance(plan, list) else [plan]
+        self.final_text = final_text
         self.planner_prompts: list[str] = []
         self.final_chat_calls = 0
 
@@ -144,17 +145,17 @@ class AgentPlannerProvider:
         assert kwargs["request_kind"] == "agent_planner"
         messages = kwargs.get("messages") or []
         self.planner_prompts.append((kwargs.get("system") or "") + "\n" + messages[-1].content)
-        return self.plan
+        return self.plans.pop(0)
 
     async def complete(self, **kwargs) -> LLMResponse:
         self.final_chat_calls += 1
         return LLMResponse(
-            text="final answer",
+            text=self.final_text,
             provider=self.name,
             model=self.model,
             latency_ms=1,
             input_chars=1,
-            output_chars=12,
+            output_chars=len(self.final_text),
         )
 
 
@@ -1091,6 +1092,216 @@ async def test_action_only_pending_task_reply_does_not_list_existing_tasks():
     assert "сценарий теста accept/reject" not in result.reply_text
 
 
+async def test_agent_planner_create_task_tool_call_creates_task_without_final_llm_and_records_trace():
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "tool_calls": [
+            {
+                "name": "create_task",
+                "args": {
+                    "title": "Webhook для Lumi на проде",
+                    "description": None,
+                    "priority": "medium",
+                    "project": "Lumi",
+                    "tags": [],
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                },
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=44,
+            text="Создай задачу: «Webhook для Lumi на проде»",
+        )
+
+        tasks = (await session.execute(select(Task))).scalars().all()
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+        run = (await session.execute(select(AgentRun))).scalars().one()
+
+    assert provider.final_chat_calls == 0
+    assert len(tasks) == 1
+    assert tasks[0].title == "Webhook для Lumi на проде"
+    assert result.reply_text == "Создана задача: «Webhook для Lumi на проде»"
+    assert any(c.tool_name == "create_task" and c.status == "completed" for c in tool_calls)
+    trace = run.metadata_["planner_trace"]
+    assert trace["validation_status"] == "validated"
+    assert trace["mode"] == "tool_calls"
+    assert trace["tool_names"] == ["create_task"]
+    assert trace["tool_count"] == 1
+
+
+async def test_agent_planner_ignores_empty_focused_vision_for_tool_plan():
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "tool_calls": [
+            {
+                "name": "create_task",
+                "args": {"title": "Webhook для Lumi на проде"},
+                "confidence": 0.97,
+                "requires_confirmation": False,
+            }
+        ],
+        "focused_vision": {"reason": None, "question": None, "confidence": 0.0},
+        "should_answer_normally": False,
+    })
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=48,
+            text="Создай задачу: «Webhook для Lumi на проде»",
+        )
+
+        tasks = (await session.execute(select(Task))).scalars().all()
+        run = (await session.execute(select(AgentRun))).scalars().one()
+
+    assert provider.final_chat_calls == 0
+    assert len(tasks) == 1
+    assert tasks[0].title == "Webhook для Lumi на проде"
+    assert result.reply_text == "Создана задача: «Webhook для Lumi на проде»"
+    trace = run.metadata_["planner_trace"]
+    assert trace["validation_status"] == "validated"
+    assert trace["tool_names"] == ["create_task"]
+    assert trace["raw_plan_sanitized"]["focused_vision"]["question"] is None
+
+
+async def test_agent_planner_ignores_empty_focused_vision_for_final_answer():
+    provider = AgentPlannerProvider({
+        "mode": "final_answer",
+        "tool_calls": [],
+        "final_answer": "Я помогаю с задачами, календарем и памятью.",
+        "focused_vision": {"reason": None, "question": None, "confidence": 0.0},
+        "should_answer_normally": True,
+    })
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=49,
+            text="что ты умеешь?",
+        )
+
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+        run = (await session.execute(select(AgentRun))).scalars().one()
+
+    assert provider.final_chat_calls == 0
+    assert tool_calls == []
+    assert result.reply_text == "Я помогаю с задачами, календарем и памятью."
+    trace = run.metadata_["planner_trace"]
+    assert trace["validation_status"] == "validated"
+    assert trace["mode"] == "final_answer"
+    assert trace["final_answer_present"] is True
+
+
+async def test_agent_planner_empty_tool_call_plan_does_not_call_final_llm_and_records_trace():
+    provider = AgentPlannerProvider(
+        {
+            "mode": "tool_calls",
+            "tool_calls": [],
+            "should_answer_normally": False,
+        },
+        final_text="Создана задача: «Webhook для Lumi на проде»",
+    )
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=45,
+            text="Создай задачу: «Webhook для Lumi на проде»",
+        )
+
+        tasks = (await session.execute(select(Task))).scalars().all()
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+        run = (await session.execute(select(AgentRun))).scalars().one()
+
+    assert provider.final_chat_calls == 0
+    assert tasks == []
+    assert tool_calls == []
+    assert result.reply_text == "Не выполнил действие: planner не вернул backend tool."
+    trace = run.metadata_["planner_trace"]
+    assert trace["validation_status"] == "validated"
+    assert trace["mode"] == "tool_calls"
+    assert trace["tool_count"] == 0
+    assert trace["raw_plan_sanitized"]["mode"] == "tool_calls"
+
+
+async def test_agent_planner_low_confidence_create_task_logs_skipped_without_final_llm():
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "tool_calls": [
+            {
+                "name": "create_task",
+                "args": {
+                    "title": "Webhook для Lumi на проде",
+                    "priority": "medium",
+                    "confidence": 0.2,
+                    "requires_confirmation": False,
+                },
+                "confidence": 0.2,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=46,
+            text="Создай задачу: «Webhook для Lumi на проде»",
+        )
+
+        tasks = (await session.execute(select(Task))).scalars().all()
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+
+    assert provider.final_chat_calls == 0
+    assert tasks == []
+    assert len(tool_calls) == 1
+    assert tool_calls[0].tool_name == "create_task"
+    assert tool_calls[0].status == "skipped"
+    assert tool_calls[0].result_json == {"reason": "low_confidence"}
+    assert result.reply_text == "Не выполнил действие: planner не дал достаточную уверенность."
+
+
+async def test_agent_planner_malformed_new_style_plan_records_validation_error():
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "tool_calls": "not-a-list",
+        "should_answer_normally": False,
+    })
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=47,
+            text="Создай задачу: «Webhook для Lumi на проде»",
+        )
+
+        run = (await session.execute(select(AgentRun))).scalars().one()
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+
+    assert provider.final_chat_calls == 0
+    assert tool_calls == []
+    assert result.reply_text == "Не смог безопасно выбрать ответ. Переформулируй запрос."
+    trace = run.metadata_["planner_trace"]
+    assert trace["validation_status"] == "validation_error"
+    assert trace["validation_error"]
+    assert trace["raw_plan_sanitized"]["tool_calls"] == "not-a-list"
+
+
 async def test_rename_task_updates_db_and_uses_backend_reply():
     provider = RenameTaskProvider(
         current_title="Написать короткий сценарий теста accept/reject",
@@ -1160,9 +1371,358 @@ async def test_agent_planner_read_tasks_does_not_send_task_list_to_first_llm_cal
     assert provider.final_chat_calls == 0
     assert provider.planner_prompts
     assert "read_tasks" in provider.planner_prompts[0]
-    assert "Секретная открытая задача" not in provider.planner_prompts[0]
+    assert "Planner context" in provider.planner_prompts[0]
+    assert "Секретная открытая задача" in provider.planner_prompts[0]
+    assert "Existing active tasks (state, not actions performed now):" not in provider.planner_prompts[0]
     assert "Секретная открытая задача" in result.reply_text
     assert any(c.tool_name == "read_tasks" and c.status == "completed" for c in tool_calls)
+
+
+async def test_update_task_followup_uses_recent_created_task_context_without_final_llm():
+    provider = AgentPlannerProvider([
+        {
+            "mode": "tool_calls",
+            "tool_calls": [
+                {
+                    "name": "create_task",
+                    "args": {
+                        "title": "Webhook для Lumi на проде",
+                        "description": None,
+                        "due_at_local": None,
+                        "reminder_at_local": None,
+                        "priority": "medium",
+                        "project": None,
+                        "tags": [],
+                    },
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                }
+            ],
+            "should_answer_normally": False,
+        },
+        {
+            "mode": "tool_calls",
+            "tool_calls": [
+                {
+                    "name": "update_task",
+                    "args": {
+                        "recency_hint": "last_created_task",
+                        "updates": {"project": "Lumi"},
+                    },
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                }
+            ],
+            "should_answer_normally": False,
+        },
+    ])
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=48,
+            text="Создай задачу: «Webhook для Lumi на проде»",
+        )
+        task = (await session.execute(select(Task))).scalars().one()
+
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=49,
+            text="привяжи эту задачу к проекту Lumi",
+        )
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+        runs = (await session.execute(select(AgentRun).order_by(AgentRun.created_at))).scalars().all()
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        updated = await TaskService(session).get(user, task.id)
+
+    assert provider.final_chat_calls == 0
+    assert updated.project == "Lumi"
+    assert result.reply_text == "Привязал задачу «Webhook для Lumi на проде» к проекту Lumi."
+    assert "recent_task_refs" in provider.planner_prompts[1]
+    assert str(task.id) in provider.planner_prompts[1]
+    assert any(c.tool_name == "create_task" and c.status == "completed" for c in tool_calls)
+    assert any(c.tool_name == "update_task" and c.status == "completed" for c in tool_calls)
+    trace_context = runs[-1].metadata_["planner_trace"]["planner_context"]
+    assert trace_context["recent_task_ref_count"] >= 1
+    assert trace_context["active_task_count"] >= 1
+    assert "Webhook для Lumi на проде" not in str(trace_context)
+
+
+async def test_update_task_exact_title_updates_project_without_final_llm():
+    title = "Баг: бот проигнорировал картинку"
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "tool_calls": [
+            {
+                "name": "update_task",
+                "args": {"task_query": title, "updates": {"project": "Lumi"}},
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        task = await TaskService(session).create_task(user, title=title)
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=50,
+            text="задачу Баг: бот проигнорировал картинку в проект Lumi",
+        )
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        updated = await TaskService(session).get(user, task.id)
+
+    assert provider.final_chat_calls == 0
+    assert updated.project == "Lumi"
+    assert result.reply_text == f"Привязал задачу «{title}» к проекту Lumi."
+    assert any(c.tool_name == "update_task" and c.status == "completed" for c in tool_calls)
+
+
+async def test_update_task_english_project_reply_without_final_llm():
+    title = "Ship webhook to production"
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "language": "en",
+        "tool_calls": [
+            {
+                "name": "update_task",
+                "args": {"task_query": title, "updates": {"project": "Lumi"}},
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        task = await TaskService(session).create_task(user, title=title)
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=150,
+            text="Move the webhook task to the Lumi project",
+        )
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        updated = await TaskService(session).get(user, task.id)
+
+    assert provider.final_chat_calls == 0
+    assert updated.project == "Lumi"
+    assert result.reply_text == f"Moved task “{title}” to project Lumi."
+    assert any(c.tool_name == "update_task" and c.status == "completed" for c in tool_calls)
+
+
+async def test_create_task_english_reply_without_final_llm():
+    title = "Write rollout notes"
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "language": "en",
+        "tool_calls": [
+            {
+                "name": "create_task",
+                "args": {"title": title, "priority": "medium", "project": None, "tags": []},
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=151,
+            text=f"Create a task: {title}",
+        )
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+
+    assert provider.final_chat_calls == 0
+    assert result.reply_text == f"Created task: “{title}”"
+    assert [button.text for button in result.buttons[0]] == ["✓ Done", "⏰ Snooze"]
+    assert any(c.tool_name == "create_task" and c.status == "completed" for c in tool_calls)
+
+
+async def test_update_task_english_ambiguous_query_uses_english_confirmation_prompt():
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "language": "en",
+        "tool_calls": [
+            {
+                "name": "update_task",
+                "args": {"task_query": "notes", "updates": {"project": "Lumi"}},
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        await TaskService(session).create_task(user, title="Write notes alpha")
+        await TaskService(session).create_task(user, title="Write notes beta")
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=152,
+            text="Move the notes task to project Lumi",
+        )
+        confirmations = (await session.execute(select(PendingConfirmation))).scalars().all()
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+
+    assert provider.final_chat_calls == 0
+    assert result.reply_text == "Found several matching tasks. Which one should I update?"
+    assert confirmations[0].action_payload["language"] == "en"
+    assert any(c.tool_name == "update_task" and c.status == "requires_confirmation" for c in tool_calls)
+
+
+async def test_update_task_english_missing_candidate_asks_safely():
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "language": "en",
+        "tool_calls": [
+            {
+                "name": "update_task",
+                "args": {"task_query": "missing task", "updates": {"project": "Lumi"}},
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        await TaskService(session).create_task(user, title="Different task")
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=153,
+            text="Move missing task to project Lumi",
+        )
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+
+    assert provider.final_chat_calls == 0
+    assert result.reply_text == "I could not find an active task “missing task”. Please clarify the title."
+    assert any(c.tool_name == "update_task" and c.status == "skipped" for c in tool_calls)
+
+
+async def test_update_task_ambiguous_query_returns_choice_buttons_without_fake_success():
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "tool_calls": [
+            {
+                "name": "update_task",
+                "args": {"task_query": "написать сценарий теста", "updates": {"project": "Lumi"}},
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        first = await TaskService(session).create_task(
+            user, title="Написать сценарий теста accept reject", project="Работа"
+        )
+        second = await TaskService(session).create_task(
+            user, title="Написать сценарий теста approve reject", project="Продукт"
+        )
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=51,
+            text="привяжи задачу написать сценарий теста к проекту Lumi",
+        )
+        confirmations = (await session.execute(select(PendingConfirmation))).scalars().all()
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+
+    assert provider.final_chat_calls == 0
+    assert result.reply_text == "Нашёл несколько похожих задач. Какую обновить?"
+    assert len(result.buttons) == 2
+    assert result.buttons[0][0].callback_data.startswith("update_pick:")
+    assert "Do not resolve ambiguous task matches yourself" in provider.planner_prompts[0]
+    assert confirmations[0].action_type == "update_task_choice"
+    assert set(confirmations[0].action_payload["candidate_task_ids"]) == {
+        str(first.id),
+        str(second.id),
+    }
+    assert "Обновлена задача" not in result.reply_text
+    assert any(c.tool_name == "update_task" and c.status == "requires_confirmation" for c in tool_calls)
+
+
+async def test_update_task_missing_candidate_asks_safely_without_fake_success():
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "tool_calls": [
+            {
+                "name": "update_task",
+                "args": {"task_query": "несуществующая задача", "updates": {"project": "Lumi"}},
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        await TaskService(session).create_task(user, title="Другая задача")
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=52,
+            text="привяжи несуществующую задачу к проекту Lumi",
+        )
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+
+    assert provider.final_chat_calls == 0
+    assert result.reply_text == "Не нашёл активную задачу «несуществующая задача». Уточни название."
+    assert "Обновлена задача" not in result.reply_text
+    assert any(c.tool_name == "update_task" and c.status == "skipped" for c in tool_calls)
+
+
+async def test_agent_planner_final_answer_for_ordinary_question_uses_no_tool():
+    provider = AgentPlannerProvider({
+        "mode": "final_answer",
+        "tool_calls": [],
+        "final_answer": "Я умею вести задачи, календарь и напоминания.",
+        "should_answer_normally": True,
+    })
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=53,
+            text="что ты умеешь?",
+        )
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+
+    assert result.reply_text == "Я умею вести задачи, календарь и напоминания."
+    assert provider.final_chat_calls == 0
+    assert tool_calls == []
 
 
 async def test_agent_planner_rename_tool_call_updates_db_without_final_llm():

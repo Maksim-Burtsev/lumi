@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ExtractedTask(BaseModel):
@@ -62,6 +63,82 @@ class TaskUpdate(BaseModel):
             if tag:
                 cleaned.append(tag[:50])
         return cleaned
+
+
+class TaskPatchRequest(BaseModel):
+    task_id: uuid.UUID | None = None
+    task_query: str | None = None
+    recency_hint: Literal["last_created_task", "last_touched_task"] | None = None
+    title: str | None = None
+    description: str | None = None
+    project: str | None = None
+    tags: list[str] | None = None
+    priority: Literal["low", "medium", "high", "urgent"] | None = None
+    confidence: float = 0.0
+    requires_confirmation: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def merge_nested_updates(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        updates = data.get("updates")
+        if not isinstance(updates, dict):
+            return data
+        merged = {key: value for key, value in data.items() if key != "updates"}
+        for key in ("title", "description", "project", "tags", "priority"):
+            if key in updates and key not in merged:
+                merged[key] = updates[key]
+        return merged
+
+    @field_validator("task_query", "title")
+    @classmethod
+    def clean_optional_short_text(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = " ".join(v.split()).strip()
+        if not v:
+            return None
+        return v[:300]
+
+    @field_validator("project")
+    @classmethod
+    def clean_optional_project(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = " ".join(v.split()).strip()
+        if not v:
+            return None
+        return v[:100]
+
+    @field_validator("description")
+    @classmethod
+    def clean_optional_description(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = " ".join(v.split()).strip()
+        if not v:
+            return None
+        return v[:2000]
+
+    @field_validator("tags")
+    @classmethod
+    def clean_optional_tags(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        cleaned: list[str] = []
+        for tag in v:
+            tag = " ".join(str(tag).split()).strip().lstrip("#")
+            if tag:
+                cleaned.append(tag[:50])
+        return cleaned
+
+    def update_fields(self) -> dict[str, Any]:
+        fields: dict[str, Any] = {}
+        for key in ("title", "description", "project", "tags", "priority"):
+            if key in self.model_fields_set:
+                fields[key] = getattr(self, key)
+        return fields
 
 
 class MemoryCandidate(BaseModel):
@@ -317,6 +394,22 @@ class AgentPlan(BaseModel):
             return None
         v = " ".join(v.split()).strip()
         return v[:200] or None
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_empty_focused_vision_when_unused(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if data.get("mode") == "needs_focused_vision":
+            return data
+        focused = data.get("focused_vision")
+        if not isinstance(focused, dict):
+            return data
+        question = focused.get("question")
+        if question is None or not str(question).strip():
+            data = dict(data)
+            data["focused_vision"] = None
+        return data
 
     @classmethod
     def empty(cls) -> AgentPlan:

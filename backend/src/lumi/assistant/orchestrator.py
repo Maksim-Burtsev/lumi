@@ -11,11 +11,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
 from difflib import SequenceMatcher
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from lumi.assistant.context_builder import ContextBuilder
+from lumi.assistant.context_builder import ContextBuilder, PlannerContext, PlannerContextBuilder
 from lumi.assistant.media import ImageInput, MediaCandidate, media_candidate_id
 from lumi.assistant.media_understanding import (
     FocusedVisionService,
@@ -35,6 +36,7 @@ from lumi.assistant.schemas import (
     MemoryCandidate,
     NewsRequest,
     PlannedToolCall,
+    TaskPatchRequest,
     TaskUpdate,
 )
 from lumi.db.models import (
@@ -43,6 +45,7 @@ from lumi.db.models import (
     Message,
     MessageRole,
     Task,
+    TaskStatus,
     User,
 )
 from lumi.llm.gateway import LLMGateway
@@ -51,6 +54,14 @@ from lumi.services.calendar import CalendarService
 from lumi.services.confirmations import ConfirmationService
 from lumi.services.planning import PlanningService
 from lumi.services.runs import RunService
+from lumi.services.task_update_replies import (
+    format_task_update_ambiguous_reply,
+    format_task_update_choice_prompt,
+    format_task_update_confirmation_prompt,
+    format_task_update_no_updates_reply,
+    format_task_update_not_found_reply,
+    format_task_update_reply,
+)
 from lumi.services.tasks import TaskService
 from lumi.services.users import UserService
 from lumi.utils.text import truncate
@@ -72,6 +83,7 @@ FOCUSED_VISION_UNSAFE_REPLY = (
 MEDIA_REQUIRED_REPLY = "Пришли картинку или ответь на сообщение с картинкой, которую нужно разобрать."
 IMAGE_SOURCED_CONFIRM_TOOLS = {
     "create_task",
+    "update_task",
     "rename_task",
     "complete_task",
     "snooze_task",
@@ -80,22 +92,6 @@ IMAGE_SOURCED_CONFIRM_TOOLS = {
     "create_external_calendar_event",
     "create_automation",
 }
-ACTION_DONE_CLAIM_TERMS = (
-    "готово",
-    "сделал",
-    "добавил",
-    "создал",
-    "записал",
-    "сохранил",
-    "назначил",
-    "запланировал",
-    "отметил",
-    "переименовал",
-    "done",
-    "created",
-    "added",
-    "scheduled",
-)
 ImageLoader = Callable[[dict], Awaitable[ImageInput | None]]
 
 
@@ -124,6 +120,10 @@ def _rename_choice_button_text(task: Task) -> str:
 
 def _rename_choice_callback(confirmation_id: uuid.UUID, index: int) -> str:
     return f"rename_pick:{confirmation_id.hex[:12]}:{index}"
+
+
+def _update_choice_callback(confirmation_id: uuid.UUID, index: int) -> str:
+    return f"update_pick:{confirmation_id.hex[:12]}:{index}"
 
 
 def _snooze_choice_callback(confirmation_id: uuid.UUID, index: int) -> str:
@@ -176,15 +176,6 @@ def _calendar_request_from_tool_call(call: PlannedToolCall) -> CalendarRequest:
 def _task_query_from_call(call: PlannedToolCall) -> str:
     query = str(call.args.get("task_query") or call.args.get("current_title") or "").strip()
     return query or "—"
-
-
-def _completion_claim_without_actions(text: str) -> bool:
-    lowered = text.strip().lower()
-    if not lowered:
-        return False
-    if lowered.startswith(("готово", "сделал", "done")):
-        return True
-    return any(f" {term}" in f" {lowered[:160]}" for term in ACTION_DONE_CLAIM_TERMS)
 
 
 def _media_context_from_payload(payload: object) -> MediaUnderstanding | None:
@@ -275,6 +266,54 @@ def _reply_result(reply_text: str, *, run_id: uuid.UUID, needs_compaction: bool)
     )
 
 
+def _safe_action_failure_reply(user: User, reason: str) -> str:
+    locale = (user.locale or "ru").lower()
+    english = locale.startswith("en")
+    if reason == "low_confidence":
+        return (
+            "Did not perform the action: planner confidence was too low."
+            if english else
+            "Не выполнил действие: planner не дал достаточную уверенность."
+        )
+    return (
+        "Did not perform the action: planner did not return a backend tool."
+        if english else
+        "Не выполнил действие: planner не вернул backend tool."
+    )
+
+
+def _safe_no_answer_reply(user: User) -> str:
+    locale = (user.locale or "ru").lower()
+    if locale.startswith("en"):
+        return "I could not choose a safe response. Please rephrase."
+    return "Не смог безопасно выбрать ответ. Переформулируй запрос."
+
+
+def _language_is_english(language: str | None) -> bool:
+    return (language or "").lower().startswith("en")
+
+
+def _store_planner_trace(
+    run,
+    trace: dict[str, Any] | None,
+    *,
+    stage: str,
+    planner_context: PlannerContext | None = None,
+) -> None:
+    if not trace:
+        return
+    item = {"stage": stage, **trace}
+    if planner_context is not None:
+        item["planner_context"] = planner_context.to_trace_summary()
+    existing = list((run.metadata_ or {}).get("planner_traces") or [])
+    existing.append(item)
+    run.metadata_ = {
+        **(run.metadata_ or {}),
+        "planner_trace": item,
+        "planner_traces": existing[-5:],
+    }
+
+
 class AssistantOrchestrator:
     def __init__(self, session: AsyncSession, *, llm: LLMGateway | None = None) -> None:
         self.session = session
@@ -290,6 +329,7 @@ class AssistantOrchestrator:
         self.media_reference = MediaReferenceService(self.llm)
         self.focused_vision = FocusedVisionService(self.llm)
         self.context_builder = ContextBuilder(session)
+        self.planner_context_builder = PlannerContextBuilder(session)
         self.planning = PlanningService(session, llm=self.llm)
 
     async def handle_user_message(
@@ -413,13 +453,24 @@ class AssistantOrchestrator:
         # 5. Planner call (separate small call — reliable and predictable;
         # a combined signals+reply call made M3 reason for minutes, parked for now)
         await progress("🧠 Разбираю сообщение…")
+        planner_context = await self.planner_context_builder.build(
+            user=user,
+            conversation=conversation,
+        )
         plan = await self.planner.plan(
             user=user,
             text=text,
+            known_context=planner_context.to_prompt_text(),
             media_context=media_context,
             available_media=available_media,
             agent_run_id=run.id,
             session=self.session,
+        )
+        _store_planner_trace(
+            run,
+            self.planner.last_trace,
+            stage="initial",
+            planner_context=planner_context,
         )
         selected_media = _selected_or_current_media(plan, available_media, current_media)
         focused_question_override: str | None = None
@@ -491,10 +542,17 @@ class AssistantOrchestrator:
             plan = await self.planner.plan(
                 user=user,
                 text=text,
+                known_context=planner_context.to_prompt_text(),
                 media_context=media_context,
                 available_media=available_media,
                 agent_run_id=run.id,
                 session=self.session,
+            )
+            _store_planner_trace(
+                run,
+                self.planner.last_trace,
+                stage="after_media_understanding",
+                planner_context=planner_context,
             )
             selected_media = _selected_or_current_media(plan, available_media, selected_media)
             if selected_media is not None:
@@ -681,8 +739,32 @@ class AssistantOrchestrator:
         if plan.tool_calls:
             await progress("⚙️ Выполняю: задачи, память, календарь…")
         action_results, buttons = await self._apply_tool_calls(
-            user=user, run=run, plan=plan, source_message_id=inbound.id
+            user=user,
+            run=run,
+            plan=plan,
+            source_message_id=inbound.id,
+            planner_context=planner_context,
         )
+
+        if not action_results and plan.mode == "tool_calls":
+            reply_text = _safe_action_failure_reply(user, "missing_tool")
+            outbound = Message(
+                conversation_id=conversation.id,
+                user_id=user.id,
+                role=MessageRole.ASSISTANT,
+                content=reply_text,
+                char_count=len(reply_text),
+                telegram_chat_id=telegram_chat_id,
+            )
+            self.session.add(outbound)
+            await self.runs.mark_completed(run, result_summary="planner_no_backend_tool")
+            needs_compaction = await self._needs_compaction(conversation)
+            return AssistantResult(
+                reply_text=reply_text,
+                buttons=buttons,
+                agent_run_id=run.id,
+                needs_compaction=needs_compaction,
+            )
 
         if action_results and not plan.should_answer_normally:
             reply_text = self._format_action_results_reply(action_results)
@@ -716,6 +798,26 @@ class AssistantOrchestrator:
             )
             self.session.add(outbound)
             await self.runs.mark_completed(run, result_summary=reply_text[:2000])
+            needs_compaction = await self._needs_compaction(conversation)
+            return AssistantResult(
+                reply_text=reply_text,
+                buttons=buttons,
+                agent_run_id=run.id,
+                needs_compaction=needs_compaction,
+            )
+
+        if not action_results and not plan.final_answer:
+            reply_text = _safe_no_answer_reply(user)
+            outbound = Message(
+                conversation_id=conversation.id,
+                user_id=user.id,
+                role=MessageRole.ASSISTANT,
+                content=reply_text,
+                char_count=len(reply_text),
+                telegram_chat_id=telegram_chat_id,
+            )
+            self.session.add(outbound)
+            await self.runs.mark_completed(run, result_summary="planner_no_final_answer")
             needs_compaction = await self._needs_compaction(conversation)
             return AssistantResult(
                 reply_text=reply_text,
@@ -762,8 +864,6 @@ class AssistantOrchestrator:
                     session=self.session,
                 )
             reply_text = response.text.strip() or FALLBACK_REPLY
-            if not action_results and _completion_claim_without_actions(reply_text):
-                reply_text = "Не выполнял действий. Если нужно действие, напиши его явно."
             run.metadata_ = {**run.metadata_, "context_snapshot": context.debug_snapshot}
         except Exception as exc:  # noqa: BLE001 — chat must answer something
             log.exception("final LLM reply failed")
@@ -906,6 +1006,7 @@ class AssistantOrchestrator:
         run,
         plan: AgentPlan,
         source_message_id: uuid.UUID,
+        planner_context: PlannerContext,
     ) -> tuple[list[str], list[list[Button]]]:
         results: list[str] = []
         buttons: list[list[Button]] = []
@@ -919,6 +1020,7 @@ class AssistantOrchestrator:
                     call=call,
                     task_signal=task_signal,
                     source_message_id=source_message_id,
+                    language=plan.language,
                     results=results,
                     buttons=buttons,
                 )
@@ -928,6 +1030,18 @@ class AssistantOrchestrator:
                     run=run,
                     call=call,
                     results=results,
+                )
+            elif call.name == "update_task":
+                patch = TaskPatchRequest.model_validate(_args_with_call_defaults(call))
+                await self._apply_update_task_tool(
+                    user=user,
+                    run=run,
+                    call=call,
+                    patch=patch,
+                    planner_context=planner_context,
+                    language=plan.language,
+                    results=results,
+                    buttons=buttons,
                 )
             elif call.name == "rename_task":
                 update = TaskUpdate.model_validate({
@@ -998,6 +1112,7 @@ class AssistantOrchestrator:
         call: PlannedToolCall,
         task_signal: ExtractedTask,
         source_message_id: uuid.UUID,
+        language: str,
         results: list[str],
         buttons: list[list[Button]],
     ) -> None:
@@ -1010,15 +1125,26 @@ class AssistantOrchestrator:
                 args=task_signal.model_dump(mode="json"),
                 result={"task_id": str(task.id)},
             )
-            desc = f"Создана задача: «{task.title}»"
+            if _language_is_english(language):
+                desc = f"Created task: “{task.title}”"
+            else:
+                desc = f"Создана задача: «{task.title}»"
             if task.reminder_at:
-                desc += f", напоминание {fmt_local(task.reminder_at, user.timezone)}"
+                if _language_is_english(language):
+                    desc += f", reminder {fmt_local(task.reminder_at, user.timezone)}"
+                else:
+                    desc += f", напоминание {fmt_local(task.reminder_at, user.timezone)}"
             elif task.due_at:
-                desc += f", срок {fmt_local(task.due_at, user.timezone)}"
+                if _language_is_english(language):
+                    desc += f", due {fmt_local(task.due_at, user.timezone)}"
+                else:
+                    desc += f", срок {fmt_local(task.due_at, user.timezone)}"
             results.append(desc)
+            done_text = "✓ Done" if _language_is_english(language) else "✓ Выполнено"
+            snooze_text = "⏰ Snooze" if _language_is_english(language) else "⏰ Отложить"
             buttons.append([
-                Button(text="✓ Выполнено", callback_data=f"task_done:{task.id}"),
-                Button(text="⏰ Отложить", callback_data=f"task_snooze:{task.id}:tomorrow"),
+                Button(text=done_text, callback_data=f"task_done:{task.id}"),
+                Button(text=snooze_text, callback_data=f"task_snooze:{task.id}:tomorrow"),
             ])
         elif task_signal.confidence >= TASK_CONFIRM_CONFIDENCE:
             payload = {
@@ -1036,12 +1162,28 @@ class AssistantOrchestrator:
                 args=payload,
                 requires_confirmation=True, confirmation_id=confirmation.id,
             )
-            results.append(f"Предложена задача «{task_signal.title}» — ждет подтверждения")
+            if _language_is_english(language):
+                results.append(f"Proposed task “{task_signal.title}” — waiting for confirmation")
+                confirm_text = f"✓ Create: {task_signal.title[:28]}"
+                reject_text = "✗ No"
+            else:
+                results.append(f"Предложена задача «{task_signal.title}» — ждет подтверждения")
+                confirm_text = f"✓ Создать: {task_signal.title[:28]}"
+                reject_text = "✗ Не надо"
             buttons.append([
-                Button(text=f"✓ Создать: {task_signal.title[:28]}",
-                       callback_data=f"confirm:{confirmation.id}"),
-                Button(text="✗ Не надо", callback_data=f"reject:{confirmation.id}"),
+                Button(text=confirm_text, callback_data=f"confirm:{confirmation.id}"),
+                Button(text=reject_text, callback_data=f"reject:{confirmation.id}"),
             ])
+        else:
+            args = task_signal.model_dump(mode="json")
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name="create_task",
+                status="skipped",
+                args=args,
+                result={"reason": "low_confidence"},
+            )
+            results.append(_safe_action_failure_reply(user, "low_confidence"))
 
     async def _apply_read_tasks_tool(
         self,
@@ -1075,6 +1217,166 @@ class AssistantOrchestrator:
             meta.extend(f"#{tag}" for tag in (task.tags or [])[:3])
             lines.append(f"{index}. {task.title} — " + ", ".join(meta))
         results.append("\n".join(lines))
+
+    async def _apply_update_task_tool(
+        self,
+        *,
+        user: User,
+        run,
+        call: PlannedToolCall,
+        patch: TaskPatchRequest,
+        planner_context: PlannerContext,
+        language: str,
+        results: list[str],
+        buttons: list[list[Button]],
+    ) -> None:
+        updates = patch.update_fields()
+        args = {
+            **patch.model_dump(mode="json"),
+            "updates": updates,
+            **_call_source_payload(call),
+        }
+        if not updates:
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name="update_task",
+                status="skipped",
+                args=args,
+                result={"reason": "no_updates"},
+            )
+            results.append(format_task_update_no_updates_reply(language=language))
+            return
+
+        candidates = await self._resolve_update_task_candidates(
+            user=user,
+            patch=patch,
+            planner_context=planner_context,
+        )
+        if not candidates:
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name="update_task",
+                status="skipped",
+                args=args,
+                result={"candidate_task_ids": []},
+            )
+            results.append(format_task_update_not_found_reply(
+                task_query=patch.task_query,
+                recency_hint=patch.recency_hint,
+                language=language,
+            ))
+            return
+
+        if len(candidates) > 1:
+            payload = {
+                "task_query": patch.task_query,
+                "recency_hint": patch.recency_hint,
+                "updates": updates,
+                "candidate_task_ids": [str(task.id) for task in candidates],
+                "agent_run_id": str(run.id),
+                "language": language,
+                **_call_source_payload(call),
+            }
+            confirmation = await self.confirmations.create(
+                user,
+                action_type="update_task_choice",
+                action_payload=payload,
+                prompt=_prompt_with_evidence(
+                    format_task_update_choice_prompt(language=language),
+                    call,
+                ),
+            )
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name="update_task",
+                status="requires_confirmation",
+                args=args,
+                result={"candidate_task_ids": [str(task.id) for task in candidates]},
+                requires_confirmation=True,
+                confirmation_id=confirmation.id,
+            )
+            results.append(format_task_update_ambiguous_reply(language=language))
+            for index, task in enumerate(candidates[:5]):
+                buttons.append([
+                    Button(
+                        text=_rename_choice_button_text(task),
+                        callback_data=_update_choice_callback(confirmation.id, index),
+                    )
+                ])
+            return
+
+        task = candidates[0]
+        if _image_sourced_write(call):
+            payload = {
+                "task_id": str(task.id),
+                "updates": updates,
+                "agent_run_id": str(run.id),
+                "language": language,
+                **_call_source_payload(call),
+            }
+            confirmation = await self.confirmations.create(
+                user,
+                action_type="update_task",
+                action_payload=payload,
+                prompt=_prompt_with_evidence(
+                    format_task_update_confirmation_prompt(task.title, language=language),
+                    call,
+                ),
+            )
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name="update_task",
+                status="requires_confirmation",
+                args=args,
+                result={"task_id": str(task.id)},
+                requires_confirmation=True,
+                confirmation_id=confirmation.id,
+            )
+            results.append(f"Предлагаю обновить «{task.title}» — подтверди кнопкой.")
+            buttons.append([
+                Button(text="✓ Обновить", callback_data=f"confirm:{confirmation.id}"),
+                Button(text="✗ Не надо", callback_data=f"reject:{confirmation.id}"),
+            ])
+            return
+
+        task = await self.tasks.update_task(
+            user,
+            task,
+            updates,
+            actor="agent",
+            agent_run_id=run.id,
+        )
+        await self.runs.log_tool_call(
+            run=run,
+            tool_name="update_task",
+            status="completed",
+            args=args,
+            result={"task_id": str(task.id), "updated_fields": sorted(updates)},
+        )
+        results.append(format_task_update_reply(task, updates, language=language))
+
+    async def _resolve_update_task_candidates(
+        self,
+        *,
+        user: User,
+        patch: TaskPatchRequest,
+        planner_context: PlannerContext,
+    ) -> list[Task]:
+        if patch.task_id is not None:
+            task = await self.tasks.get(user, patch.task_id)
+            return [task] if task is not None and task.status != TaskStatus.DONE else []
+
+        if patch.recency_hint:
+            ref = planner_context.task_ref_for_recency_hint(patch.recency_hint)
+            if ref is not None:
+                task = await self.tasks.get(user, ref.task_id)
+                if task is not None and task.status != TaskStatus.DONE:
+                    return [task]
+
+        if patch.task_query:
+            return await self.tasks.find_open_rename_candidates(user, patch.task_query)
+
+        return []
 
     async def _apply_rename_task_tool(
         self,

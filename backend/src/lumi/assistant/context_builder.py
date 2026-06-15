@@ -18,6 +18,7 @@ from lumi.assistant.prompts import CONTEXT_PREAMBLE, LUMI_SYSTEM_PROMPT
 from lumi.assistant.schemas import MediaUnderstanding
 from lumi.config import get_settings
 from lumi.db.models import (
+    AgentRun,
     Conversation,
     ConversationSummary,
     EmailCategory,
@@ -25,6 +26,8 @@ from lumi.db.models import (
     Message,
     MessageRole,
     ScheduledTask,
+    Task,
+    ToolCall,
     User,
 )
 from lumi.llm.base import LLMImagePart, LLMMessage, LLMTextPart, content_char_count
@@ -39,6 +42,183 @@ class BuiltContext:
     messages: list[LLMMessage]
     debug_snapshot: dict = field(default_factory=dict)
     estimated_chars: int = 0
+
+
+TASK_CONTEXT_TOOLS = {
+    "create_task",
+    "update_task",
+    "rename_task",
+    "complete_task",
+    "snooze_task",
+}
+
+
+@dataclass(slots=True)
+class PlannerTaskRef:
+    task_id: uuid.UUID
+    title: str
+    project: str | None = None
+    status: str = "active"
+    source_tool: str | None = None
+    timestamp: str | None = None
+
+    @classmethod
+    def from_task(
+        cls,
+        task: Task,
+        *,
+        source_tool: str | None = None,
+        timestamp: str | None = None,
+    ) -> PlannerTaskRef:
+        status = task.status.value if hasattr(task.status, "value") else str(task.status)
+        return cls(
+            task_id=task.id,
+            title=task.title,
+            project=task.project,
+            status=status,
+            source_tool=source_tool,
+            timestamp=timestamp,
+        )
+
+    def to_prompt_line(self) -> str:
+        parts = [
+            f"task_id={self.task_id}",
+            f'title="{self.title[:180]}"',
+            f'project="{self.project}"' if self.project else "project=null",
+            f"status={self.status}",
+        ]
+        if self.source_tool:
+            parts.append(f"source_tool={self.source_tool}")
+        if self.timestamp:
+            parts.append(f"timestamp={self.timestamp}")
+        return "- " + " ".join(parts)
+
+
+@dataclass(slots=True)
+class PlannerContext:
+    recent_task_refs: list[PlannerTaskRef] = field(default_factory=list)
+    active_task_candidates: list[PlannerTaskRef] = field(default_factory=list)
+    known_projects: list[str] = field(default_factory=list)
+
+    def to_prompt_text(self) -> str:
+        lines = [
+            "Planner context (backend state for intent resolution; not actions performed now):",
+            "Use task_id or recency_hint for short follow-ups that refer to a recent "
+            "backend task action.",
+            "For project/metadata changes to tasks use update_task, not rename_task.",
+        ]
+        lines.append("recent_task_refs:")
+        if self.recent_task_refs:
+            lines.extend(ref.to_prompt_line() for ref in self.recent_task_refs)
+        else:
+            lines.append("- none")
+        lines.append("active_task_candidates:")
+        if self.active_task_candidates:
+            lines.extend(ref.to_prompt_line() for ref in self.active_task_candidates)
+        else:
+            lines.append("- none")
+        known_projects = ", ".join(self.known_projects) if self.known_projects else "none"
+        lines.append("known_projects: " + known_projects)
+        return "\n".join(lines)
+
+    def to_trace_summary(self) -> dict[str, int]:
+        return {
+            "recent_task_ref_count": len(self.recent_task_refs),
+            "active_task_count": len(self.active_task_candidates),
+            "known_project_count": len(self.known_projects),
+        }
+
+    def task_ref_for_recency_hint(self, hint: str | None) -> PlannerTaskRef | None:
+        if hint == "last_created_task":
+            return next(
+                (ref for ref in self.recent_task_refs if ref.source_tool == "create_task"),
+                None,
+            )
+        if hint == "last_touched_task":
+            return self.recent_task_refs[0] if self.recent_task_refs else None
+        return None
+
+
+class PlannerContextBuilder:
+    """Small backend-derived context for the first planner call."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+        self.tasks = TaskService(session)
+
+    async def build(self, *, user: User, conversation: Conversation) -> PlannerContext:
+        active_tasks = await self.tasks.list_active(user, limit=15)
+        project_rows = await self.tasks.list_active(user, limit=200)
+        known_projects = sorted({task.project for task in project_rows if task.project})
+        recent_refs = await self._recent_task_refs(user=user, conversation=conversation)
+        return PlannerContext(
+            recent_task_refs=recent_refs,
+            active_task_candidates=[
+                PlannerTaskRef.from_task(task) for task in active_tasks
+            ],
+            known_projects=known_projects[:30],
+        )
+
+    async def _recent_task_refs(
+        self,
+        *,
+        user: User,
+        conversation: Conversation,
+        limit: int = 8,
+    ) -> list[PlannerTaskRef]:
+        result = await self.session.execute(
+            select(ToolCall, AgentRun)
+            .join(AgentRun, ToolCall.agent_run_id == AgentRun.id)
+            .where(
+                ToolCall.user_id == user.id,
+                ToolCall.status == "completed",
+                ToolCall.tool_name.in_(TASK_CONTEXT_TOOLS),
+                AgentRun.conversation_id == conversation.id,
+            )
+            .order_by(ToolCall.created_at.desc())
+            .limit(30)
+        )
+        rows = list(result.all())
+        task_ids: list[uuid.UUID] = []
+        call_by_task_id: dict[uuid.UUID, ToolCall] = {}
+        for call, _run in rows:
+            task_id = _task_id_from_tool_call(call)
+            if task_id is None or task_id in call_by_task_id:
+                continue
+            task_ids.append(task_id)
+            call_by_task_id[task_id] = call
+            if len(task_ids) >= limit:
+                break
+        if not task_ids:
+            return []
+        task_result = await self.session.execute(
+            select(Task).where(Task.user_id == user.id, Task.id.in_(task_ids))
+        )
+        tasks_by_id = {task.id: task for task in task_result.scalars()}
+        refs: list[PlannerTaskRef] = []
+        for task_id in task_ids:
+            task = tasks_by_id.get(task_id)
+            call = call_by_task_id[task_id]
+            if task is None:
+                continue
+            refs.append(PlannerTaskRef.from_task(
+                task,
+                source_tool=call.tool_name,
+                timestamp=call.created_at.isoformat() if call.created_at else None,
+            ))
+        return refs
+
+
+def _task_id_from_tool_call(call: ToolCall) -> uuid.UUID | None:
+    payloads = [call.result_json or {}, call.args_json or {}]
+    for payload in payloads:
+        raw = payload.get("task_id") if isinstance(payload, dict) else None
+        if raw:
+            try:
+                return uuid.UUID(str(raw))
+            except ValueError:
+                return None
+    return None
 
 
 class ContextBuilder:
@@ -193,7 +373,9 @@ class ContextBuilder:
 
         if action_results:
             sections.append(
-                "Only backend actions performed for the current message:\n"
+                "Backend action facts for the current message (source of truth):\n"
+                "- Only the items below were executed, proposed for confirmation, skipped, or failed by backend.\n"
+                "- Do not claim any other backend action happened.\n"
                 + "\n".join(f"- {r}" for r in action_results)
             )
 
