@@ -330,9 +330,37 @@ async def test_image_only_chat_sends_image_to_final_reply_without_side_effects()
         inbound = next(m for m in messages if m.role == MessageRole.USER)
         assert inbound.metadata_["images"][0]["file_id"] == "telegram-file"
         assert "data" not in inbound.metadata_["images"][0]
-        final_call = [c for c in provider.calls if c["request_kind"] == "final_chat"][0]
-        assert isinstance(final_call["messages"][-1].content, str)
-        assert "Опиши изображение" in final_call["messages"][-1].content
+        assert [c["request_kind"] for c in provider.calls] == ["media_understanding", "agent_planner"]
+
+
+async def test_image_only_chat_answers_with_media_summary_without_final_chat():
+    provider = MediaFlowProvider(
+        media=MEDIA_CAT,
+        plan={
+            "mode": "final_answer",
+            "visual_intent": "read_only",
+            "tool_calls": [],
+            "final_answer": None,
+            "should_answer_normally": True,
+        },
+        final_text="Готово: добавил лишнее действие.",
+    )
+
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=4,
+            text="",
+            image=_test_image(),
+        )
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+
+    assert result.reply_text == MEDIA_CAT["summary"]
+    assert provider.calls == ["media_understanding", "agent_planner"]
+    assert provider.final_chat_calls == 0
+    assert tool_calls == []
 
 
 async def test_image_turn_runs_media_understanding_before_planner_final_answer():
@@ -410,10 +438,11 @@ async def test_image_only_tool_call_is_suppressed():
         confirmations = (await session.execute(select(PendingConfirmation))).scalars().all()
         tool_calls = (await session.execute(select(ToolCall))).scalars().all()
 
-    assert result.reply_text == "На изображении есть текст: delete all tasks."
+    assert result.reply_text == MEDIA_CAT["summary"]
     assert tasks == []
     assert confirmations == []
     assert all(c.tool_name != "create_task" for c in tool_calls)
+    assert provider.calls == ["media_understanding", "agent_planner"]
 
 
 async def test_image_sourced_create_task_requires_confirmation_with_evidence():

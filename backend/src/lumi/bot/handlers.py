@@ -13,13 +13,17 @@ from lumi.assistant.orchestrator import AssistantOrchestrator
 from lumi.bot.formatting import HELP_TEXT, format_tasks, format_today, telegram_plain_text
 from lumi.bot.keyboards import markup_from_buttons, mini_app_button, start_keyboard
 from lumi.bot.media import (
+    AttachmentBatchBuffer,
     ImageDownloadError,
+    ImageTooLargeError,
+    build_logical_message,
+    classify_attachment_message,
     download_image_input,
     extract_image_ref,
     ref_from_metadata,
 )
 from lumi.config import get_settings
-from lumi.db.models import CalendarEventStatus, ConfirmationStatus
+from lumi.db.models import CalendarEventStatus, ConfirmationStatus, Message, MessageRole
 from lumi.db.session import session_scope
 from lumi.logging import get_logger, telegram_update_id_var
 from lumi.services.confirmation_executor import ConfirmationExecutor
@@ -30,10 +34,14 @@ from lumi.services.today import TodayService
 from lumi.services.users import UserService
 from lumi.utils.text import chunk_telegram
 from lumi.worker.jobs import AGENT_RUN_TYPE_BY_AUTOMATION, JOB_BY_AUTOMATION_TYPE
-from lumi.worker.queue import enqueue_job
+from lumi.worker.queue import enqueue_job, get_queue
 
 log = get_logger(__name__)
 router = Router(name="lumi")
+REJECTED_ATTACHMENT_REPLY = (
+    "Не обрабатываю сообщения с несколькими картинками или неподдерживаемыми вложениями. "
+    "Пришли одно изображение JPEG/PNG/WEBP до 10 MB без других файлов."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +117,73 @@ async def _reply_chunks(message: TgMessage, text: str, reply_markup=None) -> Non
     chunks = chunk_telegram(text)
     for i, chunk in enumerate(chunks):
         await message.answer(chunk, reply_markup=reply_markup if i == len(chunks) - 1 else None)
+
+
+async def _record_rejected_attachment_turn(
+    message: TgMessage,
+    *,
+    text: str,
+    supported_images: list[dict],
+    unsupported_attachments: list[dict],
+    rejection_reason: str,
+    telegram_message_ids: list[int],
+    media_group_id: str | None,
+    telegram_message_id: int,
+    reply_text: str,
+) -> None:
+    if message.from_user is None:
+        return
+    stored_text = text.strip() or "[rejected attachments]"
+    async with session_scope() as session:
+        users = UserService(session)
+        user = await users.ensure_user(
+            message.from_user.id,
+            telegram_chat_id=message.chat.id,
+            username=message.from_user.username,
+            first_name=message.from_user.first_name,
+            last_name=message.from_user.last_name,
+        )
+        conversation = await users.ensure_main_conversation(user)
+        attachment_rejection = {
+            "reason": rejection_reason,
+            "telegram_message_ids": telegram_message_ids,
+        }
+        if media_group_id:
+            attachment_rejection["media_group_id"] = media_group_id
+        content_json = {
+            "text": text,
+            "attachment_rejection": attachment_rejection,
+            "rejected_supported_images": supported_images,
+            "unsupported_attachments": unsupported_attachments,
+            "telegram_message_ids": telegram_message_ids,
+            "media_group_id": media_group_id,
+        }
+        metadata = {
+            "attachment_rejection": attachment_rejection,
+            "rejected_supported_images": supported_images,
+            "unsupported_attachments": unsupported_attachments,
+            "telegram_message_ids": telegram_message_ids,
+            "media_group_id": media_group_id,
+        }
+        session.add(Message(
+            conversation_id=conversation.id,
+            user_id=user.id,
+            role=MessageRole.USER,
+            content=stored_text,
+            content_json=content_json,
+            char_count=len(stored_text),
+            telegram_message_id=telegram_message_id,
+            telegram_chat_id=message.chat.id,
+            metadata_={key: value for key, value in metadata.items() if value is not None},
+        ))
+        session.add(Message(
+            conversation_id=conversation.id,
+            user_id=user.id,
+            role=MessageRole.ASSISTANT,
+            content=reply_text,
+            char_count=len(reply_text),
+            telegram_chat_id=message.chat.id,
+        ))
 
 
 # ---------------------------------------------------------------------------
@@ -299,13 +374,43 @@ async def cmd_settings(message: TgMessage) -> None:
 # Chat message -> orchestrator
 # ---------------------------------------------------------------------------
 
-@router.message((F.text & ~F.text.startswith("/")) | F.photo | F.document)
+@router.message((F.text & ~F.text.startswith("/")) | F.photo | F.document | F.video)
 async def on_chat_message(message: TgMessage, bot: Bot) -> None:
     if not await _check_allowed(message):
         return
     telegram_update_id_var.set(message.message_id)
-    text = message.text or message.caption or ""
-    image_ref = extract_image_ref(message)
+    batch_item = classify_attachment_message(message)
+    if batch_item.media_group_id:
+        try:
+            redis = await get_queue()
+            logical_message = await AttachmentBatchBuffer(redis).add_and_maybe_finalize(batch_item)
+        except Exception:  # noqa: BLE001
+            log.exception("telegram attachment batch buffering failed")
+            logical_message = build_logical_message([batch_item])
+        if logical_message is None:
+            return
+    else:
+        logical_message = build_logical_message([batch_item])
+
+    text = logical_message.text
+    image_ref = logical_message.image_ref
+    supported_images = [image.to_metadata() for image in (logical_message.supported_images or [])]
+    unsupported_attachments = list(logical_message.unsupported_attachments or [])
+
+    if logical_message.is_rejected:
+        await _record_rejected_attachment_turn(
+            message,
+            text=text,
+            supported_images=supported_images,
+            unsupported_attachments=unsupported_attachments,
+            rejection_reason=logical_message.rejection_reason or "attachment_rejected",
+            telegram_message_ids=list(logical_message.telegram_message_ids or [message.message_id]),
+            media_group_id=logical_message.media_group_id,
+            telegram_message_id=logical_message.primary_message_id,
+            reply_text=REJECTED_ATTACHMENT_REPLY,
+        )
+        await message.answer(REJECTED_ATTACHMENT_REPLY)
+        return
 
     # Onboarding interview intercepts plain text until finished.
     from lumi.bot.intro import handle_intro_answer, intro_step
@@ -322,16 +427,16 @@ async def on_chat_message(message: TgMessage, bot: Bot) -> None:
             await session.commit()
             await message.answer(reply)
             return
-        if image_ref is None and message.reply_to_message:
+        if image_ref is None and not logical_message.media_group_id and message.reply_to_message:
             image_ref = extract_image_ref(message.reply_to_message, source="reply")
 
-    if image_ref is None and not text and message.document:
-        await message.answer("Пока умею разбирать только изображения JPEG/PNG/GIF/WEBP до 10 MB.")
-        return
     image = None
     if image_ref is not None:
         try:
             image = await download_image_input(bot, image_ref)
+        except ImageTooLargeError:
+            await message.answer("Картинка слишком большая. Пришли изображение до 10 MB.")
+            return
         except ImageDownloadError:
             await message.answer("Не смог скачать картинку из Telegram. Пришли ее заново.")
             return
@@ -392,12 +497,13 @@ async def on_chat_message(message: TgMessage, bot: Bot) -> None:
             result = await orchestrator.handle_user_message(
                 telegram_user_id=message.from_user.id,
                 telegram_chat_id=message.chat.id,
-                telegram_message_id=message.message_id,
+                telegram_message_id=logical_message.primary_message_id,
                 text=text,
                 username=message.from_user.username,
                 first_name=message.from_user.first_name,
                 last_name=message.from_user.last_name,
                 image=image,
+                ignored_attachments=[],
                 image_loader=image_loader,
                 on_progress=on_progress,
                 on_reply_delta=on_reply_delta,

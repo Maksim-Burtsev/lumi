@@ -27,6 +27,7 @@ class ImageInput:
     height: int | None = None
     source: str = "attached"
     telegram_message_id: int | None = None
+    media_group_id: str | None = None
 
     def to_llm_part(self) -> LLMImagePart:
         return LLMImagePart(data=self.data, mime_type=self.mime_type)
@@ -42,6 +43,7 @@ class ImageInput:
             "height": self.height,
             "source": self.source,
             "telegram_message_id": self.telegram_message_id,
+            "media_group_id": self.media_group_id,
         }
         return {k: v for k, v in data.items() if v is not None}
 

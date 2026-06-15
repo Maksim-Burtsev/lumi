@@ -303,6 +303,7 @@ class AssistantOrchestrator:
         first_name: str | None = None,
         last_name: str | None = None,
         image: ImageInput | None = None,
+        ignored_attachments: list[dict] | None = None,
         image_loader: ImageLoader | None = None,
         on_progress=None,
         on_reply_delta=None,
@@ -324,8 +325,20 @@ class AssistantOrchestrator:
         )
         conversation = await self.users.ensure_main_conversation(user)
         image_metadata = [image.to_metadata()] if image else []
+        ignored_attachment_metadata = list(ignored_attachments or [])
         stored_text = text.strip() or ("[image]" if image else "")
         final_text = text.strip() or ("Опиши изображение и ответь на вопрос пользователя." if image else "")
+
+        content_json = None
+        metadata: dict = {}
+        if image_metadata or ignored_attachment_metadata:
+            content_json = {"text": text}
+            if image_metadata:
+                content_json["images"] = image_metadata
+                metadata["images"] = image_metadata
+            if ignored_attachment_metadata:
+                content_json["ignored_attachments"] = ignored_attachment_metadata
+                metadata["ignored_attachments"] = ignored_attachment_metadata
 
         # 2. Save inbound message
         inbound = Message(
@@ -333,11 +346,11 @@ class AssistantOrchestrator:
             user_id=user.id,
             role=MessageRole.USER,
             content=stored_text,
-            content_json={"text": text, "images": image_metadata} if image_metadata else None,
+            content_json=content_json,
             char_count=len(stored_text),
             telegram_message_id=telegram_message_id,
             telegram_chat_id=telegram_chat_id,
-            metadata_={"images": image_metadata} if image_metadata else {},
+            metadata_=metadata,
         )
         self.session.add(inbound)
         await self.session.flush()
@@ -387,7 +400,12 @@ class AssistantOrchestrator:
                 image=image,
             )
 
-        recent_media = await self._recent_media_candidates(conversation.id, exclude_message_id=inbound.id)
+        recent_media = []
+        if not ignored_attachment_metadata:
+            recent_media = await self._recent_media_candidates(
+                conversation.id,
+                exclude_message_id=inbound.id,
+            )
         available_media = _dedupe_media_candidates(
             ([current_media] if current_media is not None else []) + recent_media
         )
@@ -556,6 +574,30 @@ class AssistantOrchestrator:
                 ),
                 "should_answer_normally": False,
             })
+
+        if (
+            selected_media is not None
+            and media_context is not None
+            and not text.strip()
+            and not plan.tool_calls
+        ):
+            reply_text = media_context.summary or plan.final_answer or "Не смог уверенно описать изображение."
+            outbound = Message(
+                conversation_id=conversation.id,
+                user_id=user.id,
+                role=MessageRole.ASSISTANT,
+                content=reply_text,
+                char_count=len(reply_text),
+                telegram_chat_id=telegram_chat_id,
+            )
+            self.session.add(outbound)
+            await self.runs.mark_completed(run, result_summary=reply_text[:2000])
+            needs_compaction = await self._needs_compaction(conversation)
+            return AssistantResult(
+                reply_text=reply_text,
+                agent_run_id=run.id,
+                needs_compaction=needs_compaction,
+            )
 
         if plan.mode == "needs_focused_vision":
             if selected_media is not None and selected_image is None:
