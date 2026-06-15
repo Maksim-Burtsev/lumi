@@ -92,6 +92,12 @@ make reset-local-db                         # снести volumes (данные
 `telegram_update_id` (бот). История запусков — Mini App → Agent Runs (статусы, длительности,
 tool calls, LLM calls, ошибки).
 
+## Agent self-QA
+
+Для нетривиальных изменений бота, Mini App, planner/tools или observability агент должен
+пройти [agent self-QA](agent-qa.md): isolated worktree/runtime, Telegram Web через
+Chrome/CDP, Mini App через HTTPS tunnel, DB/log evidence и release gates.
+
 ## Типовые проблемы
 
 | Симптом | Причина → решение |
