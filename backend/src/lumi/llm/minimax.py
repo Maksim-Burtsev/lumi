@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import time
@@ -17,10 +18,14 @@ from tenacity import (
 
 from lumi.llm.base import (
     LLMError,
+    LLMImagePart,
     LLMMessage,
     LLMResponse,
     LLMResponseFormatError,
+    LLMTextPart,
     LLMTimeoutError,
+    content_char_count,
+    content_to_text,
     estimate_tokens,
 )
 from lumi.llm.json_utils import extract_json
@@ -36,8 +41,6 @@ def strip_reasoning(text: str) -> str:
     """M3 is a reasoning model: the OpenAI-compatible endpoint returns its
     chain-of-thought inside <think>…</think> in content. Users must never see it."""
     return _THINK_RE.sub("", text).strip()
-
-
 
 
 class ThinkStreamFilter:
@@ -131,12 +134,42 @@ class MiniMaxProvider:
             raise LLMError(f"MiniMax transport error: {exc}") from exc
 
     @staticmethod
-    def _build_messages(messages: list[LLMMessage], system: str | None) -> list[dict[str, str]]:
-        out: list[dict[str, str]] = []
+    def _build_content(content) -> str | list[dict[str, Any]]:
+        if isinstance(content, str):
+            return content
+        out: list[dict[str, Any]] = []
+        for part in content:
+            if isinstance(part, LLMTextPart):
+                out.append({"type": "text", "text": part.text})
+            elif isinstance(part, LLMImagePart):
+                encoded = base64.b64encode(part.data).decode("ascii")
+                image_url: dict[str, Any] = {
+                    "url": f"data:{part.mime_type};base64,{encoded}",
+                }
+                if part.detail != "default":
+                    image_url["detail"] = part.detail
+                if part.max_long_side_pixel is not None:
+                    image_url["max_long_side_pixel"] = part.max_long_side_pixel
+                out.append({"type": "image_url", "image_url": image_url})
+        return out
+
+    @staticmethod
+    def _build_messages(messages: list[LLMMessage], system: str | None) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
         if system:
             out.append({"role": "system", "content": system})
-        out.extend({"role": m.role, "content": m.content} for m in messages)
+        out.extend({"role": m.role, "content": MiniMaxProvider._build_content(m.content)} for m in messages)
         return out
+
+    @staticmethod
+    def _input_chars(messages: list[LLMMessage], system: str | None) -> int:
+        return sum(content_char_count(m.content) for m in messages) + len(system or "")
+
+    @staticmethod
+    def _token_text(messages: list[LLMMessage], system: str | None) -> str:
+        parts = [system or ""]
+        parts.extend(content_to_text(m.content) for m in messages)
+        return " ".join(parts)
 
     async def complete(
         self,
@@ -150,7 +183,7 @@ class MiniMaxProvider:
         force_json: bool = False,
     ) -> LLMResponse:
         api_messages = self._build_messages(messages, system)
-        input_chars = sum(len(m["content"]) for m in api_messages)
+        input_chars = self._input_chars(messages, system)
         started = time.monotonic()
         payload: dict[str, Any] = {
             "model": self.model,
@@ -185,7 +218,7 @@ class MiniMaxProvider:
             latency_ms=latency_ms,
             input_chars=input_chars,
             output_chars=len(text),
-            input_tokens=usage.get("prompt_tokens") or estimate_tokens(" ".join(m["content"] for m in api_messages)),
+            input_tokens=usage.get("prompt_tokens") or estimate_tokens(self._token_text(messages, system)),
             output_tokens=usage.get("completion_tokens") or estimate_tokens(text),
         )
 
@@ -205,7 +238,7 @@ class MiniMaxProvider:
         """Stream a completion. on_delta(visible_so_far) fires as text arrives;
         on_thinking() fires while the model is still inside its reasoning block."""
         api_messages = self._build_messages(messages, system)
-        input_chars = sum(len(m["content"]) for m in api_messages)
+        input_chars = self._input_chars(messages, system)
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": api_messages,
@@ -268,7 +301,7 @@ class MiniMaxProvider:
             latency_ms=latency_ms,
             input_chars=input_chars,
             output_chars=len(text),
-            input_tokens=estimate_tokens(" ".join(m["content"] for m in api_messages)),
+            input_tokens=estimate_tokens(self._token_text(messages, system)),
             output_tokens=estimate_tokens(text),
         )
 

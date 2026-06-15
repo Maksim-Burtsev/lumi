@@ -17,7 +17,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lumi.config import Settings, get_settings
 from lumi.db.models import LLMCall
 from lumi.db.session import session_scope
-from lumi.llm.base import LLMError, LLMMessage, LLMProvider, LLMResponse, LLMTimeoutError
+from lumi.llm.base import (
+    LLMError,
+    LLMMessage,
+    LLMProvider,
+    LLMResponse,
+    LLMTimeoutError,
+    content_char_count,
+    content_to_text,
+)
 from lumi.llm.minimax import MiniMaxProvider
 from lumi.llm.mock import MockLLMProvider
 from lumi.logging import get_logger
@@ -84,7 +92,7 @@ class LLMGateway:
                 user_id=user_id,
                 agent_run_id=agent_run_id,
                 latency_ms=int((time.monotonic() - started) * 1000),
-                input_chars=sum(len(m.content) for m in messages) + len(system or ""),
+                input_chars=self._input_chars(messages, system),
                 error_message=str(exc)[:1000],
             )
             raise
@@ -141,7 +149,7 @@ class LLMGateway:
                 user_id=user_id,
                 agent_run_id=agent_run_id,
                 latency_ms=int((time.monotonic() - started) * 1000),
-                input_chars=sum(len(m.content) for m in messages) + len(system or ""),
+                input_chars=self._input_chars(messages, system),
                 error_message=str(exc)[:1000],
             )
             raise
@@ -174,7 +182,7 @@ class LLMGateway:
         max_tokens: int = 4096,
     ) -> dict[str, Any]:
         started = time.monotonic()
-        input_chars = sum(len(m.content) for m in messages) + len(system or "")
+        input_chars = self._input_chars(messages, system)
         try:
             result = await self.provider.complete_json(
                 messages=messages,
@@ -215,8 +223,12 @@ class LLMGateway:
         digest.update((system or "").encode())
         for m in messages:
             digest.update(m.role.encode())
-            digest.update(m.content.encode())
+            digest.update(content_to_text(m.content).encode())
         return digest.hexdigest()[:16]
+
+    @staticmethod
+    def _input_chars(messages: list[LLMMessage], system: str | None) -> int:
+        return sum(content_char_count(m.content) for m in messages) + len(system or "")
 
     async def _log_call(
         self, *, session: AsyncSession | None = None, request_kind: str, status: str, **fields: Any

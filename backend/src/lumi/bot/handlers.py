@@ -12,6 +12,12 @@ from aiogram.types import Message as TgMessage
 from lumi.assistant.orchestrator import AssistantOrchestrator
 from lumi.bot.formatting import HELP_TEXT, format_tasks, format_today, telegram_plain_text
 from lumi.bot.keyboards import markup_from_buttons, mini_app_button, start_keyboard
+from lumi.bot.media import (
+    ImageDownloadError,
+    download_image_input,
+    extract_image_ref,
+    ref_from_metadata,
+)
 from lumi.config import get_settings
 from lumi.db.models import CalendarEventStatus, ConfirmationStatus
 from lumi.db.session import session_scope
@@ -290,14 +296,16 @@ async def cmd_settings(message: TgMessage) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Plain text -> orchestrator
+# Chat message -> orchestrator
 # ---------------------------------------------------------------------------
 
-@router.message(F.text & ~F.text.startswith("/"))
-async def on_text(message: TgMessage, bot: Bot) -> None:
+@router.message((F.text & ~F.text.startswith("/")) | F.photo | F.document)
+async def on_chat_message(message: TgMessage, bot: Bot) -> None:
     if not await _check_allowed(message):
         return
     telegram_update_id_var.set(message.message_id)
+    text = message.text or message.caption or ""
+    image_ref = extract_image_ref(message)
 
     # Onboarding interview intercepts plain text until finished.
     from lumi.bot.intro import handle_intro_answer, intro_step
@@ -307,10 +315,32 @@ async def on_text(message: TgMessage, bot: Bot) -> None:
             message.from_user.id, telegram_chat_id=message.chat.id
         )
         if intro_step(user) is not None:
-            reply, _finished = await handle_intro_answer(session, user, message.text or "")
+            if not text:
+                await message.answer("Сейчас идет /intro — ответь текстом или нажми /cancel.")
+                return
+            reply, _finished = await handle_intro_answer(session, user, text)
             await session.commit()
             await message.answer(reply)
             return
+        if image_ref is None and message.reply_to_message:
+            image_ref = extract_image_ref(message.reply_to_message, source="reply")
+
+    if image_ref is None and not text and message.document:
+        await message.answer("Пока умею разбирать только изображения JPEG/PNG/GIF/WEBP до 10 MB.")
+        return
+    image = None
+    if image_ref is not None:
+        try:
+            image = await download_image_input(bot, image_ref)
+        except ImageDownloadError:
+            await message.answer("Не смог скачать картинку из Telegram. Пришли ее заново.")
+            return
+
+    async def image_loader(metadata: dict):
+        ref = ref_from_metadata(metadata, source="recent")
+        if ref is None:
+            return None
+        return await download_image_input(bot, ref)
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
@@ -363,10 +393,12 @@ async def on_text(message: TgMessage, bot: Bot) -> None:
                 telegram_user_id=message.from_user.id,
                 telegram_chat_id=message.chat.id,
                 telegram_message_id=message.message_id,
-                text=message.text or "",
+                text=text,
                 username=message.from_user.username,
                 first_name=message.from_user.first_name,
                 last_name=message.from_user.last_name,
+                image=image,
+                image_loader=image_loader,
                 on_progress=on_progress,
                 on_reply_delta=on_reply_delta,
             )

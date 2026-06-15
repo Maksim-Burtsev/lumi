@@ -7,7 +7,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Any
 
-from lumi.llm.base import LLMMessage, LLMResponse
+from lumi.llm.base import LLMMessage, LLMResponse, content_char_count, content_to_text
 
 _CURRENT_DT_RE = re.compile(r"Current datetime:\s*(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})")
 _HOUR_RE = re.compile(r"\bв\s+(\d{1,2})(?::(\d{2}))?\b", re.IGNORECASE)
@@ -46,6 +46,9 @@ class MockLLMProvider:
     name = "mock"
     model = "mock-1"
 
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
     async def complete(
         self,
         *,
@@ -56,8 +59,9 @@ class MockLLMProvider:
         request_kind: str,
         metadata: dict[str, Any] | None = None,
     ) -> LLMResponse:
+        self.calls.append({"request_kind": request_kind, "messages": messages, "system": system})
         text = self._respond(request_kind, messages)
-        input_chars = sum(len(m.content) for m in messages) + len(system or "")
+        input_chars = sum(content_char_count(m.content) for m in messages) + len(system or "")
         return LLMResponse(
             text=text,
             provider=self.name,
@@ -82,6 +86,7 @@ class MockLLMProvider:
         on_thinking=None,
     ) -> LLMResponse:
         """Deterministic streaming: the canned reply arrives in 3 chunks."""
+        self.calls.append({"request_kind": request_kind, "messages": messages, "system": system})
         full = self._respond(request_kind, messages)
         step = max(1, len(full) // 3)
         acc = ""
@@ -89,7 +94,7 @@ class MockLLMProvider:
             acc = full[: i + step]
             if on_delta is not None:
                 await on_delta(acc)
-        input_chars = sum(len(m.content) for m in messages) + len(system or "")
+        input_chars = sum(content_char_count(m.content) for m in messages) + len(system or "")
         return LLMResponse(
             text=full, provider=self.name, model=self.model, latency_ms=3,
             input_chars=input_chars, output_chars=len(full),
@@ -115,14 +120,38 @@ class MockLLMProvider:
     # ------------------------------------------------------------------
 
     def _respond(self, request_kind: str, messages: list[LLMMessage]) -> str:
-        joined = "\n".join(m.content for m in messages)
+        joined = "\n".join(content_to_text(m.content) for m in messages)
+        if request_kind == "media_understanding":
+            return json.dumps(
+                {
+                    "summary": "На изображении виден объект или документ.",
+                    "visible_text": [],
+                    "entities": [],
+                    "action_relevant_facts": [],
+                    "instruction_like_text": [],
+                    "confidence": 0.5,
+                    "limitations": ["mock provider does not inspect real image pixels"],
+                },
+                ensure_ascii=False,
+            )
+        if request_kind == "focused_vision":
+            return json.dumps(
+                {
+                    "answer": "Не удалось уверенно рассмотреть эту деталь в mock-режиме.",
+                    "facts": [],
+                    "visible_text": [],
+                    "confidence": 0.0,
+                    "limitations": ["mock provider does not inspect real image pixels"],
+                },
+                ensure_ascii=False,
+            )
         if request_kind == "agent_planner":
             return json.dumps(self._extract_signals(joined), ensure_ascii=False)
         if request_kind == "signal_extraction":
             return json.dumps(self._extract_signals(joined), ensure_ascii=False)
         if request_kind == "chat_turn":
             # Combined call: signals extracted from the LAST user message only.
-            last_user = messages[-1].content if messages else ""
+            last_user = content_to_text(messages[-1].content) if messages else ""
             return json.dumps(
                 {"signals": self._extract_signals(last_user),
                  "reply": "Готово, я это зафиксировал."},

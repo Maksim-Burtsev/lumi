@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     allowed_telegram_user_ids: CsvIntList = Field(default_factory=list)
     log_unauthorized_telegram_ids: bool = True
+    telegram_image_max_bytes: int = 10_000_000
 
     # --- LLM ---
     llm_provider: Literal["minimax", "mock"] = "mock"

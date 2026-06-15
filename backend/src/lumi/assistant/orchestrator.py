@@ -7,12 +7,21 @@ final LLM reply -> save reply -> (maybe) compaction flag.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
+from difflib import SequenceMatcher
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lumi.assistant.context_builder import ContextBuilder
+from lumi.assistant.media import ImageInput, MediaCandidate, media_candidate_id
+from lumi.assistant.media_understanding import (
+    FocusedVisionService,
+    MediaReferenceService,
+    MediaUnderstandingService,
+)
 from lumi.assistant.memory_service import MemoryService
 from lumi.assistant.planner import AgentPlanner
 from lumi.assistant.schemas import (
@@ -21,6 +30,8 @@ from lumi.assistant.schemas import (
     CalendarRequest,
     EmailRequest,
     ExtractedTask,
+    FocusedVisionRequest,
+    MediaUnderstanding,
     MemoryCandidate,
     NewsRequest,
     PlannedToolCall,
@@ -55,6 +66,37 @@ MEMORY_IMPLICIT_CONFIDENCE = 0.92
 FALLBACK_REPLY = (
     "Я не смог сейчас достучаться до модели. Сообщение сохранил, можно повторить через минуту."
 )
+FOCUSED_VISION_UNSAFE_REPLY = (
+    "Не могу безопасно выполнить это через изображение. Уточни, что именно нужно рассмотреть."
+)
+MEDIA_REQUIRED_REPLY = "Пришли картинку или ответь на сообщение с картинкой, которую нужно разобрать."
+IMAGE_SOURCED_CONFIRM_TOOLS = {
+    "create_task",
+    "rename_task",
+    "complete_task",
+    "snooze_task",
+    "store_memory",
+    "create_internal_calendar_block",
+    "create_external_calendar_event",
+    "create_automation",
+}
+ACTION_DONE_CLAIM_TERMS = (
+    "готово",
+    "сделал",
+    "добавил",
+    "создал",
+    "записал",
+    "сохранил",
+    "назначил",
+    "запланировал",
+    "отметил",
+    "переименовал",
+    "done",
+    "created",
+    "added",
+    "scheduled",
+)
+ImageLoader = Callable[[dict], Awaitable[ImageInput | None]]
 
 
 @dataclass(slots=True)
@@ -91,8 +133,31 @@ def _snooze_choice_callback(confirmation_id: uuid.UUID, index: int) -> str:
 def _args_with_call_defaults(call: PlannedToolCall) -> dict:
     args = dict(call.args)
     args.setdefault("confidence", call.confidence)
-    args.setdefault("requires_confirmation", call.requires_confirmation)
+    if _image_sourced_write(call):
+        args["requires_confirmation"] = True
+    else:
+        args.setdefault("requires_confirmation", call.requires_confirmation)
     return args
+
+
+def _image_sourced_write(call: PlannedToolCall) -> bool:
+    return call.source in {"image", "mixed"} and call.name in IMAGE_SOURCED_CONFIRM_TOOLS
+
+
+def _call_source_payload(call: PlannedToolCall) -> dict:
+    payload: dict = {}
+    if call.source != "text":
+        payload["_source"] = call.source
+    if call.evidence:
+        payload["_evidence"] = call.evidence
+    return payload
+
+
+def _prompt_with_evidence(prompt: str, call: PlannedToolCall) -> str:
+    if call.source == "text" or not call.evidence:
+        return prompt
+    facts = "\n".join(f"- {fact}" for fact in call.evidence[:6])
+    return f"{prompt}\nИзвлечено из изображения:\n{facts}"
 
 
 def _calendar_request_from_tool_call(call: PlannedToolCall) -> CalendarRequest:
@@ -113,6 +178,103 @@ def _task_query_from_call(call: PlannedToolCall) -> str:
     return query or "—"
 
 
+def _completion_claim_without_actions(text: str) -> bool:
+    lowered = text.strip().lower()
+    if not lowered:
+        return False
+    if lowered.startswith(("готово", "сделал", "done")):
+        return True
+    return any(f" {term}" in f" {lowered[:160]}" for term in ACTION_DONE_CLAIM_TERMS)
+
+
+def _media_context_from_payload(payload: object) -> MediaUnderstanding | None:
+    if not payload:
+        return None
+    try:
+        return MediaUnderstanding.model_validate(payload)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _find_media_candidate(media_id: str | None, candidates: list[MediaCandidate]) -> MediaCandidate | None:
+    if not media_id:
+        return None
+    normalized = " ".join(media_id.split()).strip()
+    candidate_keys: list[tuple[MediaCandidate, set[str], set[str]]] = []
+    for candidate in candidates:
+        raw_keys = {
+            str(candidate.metadata.get("file_unique_id") or ""),
+            str(candidate.metadata.get("file_id") or ""),
+            str(candidate.metadata.get("telegram_message_id") or ""),
+        }
+        raw_keys.discard("")
+        all_keys = {candidate.id, *raw_keys, *(f"{candidate.source}:{key}" for key in raw_keys)}
+        candidate_keys.append((candidate, raw_keys, all_keys))
+
+    for candidate, _, all_keys in candidate_keys:
+        if normalized in all_keys:
+            return candidate
+
+    # M3 can preserve the Telegram identifier but swap the transient source prefix
+    # (for example attached:<file_unique_id> vs recent:<file_unique_id>).
+    suffix = normalized.split(":", 1)[1] if ":" in normalized else normalized
+    for candidate, raw_keys, _ in candidate_keys:
+        if suffix in raw_keys:
+            return candidate
+        if any(normalized.endswith(f":{key}") for key in raw_keys):
+            return candidate
+
+    if len(suffix) >= 8:
+        best: tuple[float, MediaCandidate] | None = None
+        second_score = 0.0
+        for candidate, raw_keys, all_keys in candidate_keys:
+            comparable = raw_keys | all_keys
+            score = max(SequenceMatcher(None, suffix, key).ratio() for key in comparable if len(key) >= 8)
+            if best is None or score > best[0]:
+                if best is not None:
+                    second_score = max(second_score, best[0])
+                best = (score, candidate)
+            else:
+                second_score = max(second_score, score)
+        if best is not None and best[0] >= 0.92 and best[0] - second_score >= 0.03:
+            return best[1]
+    return None
+
+
+def _dedupe_media_candidates(candidates: list[MediaCandidate]) -> list[MediaCandidate]:
+    seen: set[str] = set()
+    deduped: list[MediaCandidate] = []
+    for candidate in candidates:
+        key = candidate.metadata.get("file_unique_id") or candidate.metadata.get("file_id") or candidate.id
+        if key in seen:
+            continue
+        seen.add(str(key))
+        deduped.append(candidate)
+    return deduped
+
+
+def _selected_or_current_media(
+    plan: AgentPlan,
+    candidates: list[MediaCandidate],
+    current: MediaCandidate | None,
+) -> MediaCandidate | None:
+    return _find_media_candidate(plan.referenced_media_id, candidates) or current
+
+
+def _image_write_policy_violations(plan: AgentPlan) -> list[PlannedToolCall]:
+    if plan.visual_intent == "action_evidence":
+        return []
+    return [call for call in plan.tool_calls if _image_sourced_write(call)]
+
+
+def _reply_result(reply_text: str, *, run_id: uuid.UUID, needs_compaction: bool) -> AssistantResult:
+    return AssistantResult(
+        reply_text=reply_text,
+        agent_run_id=run_id,
+        needs_compaction=needs_compaction,
+    )
+
+
 class AssistantOrchestrator:
     def __init__(self, session: AsyncSession, *, llm: LLMGateway | None = None) -> None:
         self.session = session
@@ -124,6 +286,9 @@ class AssistantOrchestrator:
         self.confirmations = ConfirmationService(session)
         self.runs = RunService(session)
         self.planner = AgentPlanner(self.llm)
+        self.media_understanding = MediaUnderstandingService(self.llm)
+        self.media_reference = MediaReferenceService(self.llm)
+        self.focused_vision = FocusedVisionService(self.llm)
         self.context_builder = ContextBuilder(session)
         self.planning = PlanningService(session, llm=self.llm)
 
@@ -137,6 +302,8 @@ class AssistantOrchestrator:
         username: str | None = None,
         first_name: str | None = None,
         last_name: str | None = None,
+        image: ImageInput | None = None,
+        image_loader: ImageLoader | None = None,
         on_progress=None,
         on_reply_delta=None,
     ) -> AssistantResult:
@@ -156,16 +323,21 @@ class AssistantOrchestrator:
             last_name=last_name,
         )
         conversation = await self.users.ensure_main_conversation(user)
+        image_metadata = [image.to_metadata()] if image else []
+        stored_text = text.strip() or ("[image]" if image else "")
+        final_text = text.strip() or ("Опиши изображение и ответь на вопрос пользователя." if image else "")
 
         # 2. Save inbound message
         inbound = Message(
             conversation_id=conversation.id,
             user_id=user.id,
             role=MessageRole.USER,
-            content=text,
-            char_count=len(text),
+            content=stored_text,
+            content_json={"text": text, "images": image_metadata} if image_metadata else None,
+            char_count=len(stored_text),
             telegram_message_id=telegram_message_id,
             telegram_chat_id=telegram_chat_id,
+            metadata_={"images": image_metadata} if image_metadata else {},
         )
         self.session.add(inbound)
         await self.session.flush()
@@ -177,19 +349,293 @@ class AssistantOrchestrator:
             trigger="telegram_message",
             conversation_id=conversation.id,
             source_message_id=inbound.id,
-            input_summary=text[:300],
+            input_summary=stored_text[:300],
         )
         await self.runs.mark_running(run)
         agent_run_id_var.set(str(run.id))
 
-        # 4. Planner call (separate small call — reliable and predictable;
+        # 4. Image understanding must happen before planner/final-answer short-circuits.
+        media_context: MediaUnderstanding | None = None
+        current_media: MediaCandidate | None = None
+        selected_image = image
+        if image:
+            await progress("👁️ Разбираю изображение…")
+            media_context = await self.media_understanding.analyze(
+                user_id=user.id,
+                timezone=user.timezone,
+                text=text,
+                image=image,
+                agent_run_id=run.id,
+                session=self.session,
+            )
+            media_json = media_context.to_audit_json()
+            inbound.content_json = {
+                **(inbound.content_json or {"text": text}),
+                "images": image_metadata,
+                "media_context": media_json,
+            }
+            inbound.metadata_ = {
+                **(inbound.metadata_ or {}),
+                "images": image_metadata,
+                "media_context": media_json,
+            }
+            current_media = MediaCandidate(
+                id=media_candidate_id(image.source, image_metadata[0]),
+                source=image.source,
+                metadata=image_metadata[0],
+                media_context=media_context,
+                image=image,
+            )
+
+        recent_media = await self._recent_media_candidates(conversation.id, exclude_message_id=inbound.id)
+        available_media = _dedupe_media_candidates(
+            ([current_media] if current_media is not None else []) + recent_media
+        )
+
+        # 5. Planner call (separate small call — reliable and predictable;
         # a combined signals+reply call made M3 reason for minutes, parked for now)
         await progress("🧠 Разбираю сообщение…")
         plan = await self.planner.plan(
-            user=user, text=text, agent_run_id=run.id, session=self.session
+            user=user,
+            text=text,
+            media_context=media_context,
+            available_media=available_media,
+            agent_run_id=run.id,
+            session=self.session,
         )
+        selected_media = _selected_or_current_media(plan, available_media, current_media)
+        focused_question_override: str | None = None
+        if selected_media is None and available_media and text.strip():
+            media_reference = await self.media_reference.resolve(
+                user_id=user.id,
+                timezone=user.timezone,
+                text=text,
+                available_media=available_media,
+                agent_run_id=run.id,
+                session=self.session,
+            )
+            if media_reference.references_media:
+                referenced_media = _find_media_candidate(media_reference.media_id, available_media)
+                if referenced_media is not None:
+                    selected_media = referenced_media
+                    focused_question_override = media_reference.question
+                    if plan.visual_intent == "none" and media_reference.visual_intent != "none":
+                        plan = plan.model_copy(update={"visual_intent": media_reference.visual_intent})
 
-        # 5. Apply safe actions
+        if selected_media is not None:
+            selected_image = selected_media.image
+            media_context = selected_media.media_context or media_context
+            self._store_selected_media_audit(inbound, text, selected_media, media_context)
+
+        if plan.mode == "needs_media_understanding" or plan.needs_media_understanding:
+            if selected_media is None:
+                reply_text = MEDIA_REQUIRED_REPLY
+                outbound = Message(
+                    conversation_id=conversation.id,
+                    user_id=user.id,
+                    role=MessageRole.ASSISTANT,
+                    content=reply_text,
+                    char_count=len(reply_text),
+                    telegram_chat_id=telegram_chat_id,
+                )
+                self.session.add(outbound)
+                await self.runs.mark_completed(run, result_summary="media_required")
+                needs_compaction = await self._needs_compaction(conversation)
+                return _reply_result(reply_text, run_id=run.id, needs_compaction=needs_compaction)
+
+            selected_image = await self._ensure_candidate_image(selected_media, image_loader)
+            if selected_image is None:
+                reply_text = MEDIA_REQUIRED_REPLY
+                outbound = Message(
+                    conversation_id=conversation.id,
+                    user_id=user.id,
+                    role=MessageRole.ASSISTANT,
+                    content=reply_text,
+                    char_count=len(reply_text),
+                    telegram_chat_id=telegram_chat_id,
+                )
+                self.session.add(outbound)
+                await self.runs.mark_completed(run, result_summary="media_load_failed")
+                needs_compaction = await self._needs_compaction(conversation)
+                return _reply_result(reply_text, run_id=run.id, needs_compaction=needs_compaction)
+
+            await progress("👁️ Разбираю изображение…")
+            media_context = await self.media_understanding.analyze(
+                user_id=user.id,
+                timezone=user.timezone,
+                text=text,
+                image=selected_image,
+                agent_run_id=run.id,
+                session=self.session,
+            )
+            selected_media.media_context = media_context
+            self._store_selected_media_audit(inbound, text, selected_media, media_context)
+            plan = await self.planner.plan(
+                user=user,
+                text=text,
+                media_context=media_context,
+                available_media=available_media,
+                agent_run_id=run.id,
+                session=self.session,
+            )
+            selected_media = _selected_or_current_media(plan, available_media, selected_media)
+            if selected_media is not None:
+                selected_image = selected_media.image or selected_image
+                media_context = selected_media.media_context or media_context
+                self._store_selected_media_audit(inbound, text, selected_media, media_context)
+
+        if image and not text.strip() and plan.tool_calls:
+            log.warning(
+                "suppressing image-only planner tool calls",
+                fields={"tool_names": [call.name for call in plan.tool_calls]},
+            )
+            plan = plan.model_copy(update={
+                "mode": "final_answer",
+                "tool_calls": [],
+                "should_answer_normally": True,
+            })
+
+        if plan.visual_intent == "read_only" and plan.tool_calls:
+            log.warning(
+                "suppressing read-only visual planner tool calls",
+                fields={"tool_names": [call.name for call in plan.tool_calls]},
+            )
+            plan = plan.model_copy(update={
+                "mode": "final_answer" if plan.final_answer else plan.mode,
+                "tool_calls": [],
+                "should_answer_normally": True,
+            })
+
+        policy_violations = _image_write_policy_violations(plan)
+        if policy_violations:
+            log.warning(
+                "suppressing image-sourced write calls without action_evidence intent",
+                fields={"tool_names": [call.name for call in policy_violations]},
+            )
+            remaining_calls = [call for call in plan.tool_calls if call not in policy_violations]
+            plan = plan.model_copy(update={"tool_calls": remaining_calls})
+            if not remaining_calls:
+                if plan.tool_calls:
+                    plan = plan.model_copy(update={"tool_calls": []})
+                reply_text = plan.final_answer or (
+                    "Не выполняю действия по изображению без явной команды пользователя."
+                )
+                outbound = Message(
+                    conversation_id=conversation.id,
+                    user_id=user.id,
+                    role=MessageRole.ASSISTANT,
+                    content=reply_text,
+                    char_count=len(reply_text),
+                    telegram_chat_id=telegram_chat_id,
+                )
+                self.session.add(outbound)
+                await self.runs.mark_completed(run, result_summary=reply_text[:2000])
+                needs_compaction = await self._needs_compaction(conversation)
+                return _reply_result(reply_text, run_id=run.id, needs_compaction=needs_compaction)
+
+        if (
+            selected_media is not None
+            and media_context is not None
+            and not plan.tool_calls
+            and not plan.final_answer
+            and plan.visual_intent != "action_evidence"
+            and plan.mode not in ("needs_media_understanding", "needs_focused_vision")
+            and (text.strip() or plan.visual_intent == "read_only")
+        ):
+            question = (
+                focused_question_override
+                or text.strip()
+                or "Describe the image and answer the read-only visual request."
+            )
+            plan = plan.model_copy(update={
+                "mode": "needs_focused_vision",
+                "focused_vision": FocusedVisionRequest(
+                    question=question,
+                    reason="planner selected media but did not provide a read-only answer",
+                    confidence=0.5,
+                ),
+                "should_answer_normally": False,
+            })
+
+        if plan.mode == "needs_focused_vision":
+            if selected_media is not None and selected_image is None:
+                selected_image = await self._ensure_candidate_image(selected_media, image_loader)
+            if selected_media is not None and media_context is None and selected_image is not None:
+                await progress("👁️ Разбираю изображение…")
+                media_context = await self.media_understanding.analyze(
+                    user_id=user.id,
+                    timezone=user.timezone,
+                    text=text,
+                    image=selected_image,
+                    agent_run_id=run.id,
+                    session=self.session,
+                )
+                selected_media.media_context = media_context
+                self._store_selected_media_audit(inbound, text, selected_media, media_context)
+
+            if selected_image is None or media_context is None or plan.tool_calls or plan.focused_vision is None:
+                reply_text = FOCUSED_VISION_UNSAFE_REPLY
+                outbound = Message(
+                    conversation_id=conversation.id,
+                    user_id=user.id,
+                    role=MessageRole.ASSISTANT,
+                    content=reply_text,
+                    char_count=len(reply_text),
+                    telegram_chat_id=telegram_chat_id,
+                )
+                self.session.add(outbound)
+                await self.runs.mark_completed(run, result_summary="focused_vision_rejected")
+                needs_compaction = await self._needs_compaction(conversation)
+                return AssistantResult(
+                    reply_text=reply_text,
+                    agent_run_id=run.id,
+                    needs_compaction=needs_compaction,
+                )
+
+            await progress("🔎 Уточняю деталь на изображении…")
+            focused_result = await self.focused_vision.analyze(
+                user_id=user.id,
+                timezone=user.timezone,
+                text=text,
+                question=plan.focused_vision.question,
+                image=selected_image,
+                media_context=media_context,
+                agent_run_id=run.id,
+                session=self.session,
+            )
+            focused_json = {
+                "request": plan.focused_vision.model_dump(mode="json"),
+                "result": focused_result.to_audit_json(),
+            }
+            inbound.content_json = {
+                **(inbound.content_json or {"text": text}),
+                "focused_vision": focused_json,
+            }
+            inbound.metadata_ = {
+                **(inbound.metadata_ or {}),
+                "focused_vision": focused_json,
+            }
+            reply_text = focused_result.answer or (
+                "Не смог уверенно рассмотреть эту деталь на изображении."
+            )
+            outbound = Message(
+                conversation_id=conversation.id,
+                user_id=user.id,
+                role=MessageRole.ASSISTANT,
+                content=reply_text,
+                char_count=len(reply_text),
+                telegram_chat_id=telegram_chat_id,
+            )
+            self.session.add(outbound)
+            await self.runs.mark_completed(run, result_summary=reply_text[:2000])
+            needs_compaction = await self._needs_compaction(conversation)
+            return AssistantResult(
+                reply_text=reply_text,
+                agent_run_id=run.id,
+                needs_compaction=needs_compaction,
+            )
+
+        # 6. Apply safe actions
         if plan.tool_calls:
             await progress("⚙️ Выполняю: задачи, память, календарь…")
         action_results, buttons = await self._apply_tool_calls(
@@ -245,7 +691,8 @@ class AssistantOrchestrator:
             context = await self.context_builder.build(
                 user=user,
                 conversation=conversation,
-                current_text=text,
+                current_text=final_text,
+                media_context=media_context,
                 action_results=action_results,
             )
             if on_reply_delta is not None:
@@ -273,6 +720,8 @@ class AssistantOrchestrator:
                     session=self.session,
                 )
             reply_text = response.text.strip() or FALLBACK_REPLY
+            if not action_results and _completion_claim_without_actions(reply_text):
+                reply_text = "Не выполнял действий. Если нужно действие, напиши его явно."
             run.metadata_ = {**run.metadata_, "context_snapshot": context.debug_snapshot}
         except Exception as exc:  # noqa: BLE001 — chat must answer something
             log.exception("final LLM reply failed")
@@ -319,6 +768,82 @@ class AssistantOrchestrator:
 
     # ------------------------------------------------------------------
 
+    async def _recent_media_candidates(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        exclude_message_id: uuid.UUID,
+        limit: int = 3,
+    ) -> list[MediaCandidate]:
+        result = await self.session.execute(
+            select(Message)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.role == MessageRole.USER,
+                Message.id != exclude_message_id,
+                Message.metadata_["images"].is_not(None),
+            )
+            .order_by(Message.created_at.desc())
+            .limit(50)
+        )
+        candidates: list[MediaCandidate] = []
+        for message in result.scalars():
+            metadata = message.metadata_ or {}
+            media_context = _media_context_from_payload(
+                metadata.get("media_context") or (message.content_json or {}).get("media_context")
+            )
+            for image_metadata in metadata.get("images") or []:
+                image_metadata = dict(image_metadata)
+                candidates.append(MediaCandidate(
+                    id=media_candidate_id("recent", image_metadata),
+                    source="recent",
+                    metadata=image_metadata,
+                    media_context=media_context,
+                ))
+                if len(candidates) >= limit:
+                    return candidates
+        return candidates
+
+    async def _ensure_candidate_image(
+        self,
+        candidate: MediaCandidate,
+        image_loader: ImageLoader | None,
+    ) -> ImageInput | None:
+        if candidate.image is not None:
+            return candidate.image
+        if image_loader is None:
+            return None
+        try:
+            candidate.image = await image_loader(candidate.metadata)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("selected media download failed", fields={"media_id": candidate.id, "error": str(exc)[:300]})
+            candidate.image = None
+        return candidate.image
+
+    @staticmethod
+    def _store_selected_media_audit(
+        inbound: Message,
+        text: str,
+        candidate: MediaCandidate,
+        media_context: MediaUnderstanding | None,
+    ) -> None:
+        media_json = media_context.to_audit_json() if media_context is not None else None
+        content_json = {
+            **(inbound.content_json or {"text": text}),
+            "referenced_images": [candidate.metadata],
+        }
+        metadata = {
+            **(inbound.metadata_ or {}),
+            "referenced_images": [candidate.metadata],
+        }
+        if media_json is not None:
+            content_json["media_context"] = media_json
+            metadata["media_context"] = media_json
+        inbound.content_json = content_json
+        inbound.metadata_ = metadata
+
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _format_action_results_reply(action_results: list[str]) -> str:
         if len(action_results) == 1:
@@ -349,6 +874,7 @@ class AssistantOrchestrator:
                 await self._apply_create_task_tool(
                     user=user,
                     run=run,
+                    call=call,
                     task_signal=task_signal,
                     source_message_id=source_message_id,
                     results=results,
@@ -369,6 +895,7 @@ class AssistantOrchestrator:
                 await self._apply_rename_task_tool(
                     user=user,
                     run=run,
+                    call=call,
                     update=update,
                     results=results,
                     buttons=buttons,
@@ -382,6 +909,7 @@ class AssistantOrchestrator:
             elif call.name == "store_memory":
                 candidate = MemoryCandidate.model_validate(_args_with_call_defaults(call))
                 await self._apply_store_memory_tool(user=user, run=run, candidate=candidate,
+                                                    call=call,
                                                     source_message_id=source_message_id,
                                                     results=results)
             elif call.name in {
@@ -392,11 +920,13 @@ class AssistantOrchestrator:
             }:
                 request = _calendar_request_from_tool_call(call)
                 await self._apply_calendar_request(
-                    user=user, run=run, request=request, results=results, buttons=buttons
+                    user=user, run=run, call=call, request=request, results=results,
+                    buttons=buttons
                 )
             elif call.name == "create_automation":
                 automation = AutomationRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_create_automation_tool(user=user, run=run,
+                                                         call=call,
                                                          automation=automation,
                                                          results=results, buttons=buttons)
             elif call.name == "email_triage":
@@ -423,6 +953,7 @@ class AssistantOrchestrator:
         *,
         user: User,
         run,
+        call: PlannedToolCall,
         task_signal: ExtractedTask,
         source_message_id: uuid.UUID,
         results: list[str],
@@ -448,15 +979,19 @@ class AssistantOrchestrator:
                 Button(text="⏰ Отложить", callback_data=f"task_snooze:{task.id}:tomorrow"),
             ])
         elif task_signal.confidence >= TASK_CONFIRM_CONFIDENCE:
+            payload = {
+                **task_signal.model_dump(mode="json"),
+                **_call_source_payload(call),
+            }
             confirmation = await self.confirmations.create(
                 user,
                 action_type="create_task",
-                action_payload=task_signal.model_dump(mode="json"),
-                prompt=f"Создать задачу «{task_signal.title}»?",
+                action_payload=payload,
+                prompt=_prompt_with_evidence(f"Создать задачу «{task_signal.title}»?", call),
             )
             await self.runs.log_tool_call(
                 run=run, tool_name="create_task", status="requires_confirmation",
-                args=task_signal.model_dump(mode="json"),
+                args=payload,
                 requires_confirmation=True, confirmation_id=confirmation.id,
             )
             results.append(f"Предложена задача «{task_signal.title}» — ждет подтверждения")
@@ -504,11 +1039,66 @@ class AssistantOrchestrator:
         *,
         user: User,
         run,
+        call: PlannedToolCall,
         update: TaskUpdate,
         results: list[str],
         buttons: list[list[Button]],
     ) -> None:
         if update.operation == "rename":
+            if _image_sourced_write(call):
+                candidates = await self.tasks.find_open_rename_candidates(
+                    user,
+                    update.current_title,
+                    project=update.project,
+                    tags=update.tags,
+                )
+                if not candidates:
+                    await self.runs.log_tool_call(
+                        run=run,
+                        tool_name="rename_task",
+                        status="skipped",
+                        args={
+                            **update.model_dump(mode="json"),
+                            **_call_source_payload(call),
+                        },
+                        result={"candidate_task_ids": []},
+                    )
+                    results.append(f"Не нашёл активную задачу «{update.current_title}». Уточни название.")
+                    return
+                payload = {
+                    "current_title": update.current_title,
+                    "new_title": update.new_title,
+                    "project": update.project,
+                    "tags": update.tags,
+                    "candidate_task_ids": [str(task.id) for task in candidates],
+                    "agent_run_id": str(run.id),
+                    **_call_source_payload(call),
+                }
+                confirmation = await self.confirmations.create(
+                    user,
+                    action_type="rename_task_choice",
+                    action_payload=payload,
+                    prompt=_prompt_with_evidence("Подтверди задачу для переименования.", call),
+                )
+                await self.runs.log_tool_call(
+                    run=run,
+                    tool_name="rename_task",
+                    status="requires_confirmation",
+                    args=payload,
+                    result={"candidate_task_ids": [str(task.id) for task in candidates]},
+                    requires_confirmation=True,
+                    confirmation_id=confirmation.id,
+                )
+                results.append("Нужно подтверждение: какую задачу переименовать?")
+                for index, task in enumerate(candidates[:5]):
+                    buttons.append([
+                        Button(
+                            text=_rename_choice_button_text(task),
+                            callback_data=_rename_choice_callback(confirmation.id, index),
+                        )
+                    ])
+                return
+
             renamed = await self.tasks.rename_active_task_by_title(
                 user,
                 current_title=update.current_title,
@@ -598,6 +1188,22 @@ class AssistantOrchestrator:
             tags=call.args.get("tags") or [],
         )
         if len(candidates) == 1:
+            if _image_sourced_write(call):
+                task = candidates[0]
+                args = {**call.args, **_call_source_payload(call)}
+                await self.runs.log_tool_call(
+                    run=run,
+                    tool_name="complete_task",
+                    status="requires_confirmation",
+                    args=args,
+                    result={"task_id": str(task.id)},
+                    requires_confirmation=True,
+                )
+                results.append(f"Предлагаю отметить «{task.title}» выполненной — подтверди кнопкой.")
+                buttons.append([
+                    Button(text="✓ Отметить выполненной", callback_data=f"task_done:{task.id}"),
+                ])
+                return
             task = await self.tasks.complete_task(user, candidates[0], actor="agent")
             await self.runs.log_tool_call(
                 run=run,
@@ -648,6 +1254,22 @@ class AssistantOrchestrator:
         if visible_candidates:
             candidates = visible_candidates
         if len(candidates) == 1:
+            if _image_sourced_write(call):
+                task = candidates[0]
+                args = {**call.args, "preset": preset, **_call_source_payload(call)}
+                await self.runs.log_tool_call(
+                    run=run,
+                    tool_name="snooze_task",
+                    status="requires_confirmation",
+                    args=args,
+                    result={"task_id": str(task.id)},
+                    requires_confirmation=True,
+                )
+                results.append(f"Предлагаю отложить «{task.title}» — подтверди кнопкой.")
+                buttons.append([
+                    Button(text="⏰ Отложить", callback_data=f"task_snooze:{task.id}:{preset}"),
+                ])
+                return
             task = await self.tasks.snooze_task(user, candidates[0], preset=preset, actor="agent")
             await self.runs.log_tool_call(
                 run=run,
@@ -673,14 +1295,15 @@ class AssistantOrchestrator:
                     "tags": call.args.get("tags") or [],
                     "candidate_task_ids": [str(task.id) for task in candidates],
                     "agent_run_id": str(run.id),
+                    **_call_source_payload(call),
                 },
-                prompt="Выбери задачу для откладывания.",
+                prompt=_prompt_with_evidence("Выбери задачу для откладывания.", call),
             )
             await self.runs.log_tool_call(
                 run=run,
                 tool_name="snooze_task",
                 status="requires_confirmation",
-                args={**call.args, "preset": preset},
+                args={**call.args, "preset": preset, **_call_source_payload(call)},
                 result={"candidate_task_ids": [str(task.id) for task in candidates]},
                 requires_confirmation=True,
                 confirmation_id=confirmation.id,
@@ -766,6 +1389,7 @@ class AssistantOrchestrator:
         user: User,
         run,
         candidate: MemoryCandidate,
+        call: PlannedToolCall,
         source_message_id: uuid.UUID,
         results: list[str],
     ) -> None:
@@ -775,7 +1399,11 @@ class AssistantOrchestrator:
             or (candidate.kind in ("preference", "instruction")
                 and candidate.confidence >= MEMORY_IMPLICIT_CONFIDENCE)
         ) and not candidate.requires_confirmation
-        if explicit and candidate.confidence >= MEMORY_EXPLICIT_CONFIDENCE:
+        if (
+            explicit
+            and candidate.confidence >= MEMORY_EXPLICIT_CONFIDENCE
+            and not candidate.requires_confirmation
+        ):
             auto = True
         if auto:
             memory, created = await self.memory.store_candidate(
@@ -791,6 +1419,26 @@ class AssistantOrchestrator:
                 "Запомнил: " + candidate.text if created
                 else "Обновил существующую заметку в памяти"
             )
+        elif candidate.requires_confirmation and candidate.confidence >= 0.6:
+            payload = {
+                **candidate.model_dump(mode="json"),
+                **_call_source_payload(call),
+            }
+            confirmation = await self.confirmations.create(
+                user,
+                action_type="store_memory",
+                action_payload=payload,
+                prompt=_prompt_with_evidence(f"Запомнить: «{candidate.text}»?", call),
+            )
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name="store_memory",
+                status="requires_confirmation",
+                args=payload,
+                requires_confirmation=True,
+                confirmation_id=confirmation.id,
+            )
+            results.append("Предлагаю сохранить это в память — нужно подтверждение.")
         elif candidate.confidence >= 0.6:
             await self.runs.log_tool_call(
                 run=run, tool_name="store_memory", status="skipped",
@@ -803,21 +1451,29 @@ class AssistantOrchestrator:
         *,
         user: User,
         run,
+        call: PlannedToolCall,
         automation: AutomationRequest,
         results: list[str],
         buttons: list[list[Button]],
     ) -> None:
         if automation.confidence < 0.6 or not automation.cron_expression:
             return
+        payload = {
+            **automation.model_dump(mode="json"),
+            **_call_source_payload(call),
+        }
         confirmation = await self.confirmations.create(
             user,
             action_type="create_automation",
-            action_payload=automation.model_dump(mode="json"),
-            prompt=f"Включить автоматизацию «{automation.title}» ({automation.cron_expression})?",
+            action_payload=payload,
+            prompt=_prompt_with_evidence(
+                f"Включить автоматизацию «{automation.title}» ({automation.cron_expression})?",
+                call,
+            ),
         )
         await self.runs.log_tool_call(
             run=run, tool_name="create_scheduled_task", status="requires_confirmation",
-            args=automation.model_dump(mode="json"),
+            args=payload,
             requires_confirmation=True, confirmation_id=confirmation.id,
         )
         results.append(f"Автоматизация «{automation.title}» подготовлена — нужно подтверждение")
@@ -831,6 +1487,7 @@ class AssistantOrchestrator:
         *,
         user: User,
         run,
+        call: PlannedToolCall,
         request: CalendarRequest,
         results: list[str],
         buttons: list[list[Button]],
@@ -899,36 +1556,61 @@ class AssistantOrchestrator:
         if request.kind == "create_internal_block":
             if not request.start_at_local or not request.end_at_local or request.confidence < 0.75:
                 return
+            requires_confirmation = request.requires_confirmation
             event = await self.calendar.create_internal_block(
                 user,
                 title=request.title or "Блок",
                 start_at=local_to_utc(request.start_at_local, tz),
                 end_at=local_to_utc(request.end_at_local, tz),
+                status=(
+                    CalendarEventStatus.PROPOSED
+                    if requires_confirmation else CalendarEventStatus.CONFIRMED
+                ),
                 created_by="agent",
                 agent_run_id=run.id,
             )
             await self.runs.log_tool_call(
-                run=run, tool_name="create_internal_calendar_block", status="completed",
-                args=request.model_dump(mode="json"), result={"event_id": str(event.id)},
+                run=run,
+                tool_name="create_internal_calendar_block",
+                status="requires_confirmation" if requires_confirmation else "completed",
+                args={**request.model_dump(mode="json"), **_call_source_payload(call)},
+                result={"event_id": str(event.id), "status": event.status.value},
+                requires_confirmation=requires_confirmation,
             )
-            results.append(
-                f"Поставил в календарь: {request.title or 'блок'} "
-                f"{fmt_local(event.start_at, tz, '%d.%m %H:%M')}"
-            )
+            if requires_confirmation:
+                results.append(
+                    f"Предложил блок «{request.title or 'блок'}» "
+                    f"{fmt_local(event.start_at, tz, '%d.%m %H:%M')} — нужно подтверждение"
+                )
+                buttons.append([
+                    Button(text="✓ Принять блок", callback_data=f"block_confirm:{event.id}"),
+                ])
+            else:
+                results.append(
+                    f"Поставил в календарь: {request.title or 'блок'} "
+                    f"{fmt_local(event.start_at, tz, '%d.%m %H:%M')}"
+                )
             return
 
         if request.kind == "create_external_event":
             # External writes ALWAYS require confirmation.
+            payload = {
+                **request.model_dump(mode="json"),
+                **_call_source_payload(call),
+            }
             confirmation = await self.confirmations.create(
                 user,
                 action_type="create_google_calendar_event",
-                action_payload=request.model_dump(mode="json"),
-                prompt=f"Добавить «{request.title or 'событие'}» в Google Calendar?",
+                action_payload=payload,
+                prompt=_prompt_with_evidence(
+                    f"Добавить «{request.title or 'событие'}» в Google Calendar?",
+                    call,
+                ),
             )
             await self.runs.log_tool_call(
                 run=run, tool_name="create_external_calendar_event",
                 status="requires_confirmation",
-                args=request.model_dump(mode="json"),
+                args=payload,
                 requires_confirmation=True, confirmation_id=confirmation.id,
             )
             results.append("Запись во внешний календарь ждет подтверждения")

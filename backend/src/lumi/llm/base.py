@@ -2,14 +2,31 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 
 @dataclass(slots=True)
+class LLMTextPart:
+    text: str
+
+
+@dataclass(slots=True)
+class LLMImagePart:
+    data: bytes
+    mime_type: str
+    detail: str = "default"
+    max_long_side_pixel: int | None = None
+
+
+LLMContent = str | list[LLMTextPart | LLMImagePart]
+
+
+@dataclass(slots=True)
 class LLMMessage:
     role: str  # "system" | "user" | "assistant"
-    content: str
+    content: LLMContent
 
 
 @dataclass(slots=True)
@@ -67,3 +84,28 @@ class LLMProvider(Protocol):
 def estimate_tokens(text: str) -> int:
     """Cheap chars/4 token estimate — good enough for budgets and logging."""
     return max(1, len(text) // 4)
+
+
+def content_to_text(content: LLMContent) -> str:
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for part in content:
+        if isinstance(part, LLMTextPart):
+            parts.append(part.text)
+        elif isinstance(part, LLMImagePart):
+            digest = hashlib.sha256(part.data).hexdigest()[:12]
+            parts.append(f"[image {part.mime_type} {len(part.data)} bytes sha256:{digest}]")
+    return "\n".join(p for p in parts if p)
+
+
+def content_char_count(content: LLMContent) -> int:
+    if isinstance(content, str):
+        return len(content)
+    total = 0
+    for part in content:
+        if isinstance(part, LLMTextPart):
+            total += len(part.text)
+        elif isinstance(part, LLMImagePart):
+            total += len(part.data)
+    return total
