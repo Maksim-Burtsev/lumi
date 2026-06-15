@@ -85,6 +85,31 @@ def http_get_json(url: str) -> dict[str, object]:
         return json.load(response)
 
 
+def wait_for_json(url: str, *, attempts: int = 12, delay_seconds: int = 5) -> dict[str, object]:
+    last_error: Exception | None = None
+    for _ in range(attempts):
+        try:
+            return http_get_json(url)
+        except Exception as exc:  # noqa: BLE001 — quick tunnel DNS can lag behind log output
+            last_error = exc
+            time.sleep(delay_seconds)
+    raise SystemExit(f"{url} did not become reachable: {last_error}") from last_error
+
+
+def wait_for_http_ok(url: str, *, attempts: int = 12, delay_seconds: int = 5) -> None:
+    last_error: Exception | None = None
+    for _ in range(attempts):
+        try:
+            with urllib.request.urlopen(url, timeout=15) as response:
+                if response.status == 200:
+                    return
+                last_error = RuntimeError(f"HTTP {response.status}")
+        except Exception as exc:  # noqa: BLE001 — quick tunnel DNS can lag behind log output
+            last_error = exc
+        time.sleep(delay_seconds)
+    raise SystemExit(f"{url} did not become reachable: {last_error}") from last_error
+
+
 def verify_telegram_menu(expected_url: str) -> None:
     env = read_env()
     token = env.get("TELEGRAM_BOT_TOKEN", "")
@@ -130,11 +155,9 @@ def main() -> None:
     run(["docker", "compose", "up", "-d", "--force-recreate", "api", "bot"])
 
     expected_mini_app_url = tunnel_url.rstrip("/") + "/app/"
-    health = http_get_json(tunnel_url.rstrip("/") + "/health")
+    health = wait_for_json(tunnel_url.rstrip("/") + "/health")
     print("health:", health)
-    with urllib.request.urlopen(expected_mini_app_url, timeout=15) as response:
-        if response.status != 200:
-            raise SystemExit(f"Mini App returned HTTP {response.status}")
+    wait_for_http_ok(expected_mini_app_url)
     verify_telegram_menu(expected_mini_app_url)
     print(f"Mini App: {expected_mini_app_url}")
 

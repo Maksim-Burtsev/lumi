@@ -22,6 +22,9 @@ async def run_bot() -> None:
         raise SystemExit(
             "TELEGRAM_BOT_TOKEN is not set. Get a token from @BotFather and put it into .env"
         )
+    if settings.telegram_webhook_enabled:
+        log.info("telegram webhook enabled; polling bot process is idle")
+        await asyncio.Event().wait()
     if not settings.allowed_telegram_user_ids:
         log.warning(
             "ALLOWED_TELEGRAM_USER_IDS is empty — the bot will ignore everyone. "

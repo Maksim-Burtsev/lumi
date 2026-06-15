@@ -263,6 +263,61 @@ class Message(Base):
     created_at: Mapped[datetime] = created_at_col()
 
 
+class TelegramUpdate(Base):
+    __tablename__ = "telegram_updates"
+    __table_args__ = (
+        Index("ix_telegram_updates_user_created", "telegram_user_id", "created_at"),
+        Index("ix_telegram_updates_chat_message", "telegram_chat_id", "telegram_message_id"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    update_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
+    telegram_user_id: Mapped[int | None] = mapped_column(BigInteger)
+    telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger)
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=_JSONB_EMPTY_DICT
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="received")
+    created_at: Mapped[datetime] = created_at_col()
+
+
+class AssistantTurn(Base):
+    __tablename__ = "assistant_turns"
+    __table_args__ = (
+        UniqueConstraint("user_id", "sequence_no", name="uq_assistant_turns_user_sequence"),
+        Index("ix_assistant_turns_user_status_sequence", "user_id", "status", "sequence_no"),
+        Index("ix_assistant_turns_status_deadline", "status", "debounce_deadline_at"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("conversations.id"), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="collecting")
+    sequence_no: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    input_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    telegram_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    primary_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    source_update_ids: Mapped[list[int]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=_JSONB_EMPTY_LIST
+    )
+    source_message_ids: Mapped[list[int]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=_JSONB_EMPTY_LIST
+    )
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=_JSONB_EMPTY_DICT
+    )
+    status_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    debounce_deadline_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = created_at_col()
+    updated_at: Mapped[datetime] = updated_at_col()
+
+
 class ConversationSummary(Base):
     __tablename__ = "conversation_summaries"
     __table_args__ = (

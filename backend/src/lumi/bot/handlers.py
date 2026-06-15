@@ -9,18 +9,13 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery
 from aiogram.types import Message as TgMessage
 
-from lumi.assistant.orchestrator import AssistantOrchestrator
 from lumi.bot.formatting import HELP_TEXT, format_tasks, format_today, telegram_plain_text
-from lumi.bot.keyboards import markup_from_buttons, mini_app_button, start_keyboard
+from lumi.bot.keyboards import mini_app_button, start_keyboard
 from lumi.bot.media import (
     AttachmentBatchBuffer,
-    ImageDownloadError,
-    ImageTooLargeError,
     build_logical_message,
     classify_attachment_message,
-    download_image_input,
     extract_image_ref,
-    ref_from_metadata,
 )
 from lumi.config import get_settings
 from lumi.db.models import CalendarEventStatus, ConfirmationStatus, Message, MessageRole
@@ -32,6 +27,7 @@ from lumi.services.runs import RunService
 from lumi.services.task_update_replies import format_task_update_reply
 from lumi.services.tasks import TaskService
 from lumi.services.today import TodayService
+from lumi.services.turns import TelegramIntakeService, TurnService
 from lumi.services.users import UserService
 from lumi.utils.text import chunk_telegram
 from lumi.worker.jobs import AGENT_RUN_TYPE_BY_AUTOMATION, JOB_BY_AUTOMATION_TYPE
@@ -43,6 +39,10 @@ REJECTED_ATTACHMENT_REPLY = (
     "Не обрабатываю сообщения с несколькими картинками или неподдерживаемыми вложениями. "
     "Пришли одно изображение JPEG/PNG/WEBP до 10 MB без других файлов."
 )
+
+
+def _deadline_job_id(turn_id: uuid.UUID, enqueue_at) -> str:
+    return f"assistant-turn:{turn_id}:at:{int(enqueue_at.timestamp() * 1000)}"
 
 
 # ---------------------------------------------------------------------------
@@ -376,10 +376,10 @@ async def cmd_settings(message: TgMessage) -> None:
 # ---------------------------------------------------------------------------
 
 @router.message((F.text & ~F.text.startswith("/")) | F.photo | F.document | F.video)
-async def on_chat_message(message: TgMessage, bot: Bot) -> None:
+async def on_chat_message(message: TgMessage, bot: Bot, telegram_update_id: int | None = None) -> None:
     if not await _check_allowed(message):
         return
-    telegram_update_id_var.set(message.message_id)
+    telegram_update_id_var.set(telegram_update_id or message.message_id)
     batch_item = classify_attachment_message(message)
     if batch_item.media_group_id:
         try:
@@ -431,71 +431,17 @@ async def on_chat_message(message: TgMessage, bot: Bot) -> None:
         if image_ref is None and not logical_message.media_group_id and message.reply_to_message:
             image_ref = extract_image_ref(message.reply_to_message, source="reply")
 
-    image = None
     if image_ref is not None:
-        try:
-            image = await download_image_input(bot, image_ref)
-        except ImageTooLargeError:
+        if image_ref.file_size and image_ref.file_size > get_settings().telegram_image_max_bytes:
             await message.answer("Картинка слишком большая. Пришли изображение до 10 MB.")
             return
-        except ImageDownloadError:
-            await message.answer("Не смог скачать картинку из Telegram. Пришли ее заново.")
-            return
-
-    async def image_loader(metadata: dict):
-        ref = ref_from_metadata(metadata, source="recent")
-        if ref is None:
-            return None
-        return await download_image_input(bot, ref)
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
-    # Live progress + streaming: one status message edited through the whole turn.
-    import time as _time
-
-    status_msg = None
-    try:
-        status_msg = await message.answer("🧠 Думаю…")
-    except Exception:  # noqa: BLE001
-        status_msg = None
-    _stream = {"last_edit": 0.0, "shown": "", "t0": _time.monotonic(), "think_last": 0.0}
-
-    async def _edit(text: str) -> None:
-        text = telegram_plain_text(text)
-        if status_msg is None or not text or text == _stream["shown"]:
-            return
-        _stream["shown"] = text
-        try:
-            await status_msg.edit_text(text[:4096])
-        except Exception:  # noqa: BLE001 — same-text edits / flood control are fine to skip
-            pass
-
-    async def on_progress(stage: str) -> None:
-        now = _time.monotonic()
-        if stage == "__thinking__":
-            # Reasoning phase: live elapsed counter, at most every 3s.
-            if now - _stream["think_last"] < 3:
-                return
-            _stream["think_last"] = now
-            await _edit(f"💭 Думаю… {int(now - _stream['t0'])}с")
-            return
-        await _edit(stage)
-
-    async def on_reply_delta(accumulated: str) -> None:
-        # Telegram edit budget: ~1 edit/sec is safe; stream with a cursor.
-        now = _time.monotonic()
-        if now - _stream["last_edit"] < 1.2:
-            return
-        _stream["last_edit"] = now
-        await _edit(accumulated[:4000] + " ▌")
-
-    needs_compaction = False
-    conversation_id: str | None = None
-    user_id: str | None = None
     try:
         async with session_scope() as session:
-            orchestrator = AssistantOrchestrator(session)
-            result = await orchestrator.handle_user_message(
+            result = await TelegramIntakeService(session).ingest_chat_message(
+                update_id=telegram_update_id,
                 telegram_user_id=message.from_user.id,
                 telegram_chat_id=message.chat.id,
                 telegram_message_id=logical_message.primary_message_id,
@@ -503,46 +449,44 @@ async def on_chat_message(message: TgMessage, bot: Bot) -> None:
                 username=message.from_user.username,
                 first_name=message.from_user.first_name,
                 last_name=message.from_user.last_name,
-                image=image,
+                image_metadata=image_ref.to_metadata() if image_ref else None,
                 ignored_attachments=[],
-                image_loader=image_loader,
-                on_progress=on_progress,
-                on_reply_delta=on_reply_delta,
+                payload={
+                    "media_group_id": logical_message.media_group_id,
+                    "telegram_message_ids": list(
+                        logical_message.telegram_message_ids or [logical_message.primary_message_id]
+                    ),
+                },
             )
-            needs_compaction = result.needs_compaction
-            if needs_compaction:
-                users = UserService(session)
-                user = await users.ensure_user(message.from_user.id)
-                conversation = await users.ensure_main_conversation(user)
-                user_id, conversation_id = str(user.id), str(conversation.id)
-            reply_text = result.reply_text
-            markup = markup_from_buttons(result.buttons)
     except Exception:  # noqa: BLE001 — the bot must always answer
-        log.exception("orchestrator failed")
-        reply_text = "Что-то пошло не так на моей стороне. Сообщение сохранено, попробуй еще раз."
-        markup = None
-    if status_msg is not None and len(reply_text) <= 4096:
-        # Finalize the streamed message in place: full text + buttons.
-        try:
-            await status_msg.edit_text(telegram_plain_text(reply_text), reply_markup=markup)
-        except Exception:  # noqa: BLE001 — fall back to a fresh message
-            try:
-                await status_msg.delete()
-            except Exception:  # noqa: BLE001
-                pass
-            await _reply_chunks(message, reply_text, reply_markup=markup)
-    else:
-        if status_msg is not None:
-            try:
-                await status_msg.delete()
-            except Exception:  # noqa: BLE001
-                pass
-        await _reply_chunks(message, reply_text, reply_markup=markup)
+        log.exception("telegram turn intake failed")
+        await message.answer("Не смог поставить сообщение в очередь. Попробуй еще раз.")
+        return
+    if result.duplicate_update:
+        return
+    if result.turn is None:
+        await message.answer("Очередь сообщений переполнена. Дождись текущего ответа и повтори.")
+        return
 
-    if needs_compaction and user_id and conversation_id:
-        await enqueue_job(
-            "compact_conversation", user_id,
-            conversation_id=conversation_id, trigger="system", notify=False,
+    if result.created_turn:
+        try:
+            status_msg = await message.answer("🧠 Думаю…")
+        except Exception:  # noqa: BLE001
+            status_msg = None
+        status_message_id = getattr(status_msg, "message_id", None)
+        if status_message_id is not None:
+            async with session_scope() as session:
+                await TurnService(session).set_status_message(result.turn.id, status_message_id)
+
+    enqueue_kwargs = {}
+    if result.enqueue_at is not None:
+        enqueue_kwargs["_defer_until"] = result.enqueue_at
+        enqueue_kwargs["_job_id"] = _deadline_job_id(result.turn.id, result.enqueue_at)
+    job_id = await enqueue_job("process_assistant_turn", str(result.turn.id), **enqueue_kwargs)
+    if not job_id:
+        log.info(
+            "assistant turn enqueue skipped or duplicated",
+            fields={"turn_id": str(result.turn.id)},
         )
 
 

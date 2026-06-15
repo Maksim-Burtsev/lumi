@@ -2,6 +2,7 @@ import httpx
 import pytest
 
 from lumi.api.deps import get_current_user
+from lumi.api.routes import telegram
 from lumi.db.session import session_scope
 from lumi.main import app
 from lumi.services.confirmations import ConfirmationService
@@ -42,6 +43,45 @@ async def test_api_requires_auth(anon_client):
     response = await anon_client.get("/api/today")
     assert response.status_code == 401
     assert response.json() == {"error": "unauthorized"}
+
+
+async def test_telegram_webhook_passes_update_id_to_dispatcher(anon_client, monkeypatch):
+    seen: dict = {}
+
+    class FakeSettings:
+        telegram_webhook_enabled = True
+        telegram_webhook_secret = "secret"
+        telegram_bot_token = "123456789:TEST-TOKEN-for-tests-only"
+
+    class FakeSession:
+        async def close(self) -> None:
+            seen["closed"] = True
+
+    class FakeBot:
+        def __init__(self, token: str) -> None:
+            seen["token"] = token
+            self.session = FakeSession()
+
+    class FakeDispatcher:
+        def include_router(self, router) -> None:
+            seen["router"] = router
+
+        async def feed_update(self, bot, update, **kwargs) -> None:
+            seen["telegram_update_id"] = kwargs["telegram_update_id"]
+
+    monkeypatch.setattr(telegram, "get_settings", lambda: FakeSettings())
+    monkeypatch.setattr(telegram, "Bot", FakeBot)
+    monkeypatch.setattr(telegram, "Dispatcher", FakeDispatcher)
+
+    response = await anon_client.post(
+        "/api/telegram/webhook/secret",
+        json={"update_id": 4242},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert seen["telegram_update_id"] == 4242
+    assert seen["closed"] is True
 
 
 async def test_me(client):

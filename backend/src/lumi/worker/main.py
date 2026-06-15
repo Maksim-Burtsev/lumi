@@ -6,9 +6,12 @@ from typing import Any
 
 from arq import cron, run_worker
 
+from lumi.config import get_settings
 from lumi.logging import get_logger, setup_logging
 from lumi.worker.jobs import (
     compact_conversation,
+    enqueue_due_assistant_turns,
+    process_assistant_turn,
     run_calendar_sync,
     run_custom_prompt,
     run_daily_planning,
@@ -45,15 +48,18 @@ class WorkerSettings:
         run_task_review,
         run_custom_prompt,
         compact_conversation,
+        process_assistant_turn,
     ]
     cron_jobs = [
         # Reminder delivery: every minute.
         cron(send_due_reminders, second=15, unique=True),
+        # Recovery for saved chat turns when enqueue failed or a process restarted.
+        cron(enqueue_due_assistant_turns, second=45, unique=True),
     ]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = redis_settings()
-    max_jobs = 5
+    max_jobs = get_settings().worker_max_jobs
     job_timeout = 600
     keep_result = 3600
 

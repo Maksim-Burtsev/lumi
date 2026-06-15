@@ -347,6 +347,7 @@ class AssistantOrchestrator:
         image_loader: ImageLoader | None = None,
         on_progress=None,
         on_reply_delta=None,
+        touch_last_seen: bool = True,
     ) -> AssistantResult:
         async def progress(stage: str) -> None:
             if on_progress is None:
@@ -362,6 +363,7 @@ class AssistantOrchestrator:
             username=username,
             first_name=first_name,
             last_name=last_name,
+            touch_last_seen=touch_last_seen,
         )
         conversation = await self.users.ensure_main_conversation(user)
         image_metadata = [image.to_metadata()] if image else []

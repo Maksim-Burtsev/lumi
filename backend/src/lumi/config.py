@@ -55,6 +55,16 @@ class Settings(BaseSettings):
     allowed_telegram_user_ids: CsvIntList = Field(default_factory=list)
     log_unauthorized_telegram_ids: bool = True
     telegram_image_max_bytes: int = 10_000_000
+    telegram_webhook_enabled: bool = False
+    telegram_webhook_secret: str | None = None
+    telegram_chat_debounce_ms: int = 1200
+    telegram_turn_lock_seconds: int = 300
+    telegram_turn_max_retries: int = 3
+    telegram_turn_retry_base_seconds: int = 10
+    telegram_max_queue_per_user: int = 25
+
+    # --- Worker ---
+    worker_max_jobs: int = 10
 
     # --- LLM ---
     llm_provider: Literal["minimax", "mock"] = "mock"
@@ -102,6 +112,7 @@ class Settings(BaseSettings):
     @field_validator(
         "app_public_url",
         "minimax_api_key",
+        "telegram_webhook_secret",
         "google_oauth_client_secret_file",
         "google_oauth_token_file",
         "dev_auth_telegram_user_id",

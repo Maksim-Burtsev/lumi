@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from sqlalchemy import select
 
 from lumi.bot import handlers
-from lumi.db.models import Message, MessageRole
+from lumi.db.models import AssistantTurn, Message, MessageRole
 from lumi.db.session import session_scope
 
 from .conftest import TEST_TELEGRAM_ID
@@ -65,26 +65,10 @@ async def test_rejected_unsupported_attachment_with_caption_does_not_call_llm_or
     orchestrator_called = False
     download_called = False
 
-    class FakeOrchestrator:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        async def handle_user_message(self, **kwargs):
-            nonlocal orchestrator_called
-            orchestrator_called = True
-            return SimpleNamespace(reply_text="should not happen", buttons=[], needs_compaction=False)
-
-    async def fake_download(*args, **kwargs):
-        nonlocal download_called
-        download_called = True
-        raise AssertionError("download should not run for rejected attachment batches")
-
     async def fake_check_allowed(*args, **kwargs):
         return True
 
     monkeypatch.setattr(handlers, "_check_allowed", fake_check_allowed)
-    monkeypatch.setattr(handlers, "AssistantOrchestrator", FakeOrchestrator)
-    monkeypatch.setattr(handlers, "download_image_input", fake_download)
 
     message = FakeTelegramMessage(
         message_id=501,
@@ -127,16 +111,10 @@ async def test_rejected_unsupported_attachment_with_caption_does_not_call_llm_or
 async def test_rejected_multiple_supported_images_does_not_download_first_image(monkeypatch):
     download_called = False
 
-    async def fake_download(*args, **kwargs):
-        nonlocal download_called
-        download_called = True
-        raise AssertionError("download should not run for rejected multi-image batches")
-
     async def fake_check_allowed(*args, **kwargs):
         return True
 
     monkeypatch.setattr(handlers, "_check_allowed", fake_check_allowed)
-    monkeypatch.setattr(handlers, "download_image_input", fake_download)
 
     message = FakeTelegramMessage(
         message_id=502,
@@ -208,3 +186,47 @@ async def test_rejected_multiple_supported_images_does_not_download_first_image(
     assert inbound.content_json["attachment_rejection"]["reason"] == "multiple_supported_images"
     assert [item["file_id"] for item in inbound.content_json["rejected_supported_images"]] == ["first", "second"]
     assert "images" not in inbound.content_json
+
+
+async def test_chat_message_enqueues_turn_without_inline_orchestrator(monkeypatch):
+    enqueued: list[tuple[str, tuple, dict]] = []
+
+    async def fake_check_allowed(*args, **kwargs):
+        return True
+
+    async def fake_enqueue(job_name, *args, **kwargs):
+        enqueued.append((job_name, args, kwargs))
+        return "job-id"
+
+    monkeypatch.setattr(handlers, "_check_allowed", fake_check_allowed)
+    monkeypatch.setattr(handlers, "enqueue_job", fake_enqueue)
+
+    message = FakeTelegramMessage(message_id=901, text="поставь задачу")
+
+    await handlers.on_chat_message(message, FakeBot())
+
+    assert message.answers == ["🧠 Думаю…"]
+    assert len(enqueued) == 1
+    assert enqueued[0][0] == "process_assistant_turn"
+
+    async with session_scope() as session:
+        turn = (await session.execute(select(AssistantTurn))).scalars().one()
+    assert turn.input_text == "поставь задачу"
+    assert turn.primary_message_id == 901
+
+
+async def test_duplicate_enqueue_does_not_show_queue_unavailable(monkeypatch):
+    async def fake_check_allowed(*args, **kwargs):
+        return True
+
+    async def fake_enqueue(job_name, *args, **kwargs):
+        return None
+
+    monkeypatch.setattr(handlers, "_check_allowed", fake_check_allowed)
+    monkeypatch.setattr(handlers, "enqueue_job", fake_enqueue)
+
+    message = FakeTelegramMessage(message_id=902, text="быстрый дубль enqueue")
+
+    await handlers.on_chat_message(message, FakeBot())
+
+    assert message.answers == ["🧠 Думаю…"]

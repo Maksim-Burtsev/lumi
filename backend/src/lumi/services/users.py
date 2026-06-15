@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lumi.config import get_settings
@@ -29,24 +30,31 @@ class UserService:
         first_name: str | None = None,
         last_name: str | None = None,
         language_code: str | None = None,
+        touch_last_seen: bool = True,
     ) -> User:
         user = await self.get_by_telegram_id(telegram_user_id)
         if user is None:
             settings = get_settings()
-            user = User(
-                telegram_user_id=telegram_user_id,
-                telegram_chat_id=telegram_chat_id or telegram_user_id,
-                username=username,
-                first_name=first_name,
-                last_name=last_name,
-                language_code=language_code,
-                timezone=settings.default_timezone,
-                # Start from the Telegram interface language; chat replies
-                # mirror the message language anyway (see system prompt).
-                locale=(language_code or "ru")[:2],
-            )
-            self.session.add(user)
-            await self.session.flush()
+            try:
+                async with self.session.begin_nested():
+                    user = User(
+                        telegram_user_id=telegram_user_id,
+                        telegram_chat_id=telegram_chat_id or telegram_user_id,
+                        username=username,
+                        first_name=first_name,
+                        last_name=last_name,
+                        language_code=language_code,
+                        timezone=settings.default_timezone,
+                        # Start from the Telegram interface language; chat replies
+                        # mirror the message language anyway (see system prompt).
+                        locale=(language_code or "ru")[:2],
+                    )
+                    self.session.add(user)
+                    await self.session.flush()
+            except IntegrityError:
+                user = await self.get_by_telegram_id(telegram_user_id)
+                if user is None:
+                    raise
         else:
             # Keep profile fresh, never blank out existing values.
             if telegram_chat_id:
@@ -57,7 +65,8 @@ class UserService:
                 user.first_name = first_name
             if last_name:
                 user.last_name = last_name
-        user.last_seen_at = utc_now()
+        if touch_last_seen:
+            user.last_seen_at = utc_now()
         return user
 
     async def ensure_main_conversation(self, user: User) -> Conversation:
