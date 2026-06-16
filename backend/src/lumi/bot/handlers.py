@@ -23,6 +23,7 @@ from lumi.db.session import session_scope
 from lumi.logging import get_logger, telegram_update_id_var
 from lumi.services.confirmation_executor import ConfirmationExecutor
 from lumi.services.confirmations import ConfirmationService
+from lumi.services.realtime import commit_with_realtime
 from lumi.services.runs import RunService
 from lumi.services.task_update_replies import format_task_update_reply
 from lumi.services.tasks import TaskService
@@ -425,7 +426,7 @@ async def on_chat_message(message: TgMessage, bot: Bot, telegram_update_id: int 
                 await message.answer("Сейчас идет /intro — ответь текстом или нажми /cancel.")
                 return
             reply, _finished = await handle_intro_answer(session, user, text)
-            await session.commit()
+            await commit_with_realtime(session)
             await message.answer(reply)
             return
         if image_ref is None and not logical_message.media_group_id and message.reply_to_message:

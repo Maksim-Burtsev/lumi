@@ -444,6 +444,29 @@ class TaskEvent(Base):
 
 
 # ---------------------------------------------------------------------------
+# Real-time UI invalidation events
+# ---------------------------------------------------------------------------
+
+class UiEvent(Base):
+    __tablename__ = "ui_events"
+    __table_args__ = (
+        Index("ix_ui_events_user_id", "user_id", "id"),
+        Index("ix_ui_events_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    topics: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list, server_default=_TEXT_ARRAY_EMPTY
+    )
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=_JSONB_EMPTY_DICT
+    )
+    created_at: Mapped[datetime] = created_at_col()
+
+
+# ---------------------------------------------------------------------------
 # Automations / agent runs / observability
 # ---------------------------------------------------------------------------
 

@@ -13,6 +13,7 @@ from lumi.api.serializers import message_to_dict, user_to_dict
 from lumi.config import get_settings
 from lumi.connectors.google.auth import connection_status
 from lumi.db.models import Message, MessageRole, User
+from lumi.services.realtime import RealtimeEventService
 
 router = APIRouter()
 
@@ -74,6 +75,12 @@ async def patch_settings(
     if payload.settings is not None:
         user.settings = {**user.settings, **payload.settings}
     session.add(user)
+    await RealtimeEventService(session).emit(
+        user_id=user.id,
+        topics=["settings"],
+        event_type="settings.updated",
+        payload={},
+    )
     return {"user": user_to_dict(user)}
 
 

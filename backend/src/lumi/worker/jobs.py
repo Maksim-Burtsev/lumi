@@ -265,9 +265,9 @@ async def _update_scheduled_task(session, scheduled_task_id: str | None, *, erro
 
     service = AutomationService(session)
     if error:
-        service.mark_failed(task, error)
+        await service.mark_failed(task, error)
     else:
-        service.mark_succeeded(task)
+        await service.mark_succeeded(task)
 
 
 def _job(type_: AgentRunType):
@@ -794,6 +794,17 @@ async def send_due_reminders(ctx: dict[str, Any]) -> str:
     if sent:
         log.info("reminders sent", fields={"count": sent})
     return f"sent {sent}"
+
+
+async def cleanup_ui_events(ctx: dict[str, Any]) -> str:
+    """Delete realtime outbox events after the reconnect catch-up window."""
+    from lumi.services.realtime import RealtimeEventService
+
+    async with session_scope() as session:
+        deleted = await RealtimeEventService(session).delete_older_than(
+            utc_now() - timedelta(hours=72)
+        )
+    return f"deleted {deleted}"
 
 
 JOB_BY_AUTOMATION_TYPE = {

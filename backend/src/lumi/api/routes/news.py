@@ -13,6 +13,7 @@ from lumi.api.run_helper import start_background_run
 from lumi.api.serializers import digest_to_dict, topic_to_dict
 from lumi.db.models import User
 from lumi.services.news import NewsService
+from lumi.services.realtime import RealtimeEventService
 
 router = APIRouter()
 
@@ -69,6 +70,12 @@ async def patch_topic(
         value = getattr(payload, key)
         if value is not None:
             setattr(topic, key, value)
+    await RealtimeEventService(session).emit(
+        user_id=user.id,
+        topics=["news"],
+        event_type="news_topic.updated",
+        payload={"topic_id": str(topic.id)},
+    )
     return {"topic": topic_to_dict(topic)}
 
 

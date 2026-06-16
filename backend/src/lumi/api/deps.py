@@ -20,17 +20,19 @@ INIT_DATA_HEADER = "X-Telegram-Init-Data"
 
 
 async def get_db() -> AsyncIterator[AsyncSession]:
+    from lumi.services.realtime import commit_with_realtime, rollback_with_realtime
+
     factory = get_session_factory()
     async with factory() as session:
         try:
             yield session
-            await session.commit()
+            await commit_with_realtime(session)
         except BaseException:
-            await session.rollback()
+            await rollback_with_realtime(session)
             raise
 
 
-async def get_current_user(request: Request, session: AsyncSession = Depends(get_db)) -> User:
+async def resolve_current_user(request: Request, session: AsyncSession) -> User:
     settings = get_settings()
     init_data = request.headers.get(INIT_DATA_HEADER, "")
 
@@ -66,3 +68,7 @@ async def get_current_user(request: Request, session: AsyncSession = Depends(get
         return user
 
     raise HTTPException(status_code=401, detail="unauthorized")
+
+
+async def get_current_user(request: Request, session: AsyncSession = Depends(get_db)) -> User:
+    return await resolve_current_user(request, session)

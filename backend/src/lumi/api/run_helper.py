@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lumi.db.models import User
+from lumi.services.realtime import commit_with_realtime
 from lumi.services.runs import RunService
 from lumi.worker.jobs import AGENT_RUN_TYPE_BY_AUTOMATION, JOB_BY_AUTOMATION_TYPE
 from lumi.worker.queue import enqueue_job
@@ -29,7 +30,7 @@ async def start_background_run(
         scheduled_task_id=scheduled_task_id,
     )
     run_id = str(run.id)
-    await session.commit()
+    await commit_with_realtime(session)
 
     job_id = await enqueue_job(
         JOB_BY_AUTOMATION_TYPE[automation_type],

@@ -9,6 +9,7 @@ from arq import cron, run_worker
 from lumi.config import get_settings
 from lumi.logging import get_logger, setup_logging
 from lumi.worker.jobs import (
+    cleanup_ui_events,
     compact_conversation,
     enqueue_due_assistant_turns,
     process_assistant_turn,
@@ -49,12 +50,15 @@ class WorkerSettings:
         run_custom_prompt,
         compact_conversation,
         process_assistant_turn,
+        cleanup_ui_events,
     ]
     cron_jobs = [
         # Reminder delivery: every minute.
         cron(send_due_reminders, second=15, unique=True),
         # Recovery for saved chat turns when enqueue failed or a process restarted.
         cron(enqueue_due_assistant_turns, second=45, unique=True),
+        # Realtime outbox retention: durable catch-up is 72h.
+        cron(cleanup_ui_events, hour=3, minute=20, unique=True),
     ]
     on_startup = startup
     on_shutdown = shutdown

@@ -147,3 +147,7 @@ polling → webhook (bot/runner.py, нужен HTTPS-домен)
 ```
 
 Docker Compose переносится на VPS как есть (`restart: unless-stopped` уже стоит).
+
+Для Mini App real-time `/api/realtime` нужен long-running backend и reverse proxy без
+буферизации SSE: отключить response buffering/gzip для этого пути и поставить долгий read
+timeout. Serverless request runtime для этого endpoint не подходит.

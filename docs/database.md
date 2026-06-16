@@ -19,6 +19,7 @@ erDiagram
     users ||--o{ scheduled_tasks : configures
     scheduled_tasks ||--o{ agent_runs : triggers
     users ||--o{ agent_runs : owns
+    users ||--o{ ui_events : streams
     agent_runs ||--o{ llm_calls : uses
     agent_runs ||--o{ tool_calls : executes
     users ||--o{ pending_confirmations : approves
@@ -70,6 +71,7 @@ erDiagram
 | `llm_calls` | provider/model/request_kind/latency/char+token estimates; сырые промпты НЕ хранятся (только при `STORE_LLM_DEBUG_PAYLOADS=true`) |
 | `tool_calls` | имя инструмента, args/result JSON, requires_confirmation, ссылка на confirmation |
 | `pending_confirmations` | action_type + payload + prompt; статусы pending/accepted/rejected/expired (TTL 48 ч) |
+| `ui_events` | durable outbox для Mini App SSE: topics/event_type/payload, catch-up по `(user_id, id)` |
 | `connectors` | статус Google-подключения, scopes, last_sync_at |
 | `audit_logs` | actor/entity/action/details для всех значимых изменений |
 | `files` | метаданные локальных файлов (S3 нет в MVP) |
@@ -80,6 +82,7 @@ erDiagram
 uq_conversations_main_per_user   unique(user_id) WHERE kind='main'
 ix_tasks_user_reminder           (user_id, reminder_at) WHERE reminder_at IS NOT NULL
 ix_scheduled_tasks_next_run      (next_run_at) WHERE enabled = true
+ix_ui_events_user_id             (user_id, id)
 uq_calendar_events_external      unique(user,source,ext_cal,ext_event) WHERE ext_event IS NOT NULL
 uq_news_items_user_hash          unique(user_id, hash)
 GIN: memories.tags, tasks.tags, email_threads.labels

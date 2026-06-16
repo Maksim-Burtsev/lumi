@@ -50,8 +50,10 @@ async def lifespan(app: FastAPI):
     log.info("lumi api started", fields={"env": settings.app_env, "version": __version__})
     yield
     from lumi.db.session import dispose_engine
+    from lumi.services.realtime import close_realtime
     from lumi.worker.queue import close_queue
 
+    await close_realtime()
     await close_queue()
     await dispose_engine()
     log.info("lumi api stopped")

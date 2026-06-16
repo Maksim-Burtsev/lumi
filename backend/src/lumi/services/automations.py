@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from lumi.db.models import ScheduledTask, ScheduledTaskType, User
 from lumi.services.audit import AuditService
+from lumi.services.realtime import RealtimeEventService
 from lumi.utils.time import get_zone, utc_now
 
 
@@ -87,6 +88,7 @@ class AutomationService:
         await self.audit.log(user_id=user.id, actor=actor, entity_type="automation",
                              entity_id=task.id, action="created",
                              details={"type": type_, "cron": cron_expression})
+        await self._emit_automation_changed(task, "automation.created")
         return task
 
     async def ensure_system_calendar_sync(self, user: User) -> ScheduledTask:
@@ -106,6 +108,7 @@ class AutomationService:
                 task.enabled = True
                 task.next_run_at = compute_next_run(task.cron_expression, task.timezone)
                 task.last_error = None
+                await self._emit_automation_changed(task, "automation.updated")
                 return task
         return await self.create(
             user,
@@ -138,6 +141,7 @@ class AutomationService:
             task.last_error = None
         await self.audit.log(user_id=user.id, actor=actor, entity_type="automation",
                              entity_id=task.id, action="updated", details=dict(updates))
+        await self._emit_automation_changed(task, "automation.updated")
         return task
 
     # --- scheduler side -------------------------------------------------
@@ -170,12 +174,22 @@ class AutomationService:
         task.last_run_at = now
         task.next_run_at = compute_next_run(task.cron_expression, task.timezone, after=now)
 
-    def mark_succeeded(self, task: ScheduledTask) -> None:
+    async def mark_succeeded(self, task: ScheduledTask) -> None:
         task.failure_count = 0
         task.last_error = None
         task.locked_until = None
+        await self._emit_automation_changed(task, "automation.succeeded")
 
-    def mark_failed(self, task: ScheduledTask, error: str) -> None:
+    async def mark_failed(self, task: ScheduledTask, error: str) -> None:
         task.failure_count += 1
         task.last_error = error[:1000]
         task.locked_until = None
+        await self._emit_automation_changed(task, "automation.failed")
+
+    async def _emit_automation_changed(self, task: ScheduledTask, event_type: str) -> None:
+        await RealtimeEventService(self.session).emit(
+            user_id=task.user_id,
+            topics=["automations"],
+            event_type=event_type,
+            payload={"automation_id": str(task.id), "type": task.type.value},
+        )

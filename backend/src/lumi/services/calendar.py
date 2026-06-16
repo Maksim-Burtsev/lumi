@@ -16,6 +16,7 @@ from lumi.db.models import (
     User,
 )
 from lumi.services.audit import AuditService
+from lumi.services.realtime import RealtimeEventService
 from lumi.utils.links import extract_links
 from lumi.utils.time import get_zone, local_day_bounds, utc_now
 
@@ -172,6 +173,7 @@ class CalendarService:
             action="created" if status != CalendarEventStatus.PROPOSED else "proposed",
             details={"title": event.title},
         )
+        await self._emit_calendar_changed(event, "calendar_event.created")
         return event
 
     async def cancel_proposed_blocks(self, user: User, *, day: datetime) -> int:
@@ -190,12 +192,20 @@ class CalendarService:
         for event in result.scalars():
             event.status = CalendarEventStatus.CANCELLED
             cancelled += 1
+        if cancelled:
+            await RealtimeEventService(self.session).emit(
+                user_id=user.id,
+                topics=["calendar"],
+                event_type="calendar_events.cancelled",
+                payload={"count": cancelled},
+            )
         return cancelled
 
     async def confirm_proposed_block(self, user: User, event: CalendarEvent) -> CalendarEvent:
         event.status = CalendarEventStatus.CONFIRMED
         await self.audit.log(user_id=user.id, actor="user", entity_type="calendar_event",
                              entity_id=event.id, action="confirmed", details={})
+        await self._emit_calendar_changed(event, "calendar_event.confirmed")
         return event
 
     # ------------------------------------------------------------------
@@ -327,6 +337,7 @@ class CalendarService:
             if value not in (None, "", [])
         }
         await self.session.flush()
+        await self._emit_calendar_changed(event, "calendar_event.upserted")
         return event
 
     async def reconcile_external_events(
@@ -365,6 +376,12 @@ class CalendarService:
             cancelled += 1
         if cancelled:
             await self.session.flush()
+            await RealtimeEventService(self.session).emit(
+                user_id=user.id,
+                topics=["calendar"],
+                event_type="calendar_events.reconciled",
+                payload={"count": cancelled, "source": source.value},
+            )
         return cancelled
 
     async def external_calendar_ids_in_window(
@@ -385,3 +402,11 @@ class CalendarService:
             )
         )
         return {calendar_id for calendar_id in result.scalars() if calendar_id}
+
+    async def _emit_calendar_changed(self, event: CalendarEvent, event_type: str) -> None:
+        await RealtimeEventService(self.session).emit(
+            user_id=event.user_id,
+            topics=["calendar"],
+            event_type=event_type,
+            payload={"event_id": str(event.id), "source": event.source.value},
+        )

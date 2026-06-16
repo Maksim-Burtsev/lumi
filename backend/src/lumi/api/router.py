@@ -15,6 +15,7 @@ from lumi.api.routes import (
     me,
     memory,
     news,
+    realtime,
     tasks,
     telegram,
     today,
@@ -32,5 +33,6 @@ api_router.include_router(automations.router, tags=["automations"])
 api_router.include_router(memory.router, tags=["memory"])
 api_router.include_router(agent_runs.router, tags=["agent-runs"])
 api_router.include_router(connectors.router, tags=["connectors"])
+api_router.include_router(realtime.router, tags=["realtime"])
 api_router.include_router(debug.router, tags=["debug"])
 api_router.include_router(telegram.router, tags=["telegram"])

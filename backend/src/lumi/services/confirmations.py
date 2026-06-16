@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from lumi.db.models import ConfirmationStatus, PendingConfirmation, User
 from lumi.services.audit import AuditService
+from lumi.services.realtime import RealtimeEventService
 from lumi.utils.time import utc_now
 
 DEFAULT_TTL = timedelta(hours=48)
@@ -42,6 +43,7 @@ class ConfirmationService:
         await self.audit.log(user_id=user.id, actor="agent", entity_type="confirmation",
                              entity_id=confirmation.id, action="created",
                              details={"action_type": action_type})
+        await self._emit_confirmation_changed(confirmation, "confirmation.created")
         return confirmation
 
     async def get(self, user: User, confirmation_id: uuid.UUID) -> PendingConfirmation | None:
@@ -70,6 +72,7 @@ class ConfirmationService:
         for c in confirmations:
             if c.expires_at and c.expires_at < now:
                 c.status = ConfirmationStatus.EXPIRED
+                await self._emit_confirmation_changed(c, "confirmation.expired")
             else:
                 alive.append(c)
         return alive
@@ -97,4 +100,21 @@ class ConfirmationService:
             action="accepted" if accept else "rejected",
             details={"action_type": confirmation.action_type},
         )
+        await self._emit_confirmation_changed(
+            confirmation,
+            "confirmation.accepted" if accept else "confirmation.rejected",
+        )
         return confirmation
+
+    async def _emit_confirmation_changed(
+        self, confirmation: PendingConfirmation, event_type: str
+    ) -> None:
+        await RealtimeEventService(self.session).emit(
+            user_id=confirmation.user_id,
+            topics=["confirmations"],
+            event_type=event_type,
+            payload={
+                "confirmation_id": str(confirmation.id),
+                "action_type": confirmation.action_type,
+            },
+        )

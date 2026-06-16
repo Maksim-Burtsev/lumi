@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lumi.assistant.schemas import ExtractedTask
 from lumi.db.models import Priority, Task, TaskEvent, TaskStatus, User
 from lumi.services.audit import AuditService
+from lumi.services.realtime import RealtimeEventService
 from lumi.utils.text import keyword_overlap, normalize_for_match
 from lumi.utils.time import local_day_bounds, local_to_utc, utc_now
 
@@ -150,6 +151,7 @@ class TaskService:
                                  agent_run_id=agent_run_id)
         await self.audit.log(user_id=user.id, actor=actor, entity_type="task",
                              entity_id=task.id, action="created", details={"title": task.title})
+        await self._emit_task_changed(task, "task.created", actor=actor)
         return task
 
     async def find_active_by_title(self, user: User, title: str) -> Task | None:
@@ -279,6 +281,7 @@ class TaskService:
             action="updated",
             details={"old_title": old_title, "new_title": task.title},
         )
+        await self._emit_task_changed(task, "task.updated", actor=actor)
         return RenameTaskResult(
             status="renamed",
             task=task,
@@ -309,6 +312,7 @@ class TaskService:
                 await self._record_event(existing, "updated", actor="agent",
                                          after=_task_snapshot(existing),
                                          agent_run_id=agent_run_id)
+                await self._emit_task_changed(existing, "task.updated", actor="agent")
             return existing
 
         due_at = local_to_utc(signal.due_at_local, user.timezone) if signal.due_at_local else None
@@ -495,6 +499,7 @@ class TaskService:
             after=_task_snapshot(task),
             agent_run_id=agent_run_id,
         )
+        await self._emit_task_changed(task, "task.updated", actor=actor)
         return task
 
     async def update_task_with_tag_ops(
@@ -566,6 +571,7 @@ class TaskService:
                                  after=_task_snapshot(task))
         await self.audit.log(user_id=user.id, actor=actor, entity_type="task",
                              entity_id=task.id, action="completed", details={"title": task.title})
+        await self._emit_task_changed(task, "task.completed", actor=actor)
         return task
 
     async def snooze_task(
@@ -589,6 +595,7 @@ class TaskService:
         task.metadata_ = {k: v for k, v in task.metadata_.items() if k != "reminder_sent_at"}
         await self._record_event(task, "snoozed", actor=actor, before=before,
                                  after=_task_snapshot(task))
+        await self._emit_task_changed(task, "task.snoozed", actor=actor)
         return task
 
     # --- reminders -----------------------------------------------------
@@ -609,6 +616,7 @@ class TaskService:
 
     async def mark_reminder_sent(self, task: Task) -> None:
         task.metadata_ = {**task.metadata_, "reminder_sent_at": utc_now().isoformat()}
+        await self._emit_task_changed(task, "task.reminder_sent", actor="system")
 
     # ------------------------------------------------------------------
 
@@ -632,4 +640,12 @@ class TaskService:
                 actor=actor,
                 agent_run_id=agent_run_id,
             )
+        )
+
+    async def _emit_task_changed(self, task: Task, event_type: str, *, actor: str) -> None:
+        await RealtimeEventService(self.session).emit(
+            user_id=task.user_id,
+            topics=["tasks"],
+            event_type=event_type,
+            payload={"task_id": str(task.id), "actor": actor},
         )

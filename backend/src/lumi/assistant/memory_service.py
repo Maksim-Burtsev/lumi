@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lumi.assistant.schemas import MemoryCandidate
 from lumi.db.models import Memory, MemoryKind, MemoryStatus, User
 from lumi.services.audit import AuditService
+from lumi.services.realtime import RealtimeEventService
 from lumi.utils.text import keyword_overlap, normalize_for_match
 from lumi.utils.time import utc_now
 
@@ -81,6 +82,7 @@ class MemoryService:
             await self.audit.log(user_id=user.id, actor=actor, entity_type="memory",
                                  entity_id=best_match.id, action="refreshed",
                                  details={"overlap": round(best_overlap, 2)})
+            await self._emit_memory_changed(best_match, "memory.refreshed")
             return best_match, False
 
         memory = Memory(
@@ -102,6 +104,7 @@ class MemoryService:
         await self.audit.log(user_id=user.id, actor=actor, entity_type="memory",
                              entity_id=memory.id, action="stored",
                              details={"kind": candidate.kind})
+        await self._emit_memory_changed(memory, "memory.stored")
         return memory, True
 
     # ------------------------------------------------------------------
@@ -134,9 +137,19 @@ class MemoryService:
         memory.status = MemoryStatus.ARCHIVED
         await self.audit.log(user_id=user.id, actor=actor, entity_type="memory",
                              entity_id=memory.id, action="archived", details={})
+        await self._emit_memory_changed(memory, "memory.archived")
         return memory
 
     async def delete_memory(self, user: User, memory: Memory, *, actor: str = "user") -> None:
         await self.audit.log(user_id=user.id, actor=actor, entity_type="memory",
                              entity_id=memory.id, action="deleted", details={})
+        await self._emit_memory_changed(memory, "memory.deleted")
         await self.session.delete(memory)
+
+    async def _emit_memory_changed(self, memory: Memory, event_type: str) -> None:
+        await RealtimeEventService(self.session).emit(
+            user_id=memory.user_id,
+            topics=["memories"],
+            event_type=event_type,
+            payload={"memory_id": str(memory.id)},
+        )

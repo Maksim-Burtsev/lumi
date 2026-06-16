@@ -12,6 +12,7 @@ from lumi.api.deps import get_current_user, get_db
 from lumi.api.serializers import memory_to_dict
 from lumi.assistant.memory_service import MemoryService
 from lumi.db.models import User
+from lumi.services.realtime import RealtimeEventService
 
 router = APIRouter()
 
@@ -66,6 +67,12 @@ async def patch_memory(
         memory.text_ = payload.text.strip()[:2000]
     if payload.importance is not None:
         memory.importance = payload.importance
+    await RealtimeEventService(session).emit(
+        user_id=user.id,
+        topics=["memories"],
+        event_type="memory.updated",
+        payload={"memory_id": str(memory.id)},
+    )
     return {"memory": memory_to_dict(memory)}
 
 

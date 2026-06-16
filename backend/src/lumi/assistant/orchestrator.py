@@ -56,6 +56,7 @@ from lumi.logging import agent_run_id_var, get_logger
 from lumi.services.calendar import CalendarService
 from lumi.services.confirmations import ConfirmationService
 from lumi.services.planning import CalendarSyncService, PlanningService
+from lumi.services.realtime import commit_with_realtime
 from lumi.services.runs import RunService
 from lumi.services.task_update_replies import (
     format_task_bulk_update_reply,
@@ -1907,7 +1908,7 @@ class AssistantOrchestrator:
             input_summary=", ".join(request.topics)[:300] if request.topics else "news_digest",
         )
         digest_run_id = str(digest_run.id)
-        await self.session.commit()
+        await commit_with_realtime(self.session)
         job_id = await enqueue_job(
             "run_news_digest",
             str(user.id),

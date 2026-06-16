@@ -35,8 +35,13 @@ flowchart TD
     CTX --> PG
 
     MA[Mini App · React/Vite] -->|X-Telegram-Init-Data| API[api · FastAPI]
+    API -->|SSE /api/realtime| MA
     API --> AUTH[validate_init_data + allowlist]
     API --> SVCS
+    SVCS --> UIE[ui_events outbox]
+    UIE --> PG
+    UIE -->|after commit| RT[(Redis · pub/sub)]
+    RT --> API
 
     SCHED[scheduler] -->|due tasks| Q[(Redis · arq)]
     API -->|run now| Q
@@ -92,8 +97,11 @@ sequenceDiagram
 ```
 
 «Run now»-эндпоинты (`plan-day`, `triage/run`, `digest/run`, `automations/{id}/run`)
-создают `agent_run`, **коммитят** и кладут джобу в Redis; фронт поллит
-`GET /api/agent-runs/{id}` каждые 1.5 с до `completed/failed` и перезапрашивает данные.
+создают `agent_run`, **коммитят** и кладут джобу в Redis. Mini App держит
+`GET /api/realtime` SSE stream: backend пишет маленькие `ui_events` внутри той же
+транзакции, публикует их в Redis только после commit, а фронт инвалидирует React Query
+и refetch'ит текущие REST endpoints. Старый polling `GET /api/agent-runs/{id}` остается
+fallback для конкретных user-started запусков.
 
 ## Поток автоматизаций
 
@@ -167,4 +175,5 @@ SignalExtractor → PendingConfirmation(pending) + кнопки [✓]/[✗] в T
 | Gmail | Outlook | `lumi/connectors/` + `EmailService` |
 | keyword-память | pgvector | `MemoryService.retrieve_relevant` |
 | polling | webhook | `bot/runner.py` |
+| no real-time | SSE + Redis fanout | `services/realtime.py`, `/api/realtime`, `ui_events` |
 | локальные файлы | S3 | `files`-таблица уже есть |

@@ -41,13 +41,15 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
 @asynccontextmanager
 async def session_scope() -> AsyncIterator[AsyncSession]:
     """Transactional scope: commits on success, rolls back on error."""
+    from lumi.services.realtime import commit_with_realtime, rollback_with_realtime
+
     factory = get_session_factory()
     async with factory() as session:
         try:
             yield session
-            await session.commit()
+            await commit_with_realtime(session)
         except BaseException:
-            await session.rollback()
+            await rollback_with_realtime(session)
             raise
 
 

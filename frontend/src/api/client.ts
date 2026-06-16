@@ -66,6 +66,11 @@ export function clearUnauthorizedResponse(): void {
   unauthorizedSeen = false;
 }
 
+export function markUnauthorizedResponse(): void {
+  unauthorizedSeen = true;
+  window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
+}
+
 type Method = 'GET' | 'POST' | 'PATCH' | 'DELETE';
 
 interface RequestOptions {
@@ -111,8 +116,7 @@ async function request<T>(method: Method, path: string, options: RequestOptions 
       /* non-JSON error body */
     }
     if (response.status === 401) {
-      unauthorizedSeen = true;
-      window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
+      markUnauthorizedResponse();
     }
     throw new ApiError(response.status, code, detail);
   }

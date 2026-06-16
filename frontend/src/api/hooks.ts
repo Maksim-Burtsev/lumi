@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { QueryKey } from '@tanstack/react-query';
 import { api, ApiError } from './client';
+import { consumeRealtimeEvents, getRealtimeInvalidationKeys } from './realtime';
 import type {
   AgentRun,
   CreateAutomationInput,
@@ -42,6 +43,99 @@ export const qk = {
   runs: ['agent-runs'] as const,
   runDetail: (id: string) => ['agent-run', id] as const,
 };
+
+const REALTIME_LAST_ID_KEY = 'lumi-realtime-last-id';
+const REALTIME_BATCH_MS = 250;
+const REALTIME_RETRY_INITIAL_MS = 1000;
+const REALTIME_RETRY_MAX_MS = 15000;
+
+function readLastRealtimeId(): number {
+  const raw = sessionStorage.getItem(REALTIME_LAST_ID_KEY);
+  const parsed = raw ? Number(raw) : 0;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function writeLastRealtimeId(id: number): void {
+  sessionStorage.setItem(REALTIME_LAST_ID_KEY, String(id));
+}
+
+export function useRealtimeInvalidation() {
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    let stopped = false;
+    let connected = false;
+    let retryMs = REALTIME_RETRY_INITIAL_MS;
+    let controller: AbortController | null = null;
+    let flushTimer: number | null = null;
+    const pending = new Map<string, QueryKey>();
+    const lastIdRef = { current: readLastRealtimeId() };
+
+    const flush = () => {
+      flushTimer = null;
+      const keys = [...pending.values()];
+      pending.clear();
+      for (const key of keys) void queryClient.invalidateQueries({ queryKey: key });
+    };
+
+    const scheduleKeys = (keys: QueryKey[]) => {
+      for (const key of keys) pending.set(JSON.stringify(key), key);
+      if (pending.size > 0 && flushTimer === null) {
+        flushTimer = window.setTimeout(flush, REALTIME_BATCH_MS);
+      }
+    };
+
+    const scheduleResync = () => {
+      scheduleKeys(getRealtimeInvalidationKeys({ topics: ['*'], event_type: 'resync', payload: {} }));
+    };
+
+    const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+    const loop = async () => {
+      while (!stopped) {
+        controller = new AbortController();
+        try {
+          connected = true;
+          await consumeRealtimeEvents({
+            after: lastIdRef.current,
+            signal: controller.signal,
+            onEvent: (event) => {
+              if (event.id !== undefined) {
+                lastIdRef.current = Math.max(lastIdRef.current, event.id);
+                writeLastRealtimeId(lastIdRef.current);
+              }
+              scheduleKeys(getRealtimeInvalidationKeys(event));
+            },
+          });
+          connected = false;
+          retryMs = REALTIME_RETRY_INITIAL_MS;
+        } catch (error) {
+          if (stopped || (error instanceof DOMException && error.name === 'AbortError')) break;
+          if (error instanceof ApiError && error.status === 401) break;
+          connected = false;
+        }
+        if (!stopped) {
+          await sleep(retryMs);
+          retryMs = Math.min(Math.round(retryMs * 1.7), REALTIME_RETRY_MAX_MS);
+        }
+      }
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible' && !connected) scheduleResync();
+    };
+
+    void loop();
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return () => {
+      stopped = true;
+      controller?.abort();
+      document.removeEventListener('visibilitychange', onVisibility);
+      if (flushTimer !== null) window.clearTimeout(flushTimer);
+    };
+  }, [queryClient]);
+}
 
 // ------------------------------------------------------------------ queries
 

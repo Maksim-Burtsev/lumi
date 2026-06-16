@@ -238,6 +238,30 @@ POST /api/connectors/yandex/disconnect → {"ok": true}
 Frontend polls `GET /api/agent-runs/{run_id}` every 1.5s (up to 120s) until status is
 `completed`/`failed`, then refetches the relevant data and shows `result_summary` or error.
 
+## Real-time UI invalidation
+
+```
+GET /api/realtime?after=<last_event_id> → text/event-stream
+```
+
+Auth is the same as other Mini App endpoints: `X-Telegram-Init-Data`. The frontend uses
+`fetch` streaming instead of native `EventSource` because `EventSource` cannot set that header.
+
+SSE events:
+
+```
+id: 123
+event: ui_event
+data: {"id":123,"topics":["tasks"],"event_type":"task.updated","payload":{"task_id":"..."}}
+
+event: resync
+data: {"topics":["*"],"event_type":"resync","payload":{"reason":"client_queue_overflow"}}
+```
+
+Events are invalidation hints, not source-of-truth payloads. The Mini App refetches existing REST
+queries for topics such as `tasks`, `calendar`, `runs`, `inbox`, `news`, `automations`, `memories`,
+and `settings`.
+
 ## Debug (local only, `APP_ENV=local`)
 
 ```

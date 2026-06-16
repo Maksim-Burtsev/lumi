@@ -12,6 +12,7 @@ from lumi.connectors.google import auth as google_auth
 from lumi.db.models import Connector, ConnectorStatus, ConnectorType, User
 from lumi.services.audit import AuditService
 from lumi.services.automations import AutomationService
+from lumi.services.realtime import RealtimeEventService
 
 router = APIRouter()
 
@@ -59,6 +60,12 @@ async def google_disconnect(
     await AuditService(session).log(
         user_id=user.id, actor="user", entity_type="connector",
         action="disconnected", details={"removed_token": removed},
+    )
+    await RealtimeEventService(session).emit(
+        user_id=user.id,
+        topics=["settings", "calendar"],
+        event_type="connector.disconnected",
+        payload={"type": "google"},
     )
     return {"ok": True}
 
@@ -172,6 +179,12 @@ async def google_oauth_callback(
     await AuditService(session).log(
         user_id=user_id, actor="user", entity_type="connector",
         action="connected", details={"type": "google", "flow": "web_oauth"},
+    )
+    await RealtimeEventService(session).emit(
+        user_id=user_id,
+        topics=["settings", "calendar"],
+        event_type="connector.connected",
+        payload={"type": "google"},
     )
     if user_row is not None:
         from lumi.api.run_helper import start_background_run
@@ -289,6 +302,12 @@ async def yandex_connect(
         entity_id=connector.id, action="connected",
         details={"type": "yandex", "calendars": calendars},
     )
+    await RealtimeEventService(session).emit(
+        user_id=user.id,
+        topics=["settings", "calendar"],
+        event_type="connector.connected",
+        payload={"type": "yandex"},
+    )
     # First sync starts immediately — the user should see events without extra clicks.
     from lumi.api.run_helper import start_background_run
 
@@ -312,5 +331,11 @@ async def yandex_disconnect(
     await AuditService(session).log(
         user_id=user.id, actor="user", entity_type="connector",
         action="disconnected", details={"type": "yandex"},
+    )
+    await RealtimeEventService(session).emit(
+        user_id=user.id,
+        topics=["settings", "calendar"],
+        event_type="connector.disconnected",
+        payload={"type": "yandex"},
     )
     return {"ok": True}

@@ -17,6 +17,7 @@ from lumi.connectors.google.auth import token_file_exists
 from lumi.db.models import AgentRun, AgentRunType, CalendarEventStatus, Connector, ConnectorType, User
 from lumi.services.automations import AutomationService
 from lumi.services.calendar import CalendarService
+from lumi.services.realtime import RealtimeEventService
 from lumi.utils.time import utc_now
 
 router = APIRouter()
@@ -201,6 +202,12 @@ async def delete_event(
         # just resurrect on the next sync.
         raise HTTPException(status_code=409, detail="read_only_source")
     event.status = CalendarEventStatus.CANCELLED
+    await RealtimeEventService(session).emit(
+        user_id=user.id,
+        topics=["calendar"],
+        event_type="calendar_event.cancelled",
+        payload={"event_id": str(event.id)},
+    )
     return {"ok": True}
 
 

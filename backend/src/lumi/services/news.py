@@ -16,6 +16,7 @@ from lumi.db.models import NewsDigestRun, NewsItem, NewsTopic, User
 from lumi.llm.base import LLMMessage
 from lumi.llm.gateway import LLMGateway
 from lumi.logging import get_logger
+from lumi.services.realtime import RealtimeEventService
 from lumi.utils.time import fmt_local, local_now
 
 log = get_logger(__name__)
@@ -52,6 +53,12 @@ class NewsService:
         )
         self.session.add(topic)
         await self.session.flush()
+        await RealtimeEventService(self.session).emit(
+            user_id=user.id,
+            topics=["news"],
+            event_type="news_topic.created",
+            payload={"topic_id": str(topic.id)},
+        )
         return topic
 
     # --- collection -------------------------------------------------------
@@ -162,6 +169,12 @@ class NewsService:
         )
         self.session.add(digest)
         await self.session.flush()
+        await RealtimeEventService(self.session).emit(
+            user_id=user.id,
+            topics=["news"],
+            event_type="news_digest.created",
+            payload={"digest_id": str(digest.id)},
+        )
         return digest
 
     async def list_digests(self, user: User, limit: int = 5) -> list[NewsDigestRun]:

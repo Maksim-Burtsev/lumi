@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lumi.db.models import AgentRun, AgentRunType, RunStatus, ToolCall
+from lumi.services.realtime import RealtimeEventService
 from lumi.utils.text import truncate
 from lumi.utils.time import utc_now
 
@@ -40,6 +41,7 @@ class RunService:
         )
         self.session.add(run)
         await self.session.flush()
+        await self._emit_run_changed(run, "run.created")
         return run
 
     async def get(self, run_id: uuid.UUID, user_id: uuid.UUID) -> AgentRun | None:
@@ -51,17 +53,20 @@ class RunService:
     async def mark_running(self, run: AgentRun) -> None:
         run.status = RunStatus.RUNNING
         run.started_at = utc_now()
+        await self._emit_run_changed(run, "run.running")
 
     async def mark_completed(self, run: AgentRun, result_summary: str | None = None) -> None:
         run.status = RunStatus.COMPLETED
         run.finished_at = utc_now()
         if result_summary:
             run.result_summary = truncate(result_summary, 2000)
+        await self._emit_run_changed(run, "run.completed")
 
     async def mark_failed(self, run: AgentRun, error: str) -> None:
         run.status = RunStatus.FAILED
         run.finished_at = utc_now()
         run.error_message = truncate(error, 2000)
+        await self._emit_run_changed(run, "run.failed")
 
     # ------------------------------------------------------------------
 
@@ -92,4 +97,18 @@ class RunService:
         )
         self.session.add(call)
         await self.session.flush()
+        await RealtimeEventService(self.session).emit(
+            user_id=run.user_id,
+            topics=["runs"],
+            event_type="tool_call.logged",
+            payload={"run_id": str(run.id), "tool_call_id": str(call.id), "tool_name": tool_name},
+        )
         return call
+
+    async def _emit_run_changed(self, run: AgentRun, event_type: str) -> None:
+        await RealtimeEventService(self.session).emit(
+            user_id=run.user_id,
+            topics=["runs"],
+            event_type=event_type,
+            payload={"run_id": str(run.id), "status": run.status.value},
+        )

@@ -17,6 +17,7 @@ from lumi.db.models import EmailCategory, EmailMessage, EmailThread, User
 from lumi.llm.base import LLMMessage
 from lumi.llm.gateway import LLMGateway
 from lumi.logging import get_logger
+from lumi.services.realtime import RealtimeEventService
 from lumi.utils.time import utc_now
 
 log = get_logger(__name__)
@@ -92,6 +93,13 @@ class EmailService:
                     )
                 )
             threads.append(thread)
+        if threads:
+            await RealtimeEventService(self.session).emit(
+                user_id=user.id,
+                topics=["inbox"],
+                event_type="inbox.synced",
+                payload={"thread_count": len(threads)},
+            )
         return threads
 
     # --- triage -----------------------------------------------------------
@@ -157,6 +165,12 @@ class EmailService:
                 "suggested_action": item.suggested_action,
                 "task_candidate": item.task_candidate.model_dump(mode="json") if item.task_candidate else None,
             }
+        await RealtimeEventService(self.session).emit(
+            user_id=user.id,
+            topics=["inbox"],
+            event_type="inbox.triaged",
+            payload={"thread_count": len(threads)},
+        )
         return triage, threads
 
     # --- queries -----------------------------------------------------------

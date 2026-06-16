@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { clearUnauthorizedResponse, hasUnauthorizedResponse, UNAUTHORIZED_EVENT } from './api/client';
-import { useAutoTimezone } from './api/hooks';
+import { useAutoTimezone, useRealtimeInvalidation } from './api/hooks';
 import { AppShell } from './components/layout/AppShell';
 import { UnauthorizedScreen } from './components/layout/UnauthorizedScreen';
 import { ToastProvider } from './components/ui/Toast';
@@ -28,6 +28,7 @@ const queryClient = new QueryClient({
 
 function AppRoutes() {
   useAutoTimezone();
+  useRealtimeInvalidation();
   const [unauthorized, setUnauthorized] = useState(hasUnauthorizedResponse);
   const client = useQueryClient();
 

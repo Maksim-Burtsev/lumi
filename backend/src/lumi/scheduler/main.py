@@ -72,7 +72,7 @@ async def tick() -> int:
                     fields={"automation": task.title, "job": job_name, "run_id": str(run.id)},
                 )
             else:
-                automations.mark_failed(task, "queue unavailable")
+                await automations.mark_failed(task, "queue unavailable")
                 await runs.mark_failed(run, "queue unavailable")
     return enqueued
 
