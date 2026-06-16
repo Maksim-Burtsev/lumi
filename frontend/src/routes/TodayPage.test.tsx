@@ -11,7 +11,7 @@ import TodayPage from './TodayPage';
 const firstConfirmationId = '11111111-1111-4111-8111-111111111111';
 const secondConfirmationId = '22222222-2222-4222-8222-222222222222';
 
-function makeTodayResponse(): TodayResponse {
+function makeTodayResponse(overrides: Partial<TodayResponse> = {}): TodayResponse {
   return {
     date: '2026-06-12',
     greeting: 'Добрый вечер',
@@ -55,6 +55,7 @@ function makeTodayResponse(): TodayResponse {
     ],
     suggestions: [],
     recent_runs: [],
+    ...overrides,
   };
 }
 
@@ -112,6 +113,76 @@ function renderTodayPage() {
 
   return queryClient;
 }
+
+describe('TodayPage timeline gaps', () => {
+  it('shows free blocks for 30 minute gaps between meetings and hides shorter gaps', async () => {
+    vi.spyOn(api, 'getToday').mockResolvedValue(
+      makeTodayResponse({
+        timeline: [
+          {
+            id: 'event-1',
+            kind: 'event',
+            title: 'Тутория 2.0 стендап',
+            start_at: '2026-06-12T13:00:00+04:00',
+            end_at: '2026-06-12T13:15:00+04:00',
+            source: 'yandex',
+            status: 'confirmed',
+            busy: true,
+          },
+          {
+            id: 'event-2',
+            kind: 'event',
+            title: 'Стендап календаря',
+            start_at: '2026-06-12T13:15:00+04:00',
+            end_at: '2026-06-12T13:30:00+04:00',
+            source: 'yandex',
+            status: 'confirmed',
+            busy: true,
+          },
+          {
+            id: 'event-3',
+            kind: 'event',
+            title: 'Daily MT',
+            start_at: '2026-06-12T14:00:00+04:00',
+            end_at: '2026-06-12T14:30:00+04:00',
+            source: 'yandex',
+            status: 'confirmed',
+            busy: true,
+          },
+          {
+            id: 'event-4',
+            kind: 'event',
+            title: 'Short buffer check',
+            start_at: '2026-06-12T14:45:00+04:00',
+            end_at: '2026-06-12T15:00:00+04:00',
+            source: 'yandex',
+            status: 'confirmed',
+            busy: true,
+          },
+          {
+            id: 'event-5',
+            kind: 'event',
+            title: '1v1',
+            start_at: '2026-06-12T15:30:00+04:00',
+            end_at: '2026-06-12T16:00:00+04:00',
+            source: 'yandex',
+            status: 'confirmed',
+            busy: true,
+          },
+        ],
+        needs_attention: [],
+      }),
+    );
+
+    renderTodayPage();
+
+    expect(await screen.findAllByText('Свободно · 30 мин')).toHaveLength(2);
+    expect(screen.getByText('13:30–14:00')).toBeInTheDocument();
+    expect(screen.getByText('15:00–15:30')).toBeInTheDocument();
+    expect(screen.queryByText('14:30–14:45')).not.toBeInTheDocument();
+    expect(screen.getByText('Daily MT')).toBeInTheDocument();
+  });
+});
 
 describe('TodayPage confirmation decisions', () => {
   it('expands and collapses confirmation details inline without opening a sheet', async () => {

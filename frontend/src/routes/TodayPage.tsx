@@ -387,7 +387,7 @@ export default function TodayPage() {
       const prevEnd = new Date(rawEntries[i - 1].end_at).getTime();
       const start = new Date(entry.start_at).getTime();
       const gapMin = Math.round((start - prevEnd) / 60000);
-      if (gapMin >= 45) {
+      if (gapMin >= 30) {
         timelineEntries.push({
           id: `gap-${i}`,
           kind: 'free',
