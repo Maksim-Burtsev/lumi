@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 from sqlalchemy import select
 
@@ -16,6 +17,138 @@ from lumi.worker import jobs
 from .conftest import TEST_TELEGRAM_ID
 
 BASE_NOW = datetime(2026, 6, 15, 10, 0, tzinfo=UTC)
+
+
+async def test_send_turn_reply_uses_html_message_by_default_for_calendar_html(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+
+    class FakeBot:
+        def __init__(self, token: str) -> None:
+            self.token = token
+            self.session = SimpleNamespace(close=self._close)
+
+        async def _close(self) -> None:
+            calls.append(("close", {}))
+
+        async def send_message(self, **kwargs):
+            calls.append(("send_message", kwargs))
+            return SimpleNamespace(message_id=11)
+
+    async def fake_telegram_api_post(token: str, method: str, payload: dict):
+        raise AssertionError(f"unexpected raw Telegram API call: {method}")
+
+    monkeypatch.setattr("aiogram.Bot", FakeBot)
+    monkeypatch.setattr(jobs, "_telegram_api_post", fake_telegram_api_post)
+    monkeypatch.setattr(
+        jobs,
+        "get_settings",
+        lambda: SimpleNamespace(telegram_bot_token="123:test"),
+    )
+
+    delivered = await jobs.send_turn_reply(
+        user=SimpleNamespace(telegram_chat_id=777, telegram_user_id=777),
+        turn=SimpleNamespace(telegram_chat_id=777, status_message_id=None),
+        reply_text="Встречи в календаре:\n13:00–13:15 — Standup — https://meet.example/a",
+        reply_rich_html='<b>📅 Встречи</b>\n<b>13:00–13:15</b> Standup <a href="https://meet.example/a">↗ открыть звонок</a>',
+        buttons=[],
+    )
+
+    assert delivered is True
+    assert [name for name, _ in calls] == ["send_message", "close"]
+    message = calls[0][1]
+    assert message["parse_mode"] == "HTML"
+    assert message["text"].startswith("<b>📅 Встречи</b>")
+    assert "↗ открыть звонок" in message["text"]
+    assert message["link_preview_options"].is_disabled is True
+
+
+async def test_send_turn_reply_uses_bot_api_rich_message_when_enabled(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+
+    class FakeBot:
+        def __init__(self, token: str) -> None:
+            self.token = token
+            self.session = SimpleNamespace(close=self._close)
+
+        async def _close(self) -> None:
+            calls.append(("close", {}))
+
+        async def send_message(self, **kwargs):
+            calls.append(("send_message", kwargs))
+            return SimpleNamespace(message_id=11)
+
+    async def fake_telegram_api_post(token: str, method: str, payload: dict):
+        calls.append((method, payload | {"token": token}))
+        return {"ok": True, "result": {"message_id": 10}}
+
+    monkeypatch.setattr("aiogram.Bot", FakeBot)
+    monkeypatch.setattr(jobs, "_telegram_api_post", fake_telegram_api_post)
+    monkeypatch.setattr(
+        jobs,
+        "get_settings",
+        lambda: SimpleNamespace(telegram_bot_token="123:test", telegram_use_rich_messages=True),
+    )
+
+    delivered = await jobs.send_turn_reply(
+        user=SimpleNamespace(telegram_chat_id=777, telegram_user_id=777),
+        turn=SimpleNamespace(telegram_chat_id=777, status_message_id=None),
+        reply_text="Встречи в календаре:\n13:00–13:15 — Standup — https://meet.example/a",
+        reply_rich_html='<b>📅 Встречи</b><br>13:00–13:15 Standup <a href="https://meet.example/a">↗ открыть звонок</a>',
+        buttons=[],
+    )
+
+    assert delivered is True
+    assert [name for name, _ in calls] == ["sendRichMessage", "close"]
+    rich_message = calls[0][1]["rich_message"]
+    assert calls[0][1]["token"] == "123:test"
+    assert rich_message["html"].startswith("<b>📅 Встречи</b>")
+    assert rich_message["skip_entity_detection"] is True
+    assert "https://meet.example/a" in rich_message["html"]
+
+
+async def test_send_turn_reply_falls_back_to_html_when_rich_send_fails(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+
+    class FakeBot:
+        def __init__(self, token: str) -> None:
+            self.token = token
+            self.session = SimpleNamespace(close=self._close)
+
+        async def _close(self) -> None:
+            calls.append(("close", {}))
+
+        async def send_message(self, **kwargs):
+            calls.append(("send_message", kwargs))
+            return SimpleNamespace(message_id=12)
+
+    async def fake_telegram_api_post(token: str, method: str, payload: dict):
+        calls.append((method, payload | {"token": token}))
+        if method == "sendRichMessage":
+            raise RuntimeError("rich unsupported")
+        return {"ok": True, "result": True}
+
+    monkeypatch.setattr("aiogram.Bot", FakeBot)
+    monkeypatch.setattr(jobs, "_telegram_api_post", fake_telegram_api_post)
+    monkeypatch.setattr(
+        jobs,
+        "get_settings",
+        lambda: SimpleNamespace(telegram_bot_token="123:test", telegram_use_rich_messages=True),
+    )
+
+    delivered = await jobs.send_turn_reply(
+        user=SimpleNamespace(telegram_chat_id=777, telegram_user_id=777),
+        turn=SimpleNamespace(telegram_chat_id=777, status_message_id=None),
+        reply_text="Встречи в календаре:\n13:00–13:15 — Standup — https://meet.example/a",
+        reply_rich_html='<b>📅 Встречи</b>',
+        buttons=[],
+    )
+
+    assert delivered is True
+    assert [name for name, _ in calls] == ["sendRichMessage", "send_message", "close"]
+    fallback = calls[1][1]
+    assert fallback["text"] == '<b>📅 Встречи</b>'
+    assert fallback["parse_mode"] == "HTML"
+    assert fallback["link_preview_options"].is_disabled is True
 
 
 async def test_intake_debounces_fast_messages_into_one_turn():
@@ -604,4 +737,40 @@ async def test_recovery_cron_reserves_due_turn_to_avoid_duplicate_enqueue(monkey
     async with session_scope() as session:
         turn = await session.get(AssistantTurn, turn_id)
         assert turn.status == "queued"
+        assert turn.locked_until is not None
+
+
+async def test_recovery_cron_reserves_expired_running_turn(monkeypatch):
+    started = utc_now() - timedelta(seconds=400)
+    enqueued: list[tuple[str, tuple, dict]] = []
+
+    async with session_scope() as session:
+        result = await TelegramIntakeService(session, now=lambda: started).ingest_chat_message(
+            update_id=1522,
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=972,
+            text="stale running",
+        )
+        turn_id = result.turn.id
+        turn = await session.get(AssistantTurn, turn_id)
+        turn.status = "running"
+        turn.started_at = started
+        turn.locked_until = started + timedelta(seconds=60)
+
+    async def fake_enqueue(job_name, *args, **kwargs):
+        enqueued.append((job_name, args, kwargs))
+        return "job-id"
+
+    monkeypatch.setattr(jobs, "enqueue_job", fake_enqueue)
+
+    summary = await jobs.enqueue_due_assistant_turns({})
+
+    assert summary == "enqueued 1 assistant turns"
+    assert len(enqueued) == 1
+    assert enqueued[0][1] == (str(turn_id),)
+    async with session_scope() as session:
+        turn = await session.get(AssistantTurn, turn_id)
+        assert turn.status == "queued"
+        assert turn.error_message == "turn lock expired; queued for recovery"
         assert turn.locked_until is not None

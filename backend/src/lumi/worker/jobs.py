@@ -6,6 +6,7 @@ import uuid
 from datetime import timedelta
 from typing import Any
 
+import httpx
 from sqlalchemy import select
 
 from lumi.assistant.orchestrator import AssistantOrchestrator
@@ -48,33 +49,136 @@ async def _load_turn_user(session, turn: AssistantTurn) -> User | None:
     return result.scalar_one_or_none()
 
 
-async def send_turn_reply(*, user: User, turn: AssistantTurn, reply_text: str, buttons) -> bool:
+def _telegram_json(value: Any) -> Any:
+    if value is None:
+        return None
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json", exclude_none=True)
+    return value
+
+
+async def _telegram_api_post(token: str, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+    timeout = httpx.Timeout(connect=5, read=20, write=10, pool=5)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(
+            f"https://api.telegram.org/bot{token}/{method}",
+            json=payload,
+        )
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError(f"Telegram {method} returned non-JSON response") from exc
+    if response.status_code >= 400 or data.get("ok") is not True:
+        description = data.get("description") or response.text[:200]
+        raise RuntimeError(f"Telegram {method} failed: {description}")
+    return data
+
+
+def _rich_message_payload(html: str) -> dict[str, Any]:
+    return {"html": html, "skip_entity_detection": True}
+
+
+def _without_none(payload: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in payload.items() if value is not None}
+
+
+async def send_turn_reply(
+    *,
+    user: User,
+    turn: AssistantTurn,
+    reply_text: str,
+    buttons,
+    reply_rich_html: str | None = None,
+) -> bool:
     settings = get_settings()
     if not settings.telegram_bot_token:
         log.warning("cannot send turn reply: TELEGRAM_BOT_TOKEN is not set")
         return False
     from aiogram import Bot
+    from aiogram.types import LinkPreviewOptions
 
     bot = Bot(token=settings.telegram_bot_token)
     chat_id = turn.telegram_chat_id or user.telegram_chat_id or user.telegram_user_id
     chunks = chunk_telegram(telegram_plain_text(reply_text))
     markup = markup_from_buttons(buttons)
+    markup_payload = _telegram_json(markup)
+    link_preview_options = LinkPreviewOptions(is_disabled=True)
+    rich_html = reply_rich_html if reply_rich_html and len(chunks) == 1 else None
+    use_bot_api_rich = bool(getattr(settings, "telegram_use_rich_messages", False))
     try:
         if turn.status_message_id and len(chunks) == 1:
             try:
-                await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=turn.status_message_id,
-                    text=chunks[0],
-                    reply_markup=markup,
-                )
-                return True
+                if rich_html and use_bot_api_rich:
+                    await _telegram_api_post(
+                        settings.telegram_bot_token,
+                        "editMessageText",
+                        _without_none({
+                            "chat_id": chat_id,
+                            "message_id": turn.status_message_id,
+                            "rich_message": _rich_message_payload(rich_html),
+                            "reply_markup": markup_payload,
+                        }),
+                    )
+                    return True
+                if rich_html:
+                    await bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=turn.status_message_id,
+                        text=rich_html,
+                        parse_mode="HTML",
+                        link_preview_options=link_preview_options,
+                        reply_markup=markup,
+                    )
+                    return True
+                else:
+                    await bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=turn.status_message_id,
+                        text=chunks[0],
+                        link_preview_options=link_preview_options,
+                        reply_markup=markup,
+                    )
+                    return True
             except Exception:  # noqa: BLE001 — status edit can fail after restarts/deletes
                 log.exception("telegram status edit failed; falling back to send_message")
+        if rich_html:
+            if use_bot_api_rich:
+                try:
+                    await _telegram_api_post(
+                        settings.telegram_bot_token,
+                        "sendRichMessage",
+                        _without_none({
+                            "chat_id": chat_id,
+                            "rich_message": _rich_message_payload(rich_html),
+                            "reply_markup": markup_payload,
+                        }),
+                    )
+                    if turn.status_message_id:
+                        try:
+                            await bot.delete_message(chat_id=chat_id, message_id=turn.status_message_id)
+                        except Exception:  # noqa: BLE001
+                            log.info("telegram status delete skipped after rich send")
+                    return True
+                except Exception:  # noqa: BLE001 — rich messages are new; plain fallback must work
+                    log.exception("telegram rich turn reply failed; falling back to send_message")
+            await bot.send_message(
+                chat_id=chat_id,
+                text=rich_html,
+                parse_mode="HTML",
+                link_preview_options=link_preview_options,
+                reply_markup=markup,
+            )
+            if turn.status_message_id:
+                try:
+                    await bot.delete_message(chat_id=chat_id, message_id=turn.status_message_id)
+                except Exception:  # noqa: BLE001
+                    log.info("telegram status delete skipped after html fallback")
+            return True
         for i, chunk in enumerate(chunks):
             await bot.send_message(
                 chat_id=chat_id,
                 text=chunk,
+                link_preview_options=link_preview_options,
                 reply_markup=markup if i == len(chunks) - 1 else None,
             )
         return True
@@ -325,12 +429,15 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
             await _enqueue_turn(next_turn)
         return f"turn failed: {exc}"
 
-    delivered = await send_turn_reply(
-        user=user,
-        turn=turn,
-        reply_text=result.reply_text,
-        buttons=result.buttons,
-    )
+    reply_kwargs = {
+        "user": user,
+        "turn": turn,
+        "reply_text": result.reply_text,
+        "buttons": result.buttons,
+    }
+    if result.reply_rich_html:
+        reply_kwargs["reply_rich_html"] = result.reply_rich_html
+    delivered = await send_turn_reply(**reply_kwargs)
     if not delivered:
         next_turn = None
         retry_turn = None

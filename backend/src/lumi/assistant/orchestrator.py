@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
 from difflib import SequenceMatcher
+from html import escape
 from typing import Any
 
 from sqlalchemy import select
@@ -112,6 +113,7 @@ class AssistantResult:
     agent_run_id: uuid.UUID | None = None
     needs_compaction: bool = False
     open_app_button: bool = False
+    reply_rich_html: str | None = None
 
 
 def _rename_choice_button_text(task: Task) -> str:
@@ -305,6 +307,39 @@ def _safe_no_answer_reply(user: User) -> str:
 
 def _language_is_english(language: str | None) -> bool:
     return (language or "").lower().startswith("en")
+
+
+_RU_MONTHS_SHORT = {
+    1: "янв",
+    2: "фев",
+    3: "мар",
+    4: "апр",
+    5: "мая",
+    6: "июн",
+    7: "июл",
+    8: "авг",
+    9: "сен",
+    10: "окт",
+    11: "ноя",
+    12: "дек",
+}
+_RU_WEEKDAYS_SHORT = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+
+
+def _calendar_window_label(start_local, end_local) -> str:
+    if start_local.date() == end_local.date():
+        return f"{start_local.day} {_RU_MONTHS_SHORT[start_local.month]}, {_RU_WEEKDAYS_SHORT[start_local.weekday()]}"
+    if end_local.time().hour == 0 and end_local.time().minute == 0:
+        inclusive_end = end_local - timedelta(days=1)
+        if start_local.date() == inclusive_end.date():
+            return (
+                f"{start_local.day} {_RU_MONTHS_SHORT[start_local.month]}, "
+                f"{_RU_WEEKDAYS_SHORT[start_local.weekday()]}"
+            )
+    return (
+        f"{start_local.day} {_RU_MONTHS_SHORT[start_local.month]} – "
+        f"{end_local.day} {_RU_MONTHS_SHORT[end_local.month]}"
+    )
 
 
 def _store_planner_trace(
@@ -754,7 +789,7 @@ class AssistantOrchestrator:
         # 6. Apply safe actions
         if plan.tool_calls:
             await progress("⚙️ Выполняю: задачи, память, календарь…")
-        action_results, buttons = await self._apply_tool_calls(
+        action_results, buttons, reply_rich_html = await self._apply_tool_calls(
             user=user,
             run=run,
             plan=plan,
@@ -800,6 +835,7 @@ class AssistantOrchestrator:
                 buttons=buttons,
                 agent_run_id=run.id,
                 needs_compaction=needs_compaction,
+                reply_rich_html=reply_rich_html if len(action_results) == 1 else None,
             )
 
         if not action_results and plan.mode in ("final_answer", "ask_user") and plan.final_answer:
@@ -1023,9 +1059,10 @@ class AssistantOrchestrator:
         plan: AgentPlan,
         source_message_id: uuid.UUID,
         planner_context: PlannerContext,
-    ) -> tuple[list[str], list[list[Button]]]:
+    ) -> tuple[list[str], list[list[Button]], str | None]:
         results: list[str] = []
         buttons: list[list[Button]] = []
+        rich_html: str | None = None
 
         for call in plan.tool_calls:
             if call.name == "create_task":
@@ -1108,7 +1145,7 @@ class AssistantOrchestrator:
                 )
             elif call.name == "read_calendar_events":
                 request = CalendarEventsRequest.model_validate(_args_with_call_defaults(call))
-                await self._apply_read_calendar_events_tool(
+                rich_html = await self._apply_read_calendar_events_tool(
                     user=user,
                     run=run,
                     call=call,
@@ -1138,7 +1175,7 @@ class AssistantOrchestrator:
                     results=results,
                 )
 
-        return results, buttons
+        return results, buttons, rich_html
 
     async def _apply_create_task_tool(
         self,
@@ -1998,7 +2035,7 @@ class AssistantOrchestrator:
         call: PlannedToolCall,
         request: CalendarEventsRequest,
         results: list[str],
-    ) -> None:
+    ) -> str | None:
         start = local_to_utc(request.start_at_local, user.timezone)
         end = local_to_utc(request.end_at_local, user.timezone)
         sync_result: dict[str, int | str] | None = None
@@ -2040,10 +2077,14 @@ class AssistantOrchestrator:
                 )
             else:
                 results.append("В календаре за это окно событий не нашёл.")
-            return
+            return None
 
         lines = ["Встречи в календаре:"]
-        for event in events[:20]:
+        rich_lines = [
+            f"<b>📅 Встречи · {_calendar_window_label(utc_to_local(start, user.timezone), utc_to_local(end, user.timezone))}</b>"
+        ]
+        rich_limit = 8
+        for index, event in enumerate(events[:20]):
             start_local = utc_to_local(event.start_at, user.timezone)
             end_local = utc_to_local(event.end_at, user.timezone)
             when = (
@@ -2059,9 +2100,23 @@ class AssistantOrchestrator:
             if request.include_details and meeting_url:
                 line += f" — {meeting_url}"
             lines.append(line)
+
+            if index < rich_limit:
+                rich_item = f"<b>{escape(when)}</b>  {escape(event.title)}"
+                if location:
+                    rich_item += f"\n<i>{escape(str(location))}</i>"
+                if request.include_details and meeting_url:
+                    rich_item += (
+                        f'\n<a href="{escape(str(meeting_url), quote=True)}">'
+                        "↗ открыть звонок</a>"
+                    )
+                rich_lines.append(rich_item)
         if len(events) > 20:
             lines.append(f"Еще {len(events) - 20} событий не показал.")
+        if len(events) > rich_limit:
+            rich_lines.append(f"<i>… и ещё {len(events) - rich_limit} встреч</i>")
         results.append("\n".join(lines))
+        return "\n\n".join(rich_lines)
 
     async def _apply_calendar_request(
         self,

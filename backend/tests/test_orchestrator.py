@@ -1429,6 +1429,7 @@ async def test_agent_planner_read_calendar_events_syncs_requested_range_without_
                     "start_at_local": "2026-07-13T00:00:00",
                     "end_at_local": "2026-07-14T00:00:00",
                     "sync_if_needed": True,
+                    "include_details": True,
                 },
                 "confidence": 0.95,
                 "requires_confirmation": False,
@@ -1453,6 +1454,13 @@ async def test_agent_planner_read_calendar_events_syncs_requested_range_without_
     assert sync_calls[0]["end_at"] == local_to_utc(datetime(2026, 7, 14), "Europe/Moscow")
     assert "Lumi weekly planning" in result.reply_text
     assert "10:00" in result.reply_text
+    assert result.reply_rich_html is not None
+    assert "<b>📅 Встречи" in result.reply_rich_html
+    assert "Lumi weekly planning" in result.reply_rich_html
+    assert 'href="https://meet.example/lumi"' in result.reply_rich_html
+    assert "https://meet.example/lumi" not in result.reply_rich_html.replace(
+        'href="https://meet.example/lumi"', ""
+    )
     assert any(c.tool_name == "read_calendar_events" and c.status == "completed" for c in tool_calls)
 
 

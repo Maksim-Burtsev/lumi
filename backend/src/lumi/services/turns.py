@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -367,9 +367,18 @@ class TurnService:
         result = await self.session.execute(
             select(AssistantTurn)
             .where(
-                AssistantTurn.status.in_(("collecting", "queued")),
-                AssistantTurn.debounce_deadline_at <= now,
-                (AssistantTurn.locked_until.is_(None) | (AssistantTurn.locked_until <= now)),
+                or_(
+                    and_(
+                        AssistantTurn.status.in_(("collecting", "queued")),
+                        AssistantTurn.debounce_deadline_at <= now,
+                        (AssistantTurn.locked_until.is_(None) | (AssistantTurn.locked_until <= now)),
+                    ),
+                    and_(
+                        AssistantTurn.status == "running",
+                        AssistantTurn.locked_until.is_not(None),
+                        AssistantTurn.locked_until <= now,
+                    ),
+                )
             )
             .order_by(AssistantTurn.created_at)
             .limit(limit)
@@ -378,6 +387,9 @@ class TurnService:
         turns = list(result.scalars())
         lease_until = now + timedelta(seconds=lease_seconds)
         for turn in turns:
+            if turn.status == "running":
+                turn.error_message = "turn lock expired; queued for recovery"
+                turn.debounce_deadline_at = now
             turn.status = "queued"
             turn.locked_until = lease_until
         return turns

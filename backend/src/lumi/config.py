@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     telegram_turn_max_retries: int = 3
     telegram_turn_retry_base_seconds: int = 10
     telegram_max_queue_per_user: int = 25
+    telegram_use_rich_messages: bool = False
 
     # --- Worker ---
     worker_max_jobs: int = 10
