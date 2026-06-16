@@ -498,7 +498,7 @@ class AgentPlan(BaseModel):
     focused_vision: FocusedVisionRequest | None = None
     final_answer: str | None = None
     should_answer_normally: bool = True
-    language: str = "ru"
+    language: str = "en"
 
     @field_validator("referenced_media_id")
     @classmethod
@@ -532,7 +532,7 @@ class AgentPlan(BaseModel):
 class ExtractedSignals(BaseModel):
     """Validated output of the SignalExtractor LLM call."""
 
-    language: str = "ru"
+    language: str = "en"
     intents: list[str] = Field(default_factory=lambda: ["chat"])
     tasks: list[ExtractedTask] = Field(default_factory=list)
     task_updates: list[TaskUpdate] = Field(default_factory=list)

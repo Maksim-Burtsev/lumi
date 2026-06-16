@@ -23,6 +23,7 @@ TOOL_NAMES = {
     "create_automation",
     "email_triage",
     "news_digest",
+    "set_language",
 }
 
 TOOL_CATALOG = """Available backend tools:
@@ -42,6 +43,7 @@ TOOL_CATALOG = """Available backend tools:
 - create_automation(type, title, cron_expression, timezone?, config?)
 - email_triage(time_window?)
 - news_digest(topics?)
+- set_language(app_locale?: en|ru, reply_language_mode?: auto|app_locale)
 
 Rules:
 - Return tool calls as JSON only. Do not claim that a tool was executed.
@@ -56,6 +58,10 @@ Rules:
 - Choose tools semantically across languages, typos, punctuation, quotes, emotional phrasing, and short follow-ups.
 - For action-only commands set should_answer_normally=false.
 - For ordinary chat or questions without needed tools use mode=final_answer or ask_user.
+- If the user asks to change the app language, interface language, bot language,
+  reply language, or to return replies to automatic language matching, use set_language.
+  app_locale controls Mini App UI. reply_language_mode=auto means match each message;
+  reply_language_mode=app_locale means always reply using the app language.
 - If the user refers to media, set referenced_media_id to one available_media id.
 - available_media is listed newest-first. For an elliptical follow-up, prefer the first matching media item.
 - Use visual_intent=read_only for visual questions. Use visual_intent=action_evidence only for explicit backend actions based on media.
@@ -70,6 +76,10 @@ Examples:
 - User asks "Какие встречи завтра в календаре?" -> mode=tool_calls, read_calendar_events(start_at_local=<tomorrow 00:00>, end_at_local=<next day 00:00>), should_answer_normally=false.
 - User asks "what can you do?" -> mode=final_answer, no tool calls.
 - User asks to show/open/list Lumi tasks -> mode=tool_calls, read_tasks(...), should_answer_normally=false.
+- User asks "Always answer in Russian and switch the app to Russian" -> mode=tool_calls,
+  set_language(app_locale="ru", reply_language_mode="app_locale"), should_answer_normally=false.
+- User asks "ответы снова авто" -> mode=tool_calls,
+  set_language(reply_language_mode="auto"), should_answer_normally=false.
 """
 
 

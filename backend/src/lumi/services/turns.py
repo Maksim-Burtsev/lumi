@@ -57,6 +57,7 @@ class TelegramIntakeService:
         username: str | None = None,
         first_name: str | None = None,
         last_name: str | None = None,
+        language_code: str | None = None,
         image_metadata: dict[str, Any] | None = None,
         ignored_attachments: list[dict[str, Any]] | None = None,
         status_message_id: int | None = None,
@@ -92,6 +93,7 @@ class TelegramIntakeService:
             username=username,
             first_name=first_name,
             last_name=last_name,
+            language_code=language_code,
         )
         conversation = await users.ensure_main_conversation(user)
 

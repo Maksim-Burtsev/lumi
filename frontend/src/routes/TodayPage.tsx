@@ -35,23 +35,152 @@ import { Rise, Stagger } from '../components/ui/motion';
 import { Timeline } from '../components/timeline/Timeline';
 import type { TimelineEntry } from '../components/timeline/Timeline';
 import { countLabel, formatDateHeading, formatDueLabel, formatSpanMinutes, plural } from '../lib/format';
+import type { AppLocale } from '../lib/i18n';
+import { useAppLocale } from '../lib/useAppLocale';
 import { haptic } from '../telegram/webapp';
 
-function buildSummaryLine(summary: TodaySummary): string {
+const TODAY_COPY = {
+  en: {
+    quietDay: 'Quiet day — focus on important work',
+    planReady: 'Plan ready',
+    inboxTriaged: 'Inbox triaged',
+    digestReady: 'Digest ready',
+    googleNotConnected: 'Google is not connected — open Settings',
+    saveDecisionError: 'Could not save the decision',
+    blockAdded: 'Block added to calendar',
+    blockConfirmError: 'Could not confirm the block',
+    taskDone: 'Task completed',
+    taskCompleteError: 'Could not complete the task',
+    taskSnoozed: 'Task moved to tomorrow',
+    taskSnoozeError: 'Could not move the task',
+    taskCreatedPrefix: 'Task created',
+    taskCreateError: 'Could not create a task',
+    loadError: 'Could not load the day plan.',
+    timelineTask: 'Task',
+    focus: 'Focus',
+    accept: 'Accept',
+    free: 'Free',
+    buildPlan: 'Build plan',
+    triageInbox: 'Triage inbox',
+    schedule: 'Schedule',
+    emptyTitle: 'No meetings or blocks today',
+    emptyHint: 'Tap “Build plan” and Lumi will review tasks and suggest focus blocks.',
+    needsAttention: 'Needs decision',
+    lumiSuggests: 'Lumi suggests',
+    allClear: 'Nothing urgent — everything is under control',
+    confirm: 'Confirm',
+    dismiss: 'Dismiss',
+    done: 'Done',
+    tomorrow: 'Tomorrow',
+    openTasks: 'Open tasks',
+    createTask: 'Create task',
+    openInbox: 'Open inbox',
+  },
+  ru: {
+    quietDay: 'Спокойный день — можно заняться важным',
+    planReady: 'План готов',
+    inboxTriaged: 'Почта разобрана',
+    digestReady: 'Дайджест готов',
+    googleNotConnected: 'Google не подключен — загляни в Настройки',
+    saveDecisionError: 'Не удалось сохранить решение',
+    blockAdded: 'Блок добавлен в календарь',
+    blockConfirmError: 'Не удалось подтвердить блок',
+    taskDone: 'Задача выполнена',
+    taskCompleteError: 'Не удалось выполнить задачу',
+    taskSnoozed: 'Задача перенесена на завтра',
+    taskSnoozeError: 'Не удалось перенести задачу',
+    taskCreatedPrefix: 'Задача создана',
+    taskCreateError: 'Не удалось создать задачу',
+    loadError: 'Не удалось загрузить план дня.',
+    timelineTask: 'Задача',
+    focus: 'Фокус',
+    accept: 'Принять',
+    free: 'Свободно',
+    buildPlan: 'Собрать план',
+    triageInbox: 'Разобрать почту',
+    schedule: 'Расписание',
+    emptyTitle: 'Сегодня нет встреч и блоков',
+    emptyHint: 'Нажми «Собрать план» — Lumi посмотрит задачи и предложит фокус-блоки.',
+    needsAttention: 'Ждет решения',
+    lumiSuggests: 'Lumi предлагает',
+    allClear: 'Ничего срочного — всё под контролем',
+    confirm: 'Подтвердить',
+    dismiss: 'Отклонить',
+    done: 'Готово',
+    tomorrow: 'Завтра',
+    openTasks: 'Открыть задачи',
+    createTask: 'Создать задачу',
+    openInbox: 'Открыть почту',
+  },
+} satisfies Record<AppLocale, Record<string, string>>;
+
+function enCount(n: number, singular: string, many: string): string {
+  return `${n} ${n === 1 ? singular : many}`;
+}
+
+function buildSummaryLine(summary: TodaySummary, locale: AppLocale): string {
   const parts: string[] = [];
-  if (summary.meetings_today > 0) parts.push(countLabel(summary.meetings_today, ['встреча', 'встречи', 'встреч']));
-  if (summary.tasks_active > 0) parts.push(countLabel(summary.tasks_active, ['задача', 'задачи', 'задач']));
-  if (summary.emails_need_reply > 0) {
+  if (summary.meetings_today > 0) {
     parts.push(
-      `${summary.emails_need_reply} ${plural(summary.emails_need_reply, [
-        'письмо ждёт ответа',
-        'письма ждут ответа',
-        'писем ждут ответа',
-      ])}`,
+      locale === 'en'
+        ? enCount(summary.meetings_today, 'meeting', 'meetings')
+        : countLabel(summary.meetings_today, ['встреча', 'встречи', 'встреч']),
     );
   }
-  if (parts.length === 0) return 'Спокойный день — можно заняться важным';
+  if (summary.tasks_active > 0) {
+    parts.push(
+      locale === 'en'
+        ? enCount(summary.tasks_active, 'task', 'tasks')
+        : countLabel(summary.tasks_active, ['задача', 'задачи', 'задач']),
+    );
+  }
+  if (summary.emails_need_reply > 0) {
+    parts.push(
+      locale === 'en'
+        ? `${summary.emails_need_reply} ${
+            summary.emails_need_reply === 1 ? 'email needs a reply' : 'emails need replies'
+          }`
+        : `${summary.emails_need_reply} ${plural(summary.emails_need_reply, [
+            'письмо ждёт ответа',
+            'письма ждут ответа',
+            'писем ждут ответа',
+          ])}`,
+    );
+  }
+  if (parts.length === 0) return TODAY_COPY[locale].quietDay;
   return parts.join(' · ');
+}
+
+function formatDateHeadingLocalized(date: Date, locale: AppLocale): string {
+  if (locale === 'ru') return formatDateHeading(date);
+  return new Intl.DateTimeFormat('en-US', { weekday: 'long', day: 'numeric', month: 'long' }).format(date);
+}
+
+function formatDueLabelLocalized(ts: string, locale: AppLocale): string {
+  if (locale === 'ru') return formatDueLabel(ts);
+  const date = new Date(ts);
+  if (Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('en-US', {
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    month: 'short',
+  }).format(date);
+}
+
+function formatSpanMinutesLocalized(startTs: string, endTs: string, locale: AppLocale): string {
+  if (locale === 'ru') return formatSpanMinutes(startTs, endTs);
+  const minutes = Math.max(0, Math.round((new Date(endTs).getTime() - new Date(startTs).getTime()) / 60_000));
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (h > 0 && m > 0) return `${h} hr ${m} min`;
+  if (h > 0) return `${h} ${h === 1 ? 'hr' : 'hrs'}`;
+  return `${m} min`;
+}
+
+function overdueTasksLabel(count: number, locale: AppLocale): string {
+  if (locale === 'en') return enCount(count, 'overdue task', 'overdue tasks');
+  return countLabel(count, ['задача просрочена', 'задачи просрочены', 'задач просрочено']);
 }
 
 const ATTENTION_ICONS: Record<AttentionItem['kind'], { icon: LucideIcon; className: string }> = {
@@ -68,50 +197,58 @@ const ATTENTION_ROUTES: Record<AttentionItem['kind'], string> = {
   confirmation: '/calendar',
 };
 
-function attentionCtaLabel(item: AttentionItem): string {
+function attentionCtaLabel(item: AttentionItem, locale: AppLocale): string {
   if (item.kind === 'confirmation') {
-    if (item.ui_mode === 'review_then_confirm' || item.ui_mode === 'strong_confirm') return 'Проверить';
-    return 'Решить';
+    if (item.ui_mode === 'review_then_confirm' || item.ui_mode === 'strong_confirm') {
+      return locale === 'en' ? 'Review' : 'Проверить';
+    }
+    return locale === 'en' ? 'Decide' : 'Решить';
   }
-  if (item.kind === 'email') return 'Ответить';
-  return 'Разобрать';
+  if (item.kind === 'email') return locale === 'en' ? 'Reply' : 'Ответить';
+  return locale === 'en' ? 'Sort' : 'Разобрать';
 }
 
-function riskLabel(item: AttentionItem): string {
+function riskLabel(item: AttentionItem, locale: AppLocale): string {
   switch (item.risk_class) {
     case 'write_external':
-      return 'Внешний календарь';
+      return locale === 'en' ? 'External calendar' : 'Внешний календарь';
     case 'external_communication':
-      return 'Внешняя отправка';
+      return locale === 'en' ? 'External send' : 'Внешняя отправка';
     case 'destructive':
-      return 'Опасное действие';
+      return locale === 'en' ? 'Dangerous action' : 'Опасное действие';
     case 'write_internal_memory':
-      return 'Память';
+      return locale === 'en' ? 'Memory' : 'Память';
     case 'write_internal_scheduled':
-      return 'Автоматизация';
+      return locale === 'en' ? 'Automation' : 'Автоматизация';
     case 'write_internal':
-      return 'Внутри Lumi';
+      return locale === 'en' ? 'Inside Lumi' : 'Внутри Lumi';
     default:
-      return 'Нужно подтверждение';
+      return locale === 'en' ? 'Confirmation required' : 'Нужно подтверждение';
   }
 }
 
-function riskHint(item: AttentionItem): string {
+function riskHint(item: AttentionItem, locale: AppLocale): string {
   switch (item.risk_class) {
     case 'write_external':
-      return 'Будет создана запись вне Lumi.';
+      return locale === 'en' ? 'This will create an item outside Lumi.' : 'Будет создана запись вне Lumi.';
     case 'external_communication':
-      return 'Сначала будет черновик, отправка только после подтверждения.';
+      return locale === 'en'
+        ? 'Lumi will draft first and send only after confirmation.'
+        : 'Сначала будет черновик, отправка только после подтверждения.';
     case 'destructive':
-      return 'Действие может удалить или отключить данные.';
+      return locale === 'en'
+        ? 'This action can delete or disconnect data.'
+        : 'Действие может удалить или отключить данные.';
     case 'write_internal_memory':
-      return 'Lumi сохранит это как долгосрочную память.';
+      return locale === 'en'
+        ? 'Lumi will save this as long-term memory.'
+        : 'Lumi сохранит это как долгосрочную память.';
     case 'write_internal_scheduled':
-      return 'Lumi включит регулярное действие.';
+      return locale === 'en' ? 'Lumi will enable a recurring action.' : 'Lumi включит регулярное действие.';
     case 'write_internal':
-      return 'Изменение останется внутри Lumi.';
+      return locale === 'en' ? 'This change stays inside Lumi.' : 'Изменение останется внутри Lumi.';
     default:
-      return 'Проверь детали перед решением.';
+      return locale === 'en' ? 'Review the details before deciding.' : 'Проверь детали перед решением.';
   }
 }
 
@@ -121,14 +258,14 @@ function payloadText(value: unknown): string | null {
   return null;
 }
 
-function payloadDate(value: unknown): string | null {
+function payloadDate(value: unknown, locale: AppLocale): string | null {
   if (typeof value !== 'string' || !value.trim()) return null;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return formatDueLabel(date.toISOString());
+  return formatDueLabelLocalized(date.toISOString(), locale);
 }
 
-function confirmationDetailRows(item: AttentionItem): { label: string; value: string }[] {
+function confirmationDetailRows(item: AttentionItem, locale: AppLocale): { label: string; value: string }[] {
   const payload = item.action_payload ?? {};
   const rows: { label: string; value: string }[] = [];
   const push = (label: string, value: string | null) => {
@@ -137,28 +274,28 @@ function confirmationDetailRows(item: AttentionItem): { label: string; value: st
 
   switch (item.action_type) {
     case 'create_google_calendar_event':
-      push('Действие', 'Добавить в Google Calendar');
-      push('Название', payloadText(payload.title));
-      push('Начало', payloadDate(payload.start_at_local));
-      push('Конец', payloadDate(payload.end_at_local));
+      push(locale === 'en' ? 'Action' : 'Действие', locale === 'en' ? 'Add to Google Calendar' : 'Добавить в Google Calendar');
+      push(locale === 'en' ? 'Title' : 'Название', payloadText(payload.title));
+      push(locale === 'en' ? 'Start' : 'Начало', payloadDate(payload.start_at_local, locale));
+      push(locale === 'en' ? 'End' : 'Конец', payloadDate(payload.end_at_local, locale));
       break;
     case 'store_memory':
-      push('Запомнить', payloadText(payload.text));
-      push('Тип', payloadText(payload.kind));
+      push(locale === 'en' ? 'Remember' : 'Запомнить', payloadText(payload.text));
+      push(locale === 'en' ? 'Type' : 'Тип', payloadText(payload.kind));
       break;
     case 'create_task':
-      push('Задача', payloadText(payload.title));
-      push('Срок', payloadDate(payload.due_at_local));
-      push('Напоминание', payloadDate(payload.reminder_at_local));
-      push('Проект', payloadText(payload.project));
+      push(locale === 'en' ? 'Task' : 'Задача', payloadText(payload.title));
+      push(locale === 'en' ? 'Due' : 'Срок', payloadDate(payload.due_at_local, locale));
+      push(locale === 'en' ? 'Reminder' : 'Напоминание', payloadDate(payload.reminder_at_local, locale));
+      push(locale === 'en' ? 'Project' : 'Проект', payloadText(payload.project));
       break;
     case 'create_automation':
-      push('Автоматизация', payloadText(payload.title));
-      push('Расписание', payloadText(payload.cron_expression));
-      push('Часовой пояс', payloadText(payload.timezone));
+      push(locale === 'en' ? 'Automation' : 'Автоматизация', payloadText(payload.title));
+      push(locale === 'en' ? 'Schedule' : 'Расписание', payloadText(payload.cron_expression));
+      push(locale === 'en' ? 'Time zone' : 'Часовой пояс', payloadText(payload.timezone));
       break;
     default:
-      push('Действие', item.action_type ?? null);
+      push(locale === 'en' ? 'Action' : 'Действие', item.action_type ?? null);
   }
 
   return rows;
@@ -195,6 +332,8 @@ function TodaySkeleton() {
 }
 
 export default function TodayPage() {
+  const locale = useAppLocale();
+  const copy = TODAY_COPY[locale];
   const todayQuery = useToday();
   const navigate = useNavigate();
   const { show } = useToast();
@@ -209,16 +348,16 @@ export default function TodayPage() {
   const planAction = useAgentRunAction({
     start: () => api.planDay(),
     invalidate: [qk.eventsAll, qk.freeSlotsAll, qk.tasksAll],
-    successMessage: 'План готов',
+    successMessage: copy.planReady,
   });
 
   const triageAction = useAgentRunAction({
     start: () => api.runEmailTriage(),
     invalidate: [qk.inbox],
-    successMessage: 'Почта разобрана',
+    successMessage: copy.inboxTriaged,
     onApiError: (error) => {
       if (error.status === 409 && error.error === 'google_not_connected') {
-        show('Google не подключен — загляни в Настройки', 'info');
+        show(copy.googleNotConnected, 'info');
         return true;
       }
       return false;
@@ -228,7 +367,7 @@ export default function TodayPage() {
   const digestAction = useAgentRunAction({
     start: () => api.runNewsDigest(),
     invalidate: [qk.digests],
-    successMessage: 'Дайджест готов',
+    successMessage: copy.digestReady,
   });
 
   const handleConfirmationDecision = (item: AttentionItem, accept: boolean) => {
@@ -244,7 +383,7 @@ export default function TodayPage() {
           setExpandedAttentionId((current) => (current === item.id ? null : current));
         },
         onError: () => {
-          show('Не удалось сохранить решение', 'error');
+          show(copy.saveDecisionError, 'error');
           void todayQuery.refetch();
         },
         onSettled: () => setDecisionInFlightId(null),
@@ -254,8 +393,8 @@ export default function TodayPage() {
 
   const handleConfirmBlock = (blockId: string) => {
     confirmBlock.mutate(blockId, {
-      onSuccess: () => show('Блок добавлен в календарь', 'success'),
-      onError: () => show('Не удалось подтвердить блок', 'error'),
+      onSuccess: () => show(copy.blockAdded, 'success'),
+      onError: () => show(copy.blockConfirmError, 'error'),
     });
   };
 
@@ -296,10 +435,10 @@ export default function TodayPage() {
     completeTask.mutate(id, {
       onSuccess: () => {
         haptic('success');
-        show('Задача выполнена', 'success');
+        show(copy.taskDone, 'success');
         setExpandedAttentionId((current) => (current === item.id ? null : current));
       },
-      onError: () => show('Не удалось выполнить задачу', 'error'),
+      onError: () => show(copy.taskCompleteError, 'error'),
     });
   };
 
@@ -310,10 +449,10 @@ export default function TodayPage() {
       { id, input: { preset: 'tomorrow' } },
       {
         onSuccess: () => {
-          show('Задача перенесена на завтра', 'success');
+          show(copy.taskSnoozed, 'success');
           setExpandedAttentionId((current) => (current === item.id ? null : current));
         },
-        onError: () => show('Не удалось перенести задачу', 'error'),
+        onError: () => show(copy.taskSnoozeError, 'error'),
       },
     );
   };
@@ -323,10 +462,10 @@ export default function TodayPage() {
     if (!id) return;
     createTaskFromThread.mutate(id, {
       onSuccess: (result) => {
-        show(`Задача создана: ${result.task.title}`, 'success');
+        show(`${copy.taskCreatedPrefix}: ${result.task.title}`, 'success');
         setExpandedAttentionId((current) => (current === item.id ? null : current));
       },
-      onError: () => show('Не удалось создать задачу', 'error'),
+      onError: () => show(copy.taskCreateError, 'error'),
     });
   };
 
@@ -345,7 +484,7 @@ export default function TodayPage() {
 
   if (todayQuery.isPending) return <TodaySkeleton />;
   if (todayQuery.isError) {
-    return <ErrorState message="Не удалось загрузить план дня." onRetry={() => void todayQuery.refetch()} />;
+    return <ErrorState message={copy.loadError} onRetry={() => void todayQuery.refetch()} />;
   }
 
   const data = todayQuery.data;
@@ -361,18 +500,18 @@ export default function TodayPage() {
       end_at: item.end_at,
       subtitle:
         item.kind === 'task'
-          ? 'Задача'
+          ? copy.timelineTask
           : item.source === 'google'
             ? 'Google'
             : item.source === 'yandex'
-              ? 'Яндекс'
+              ? locale === 'en' ? 'Yandex' : 'Яндекс'
               : item.kind === 'focus'
-                ? 'Фокус'
+                ? copy.focus
                 : undefined,
       action:
         item.kind === 'proposed'
           ? {
-              label: 'Принять',
+              label: copy.accept,
               onClick: () => handleConfirmBlock(item.id),
               busy: confirmBlock.isPending,
             }
@@ -391,7 +530,7 @@ export default function TodayPage() {
         timelineEntries.push({
           id: `gap-${i}`,
           kind: 'free',
-          title: `Свободно · ${formatSpanMinutes(rawEntries[i - 1].end_at, entry.start_at)}`,
+          title: `${copy.free} · ${formatSpanMinutesLocalized(rawEntries[i - 1].end_at, entry.start_at, locale)}`,
           start_at: rawEntries[i - 1].end_at,
           end_at: entry.start_at,
         });
@@ -410,13 +549,13 @@ export default function TodayPage() {
             <h2 className="font-display text-[24px] font-normal leading-tight tracking-[-0.01em] text-ink">
               {data.greeting}
             </h2>
-            <p className="mt-1 text-[13px] text-hint">{formatDateHeading(date)}</p>
-            <p className="tnum mt-3 text-[15px] leading-relaxed text-ink">{buildSummaryLine(data.summary)}</p>
+            <p className="mt-1 text-[13px] text-hint">{formatDateHeadingLocalized(date, locale)}</p>
+            <p className="tnum mt-3 text-[15px] leading-relaxed text-ink">{buildSummaryLine(data.summary, locale)}</p>
             {data.summary.tasks_overdue > 0 && (
               <div className="mt-2.5">
                 <StatPill
                   tone="danger"
-                  label={`${countLabel(data.summary.tasks_overdue, ['задача просрочена', 'задачи просрочены', 'задач просрочено'])}`}
+                  label={overdueTasksLabel(data.summary.tasks_overdue, locale)}
                   onClick={() => navigate('/tasks')}
                 />
               </div>
@@ -428,7 +567,7 @@ export default function TodayPage() {
                 busy={planAction.isRunning}
                 onClick={planAction.trigger}
               >
-                Собрать план
+                {copy.buildPlan}
               </Button>
               <Button
                 variant="secondary"
@@ -436,7 +575,7 @@ export default function TodayPage() {
                 busy={triageAction.isRunning}
                 onClick={triageAction.trigger}
               >
-                Разобрать почту
+                {copy.triageInbox}
               </Button>
             </div>
           </div>
@@ -445,14 +584,14 @@ export default function TodayPage() {
 
       {/* ----------------------------------------------------------- Timeline */}
       <Rise>
-        <SectionHeader title="Расписание" />
+        <SectionHeader title={copy.schedule} />
         {timelineEntries.length > 0 ? (
           <Timeline entries={timelineEntries} />
         ) : (
           <EmptyState
             icon={CalendarDays}
-            title="Сегодня нет встреч и блоков"
-            hint="Нажми «Собрать план» — Lumi посмотрит задачи и предложит фокус-блоки."
+            title={copy.emptyTitle}
+            hint={copy.emptyHint}
           />
         )}
       </Rise>
@@ -460,11 +599,11 @@ export default function TodayPage() {
       {/* ----------------------------------------------------------- Needs attention */}
       {data.needs_attention.length > 0 && (
         <div>
-          <SectionHeader title="Ждет решения" />
+          <SectionHeader title={copy.needsAttention} />
           <Card className="card-strong divide-y divide-[var(--hairline)] overflow-hidden !p-0">
             {data.needs_attention.map((item) => {
               const expanded = expandedAttentionId === item.id;
-              const detailRows = confirmationDetailRows(item);
+              const detailRows = confirmationDetailRows(item, locale);
               return (
                 <div key={item.id}>
                   <button
@@ -479,7 +618,7 @@ export default function TodayPage() {
                       {item.subtitle && <span className="block truncate text-[12.5px] text-hint">{item.subtitle}</span>}
                     </span>
                     <span className="shrink-0 rounded-full bg-[var(--secondary-bg)] px-2.5 py-1 text-[12px] font-medium text-[var(--secondary-text)]">
-                      {attentionCtaLabel(item)}
+                      {attentionCtaLabel(item, locale)}
                     </span>
                   </button>
 
@@ -489,9 +628,9 @@ export default function TodayPage() {
                         <>
                           <div className="rounded-2xl bg-[var(--accent-soft)] px-4 py-3">
                             <p className="text-[12px] font-semibold uppercase tracking-wide text-accent-text">
-                              {riskLabel(item)}
+                              {riskLabel(item, locale)}
                             </p>
-                            <p className="mt-1 text-[13px] leading-relaxed text-ink">{riskHint(item)}</p>
+                            <p className="mt-1 text-[13px] leading-relaxed text-ink">{riskHint(item, locale)}</p>
                           </div>
 
                           {detailRows.length > 0 && (
@@ -513,7 +652,7 @@ export default function TodayPage() {
                               icon={<Check size={16} />}
                               onClick={() => handleConfirmationDecision(item, true)}
                             >
-                              {item.primary_label ?? 'Подтвердить'}
+                              {item.primary_label ?? copy.confirm}
                             </Button>
                             <Button
                               fullWidth
@@ -521,7 +660,7 @@ export default function TodayPage() {
                               busy={decideConfirmation.isPending && decisionInFlightId === item.ref_id}
                               onClick={() => handleConfirmationDecision(item, false)}
                             >
-                              {item.secondary_label ?? 'Отклонить'}
+                              {item.secondary_label ?? copy.dismiss}
                             </Button>
                           </div>
                         </>
@@ -535,7 +674,7 @@ export default function TodayPage() {
                             busy={completeTask.isPending}
                             onClick={() => handleAttentionTaskComplete(item)}
                           >
-                            Готово
+                            {copy.done}
                           </Button>
                           <Button
                             fullWidth
@@ -544,10 +683,10 @@ export default function TodayPage() {
                             busy={snoozeTask.isPending}
                             onClick={() => handleAttentionTaskSnooze(item)}
                           >
-                            Завтра
+                            {copy.tomorrow}
                           </Button>
                           <Button fullWidth variant="ghost" onClick={() => handleAttentionNavigate(ATTENTION_ROUTES[item.kind])}>
-                            Открыть задачи
+                            {copy.openTasks}
                           </Button>
                         </div>
                       )}
@@ -559,10 +698,10 @@ export default function TodayPage() {
                             busy={createTaskFromThread.isPending}
                             onClick={() => handleAttentionEmailTask(item)}
                           >
-                            Создать задачу
+                            {copy.createTask}
                           </Button>
                           <Button fullWidth variant="ghost" onClick={() => handleAttentionNavigate(ATTENTION_ROUTES.email)}>
-                            Открыть почту
+                            {copy.openInbox}
                           </Button>
                         </div>
                       )}
@@ -578,7 +717,7 @@ export default function TodayPage() {
       {/* ----------------------------------------------------------- Suggestions */}
       {data.suggestions.length > 0 && (
         <Rise>
-          <SectionHeader title="Lumi предлагает" />
+          <SectionHeader title={copy.lumiSuggests} />
           <div className="flex flex-col gap-3">
             {data.suggestions.map((suggestion) => (
               <div
@@ -599,7 +738,7 @@ export default function TodayPage() {
                     busy={suggestionBusy(suggestion)}
                     onClick={() => handleSuggestion(suggestion)}
                   >
-                    Принять
+                    {copy.accept}
                   </Button>
                 </div>
               </div>
@@ -613,7 +752,7 @@ export default function TodayPage() {
         <Rise>
           <div className="mt-7 flex items-center justify-center gap-2 text-[13px] text-hint">
             <CheckCircle2 size={15} className="text-success" />
-            Ничего срочного — всё под контролем
+            {copy.allClear}
           </div>
         </Rise>
       )}

@@ -12,6 +12,7 @@ from lumi.db.models import (
     EmailThread,
     User,
 )
+from lumi.i18n import normalize_app_locale
 from lumi.services.action_policy import policy_for_action, policy_to_dict
 from lumi.services.calendar import CalendarService
 from lumi.services.confirmations import ConfirmationService
@@ -27,6 +28,7 @@ class TodayService:
         self.confirmations = ConfirmationService(session)
 
     async def build_payload(self, user: User) -> dict:
+        locale = normalize_app_locale(user.locale)
         now = utc_now()
         now_local = local_now(user.timezone)
         day_start, day_end = local_day_bounds(now, user.timezone)
@@ -90,7 +92,7 @@ class TodayService:
                     "id": f"task-overdue-{task.id}",
                     "kind": "overdue_task",
                     "title": task.title,
-                    "subtitle": f"Просрочено · срок был {fmt_local(task.due_at, user.timezone)}",
+                    "subtitle": _overdue_subtitle(task.due_at, user.timezone, locale),
                     "ref_id": str(task.id),
                 })
         important_threads = await self.session.execute(
@@ -107,7 +109,7 @@ class TodayService:
             needs_attention.append({
                 "id": f"email-{thread.id}",
                 "kind": "email",
-                "title": thread.subject or "(без темы)",
+                "title": thread.subject or _text(locale, "(no subject)", "(без темы)"),
                 "subtitle": thread.summary or sender or None,
                 "ref_id": str(thread.id),
             })
@@ -119,11 +121,11 @@ class TodayService:
                 "id": f"confirmation-{confirmation.id}",
                 "kind": "confirmation",
                 "title": confirmation.prompt,
-                "subtitle": "Ждет решения",
+                "subtitle": _text(locale, "Needs decision", "Ждет решения"),
                 "ref_id": str(confirmation.id),
                 "action_type": confirmation.action_type,
                 "action_payload": confirmation.action_payload,
-                **policy_to_dict(policy),
+                **policy_to_dict(policy, locale=locale),
             })
         needs_attention = needs_attention[:8]
 
@@ -134,7 +136,7 @@ class TodayService:
             suggestions.append({
                 "id": f"confirm-block-{event.id}",
                 "kind": "focus_block",
-                "title": f"Принять фокус-блок «{event.title}»",
+                "title": _text(locale, f"Accept focus block \"{event.title}\"", f"Принять фокус-блок «{event.title}»"),
                 "description": (
                     f"{fmt_local(event.start_at, user.timezone, '%H:%M')}–"
                     f"{fmt_local(event.end_at, user.timezone, '%H:%M')}"
@@ -146,8 +148,8 @@ class TodayService:
             suggestions.append({
                 "id": "suggest-plan-day",
                 "kind": "plan_day",
-                "title": "Собрать план на день",
-                "description": f"Есть {len(unplanned)} приоритетных задач без слотов",
+                "title": _text(locale, "Build today's plan", "Собрать план на день"),
+                "description": _priority_tasks_description(len(unplanned), locale),
                 "action": {"type": "plan_day", "payload": {}},
             })
         backlog = [t for t in active_tasks if t.due_at is None]
@@ -155,16 +157,16 @@ class TodayService:
             suggestions.append({
                 "id": "suggest-backlog",
                 "kind": "plan_day",
-                "title": "Разобрать бэклог",
-                "description": f"{len(backlog)} задач без срока — могу расставить их по свободным окнам",
+                "title": _text(locale, "Sort the backlog", "Разобрать бэклог"),
+                "description": _backlog_description(len(backlog), locale),
                 "action": {"type": "plan_day", "payload": {}},
             })
         if task_counts["tasks_overdue"] and len(suggestions) < 3:
             suggestions.append({
                 "id": "suggest-overdue",
                 "kind": "plan_day",
-                "title": "Пересобрать день",
-                "description": f"{task_counts['tasks_overdue']} задач просрочено — предложу новые слоты",
+                "title": _text(locale, "Rebuild the day", "Пересобрать день"),
+                "description": _overdue_tasks_description(task_counts["tasks_overdue"], locale),
                 "action": {"type": "plan_day", "payload": {}},
             })
         if now_local.hour >= 17 and len(suggestions) < 3:
@@ -174,16 +176,20 @@ class TodayService:
             suggestions.append({
                 "id": "suggest-plan-tomorrow",
                 "kind": "plan_day",
-                "title": "Спланировать завтра",
-                "description": "Вечер — лучшее время разложить завтрашний день по слотам",
+                "title": _text(locale, "Plan tomorrow", "Спланировать завтра"),
+                "description": _text(
+                    locale,
+                    "Evening is a good time to block out tomorrow.",
+                    "Вечер — лучшее время разложить завтрашний день по слотам",
+                ),
                 "action": {"type": "plan_day", "payload": {"date": tomorrow}},
             })
         if emails_need_reply:
             suggestions.append({
                 "id": "suggest-triage",
                 "kind": "email_triage",
-                "title": "Разобрать почту",
-                "description": f"{emails_need_reply} писем ждут ответа",
+                "title": _text(locale, "Triage inbox", "Разобрать почту"),
+                "description": _emails_need_reply_description(emails_need_reply, locale),
                 "action": {"type": "run_triage", "payload": {}},
             })
 
@@ -199,8 +205,8 @@ class TodayService:
         return {
             "date": now_local.strftime("%Y-%m-%d"),
             "greeting": (
-                f"{greeting_for(now_local)}, {user.first_name}"
-                if user.first_name else greeting_for(now_local)
+                f"{greeting_for(now_local, locale)}, {user.first_name}"
+                if user.first_name else greeting_for(now_local, locale)
             ),
             "summary": {
                 "meetings_today": meetings_today,
@@ -214,6 +220,44 @@ class TodayService:
             "suggestions": suggestions,
             "recent_runs": recent_runs,
         }
+
+
+def _text(locale: str, en: str, ru: str) -> str:
+    return en if locale == "en" else ru
+
+
+def _en_plural(n: int, singular: str, plural: str) -> str:
+    return singular if n == 1 else plural
+
+
+def _overdue_subtitle(due_at, timezone: str, locale: str) -> str:
+    if locale == "en":
+        return f"Overdue · due was {fmt_local(due_at, timezone)}"
+    return f"Просрочено · срок был {fmt_local(due_at, timezone)}"
+
+
+def _priority_tasks_description(count: int, locale: str) -> str:
+    if locale == "en":
+        return f"{count} priority {_en_plural(count, 'task', 'tasks')} without time slots"
+    return f"Есть {count} приоритетных задач без слотов"
+
+
+def _backlog_description(count: int, locale: str) -> str:
+    if locale == "en":
+        return f"{count} {_en_plural(count, 'task', 'tasks')} without a due date — I can place them into free windows"
+    return f"{count} задач без срока — могу расставить их по свободным окнам"
+
+
+def _overdue_tasks_description(count: int, locale: str) -> str:
+    if locale == "en":
+        return f"{count} overdue {_en_plural(count, 'task', 'tasks')} — I can suggest new slots"
+    return f"{count} задач просрочено — предложу новые слоты"
+
+
+def _emails_need_reply_description(count: int, locale: str) -> str:
+    if locale == "en":
+        return f"{count} {_en_plural(count, 'email needs', 'emails need')} a reply"
+    return f"{count} писем ждут ответа"
 
 
 def _run_brief(run: AgentRun) -> dict:

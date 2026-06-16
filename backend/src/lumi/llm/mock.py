@@ -146,6 +146,9 @@ class MockLLMProvider:
                 ensure_ascii=False,
             )
         if request_kind == "agent_planner":
+            language_plan = self._language_plan(_extract_user_message(joined))
+            if language_plan is not None:
+                return json.dumps(language_plan, ensure_ascii=False)
             return json.dumps(self._extract_signals(joined), ensure_ascii=False)
         if request_kind == "signal_extraction":
             return json.dumps(self._extract_signals(joined), ensure_ascii=False)
@@ -183,6 +186,41 @@ class MockLLMProvider:
             )
         # final_chat / custom / anything else
         return "Готово, я это зафиксировал."
+
+    def _language_plan(self, message: str) -> dict[str, Any] | None:
+        lowered = message.lower()
+        wants_language = any(word in lowered for word in ("language", "язык", "reply", "отвечай", "ответы"))
+        if not wants_language:
+            return None
+
+        args: dict[str, str] = {}
+        if "russian" in lowered or "русск" in lowered or "по-русски" in lowered:
+            args["app_locale"] = "ru"
+            if "reply" in lowered or "отвечай" in lowered or "ответы" in lowered:
+                args["reply_language_mode"] = "app_locale"
+        elif "english" in lowered or "англ" in lowered or "по-английски" in lowered:
+            args["app_locale"] = "en"
+            if "reply" in lowered or "отвечай" in lowered or "ответы" in lowered:
+                args["reply_language_mode"] = "app_locale"
+
+        if "auto" in lowered or "automatic" in lowered or "авто" in lowered or "как пишу" in lowered:
+            args["reply_language_mode"] = "auto"
+
+        if not args:
+            return None
+        return {
+            "mode": "tool_calls",
+            "language": "en" if re.search(r"[a-zA-Z]", message) else "ru",
+            "tool_calls": [
+                {
+                    "name": "set_language",
+                    "args": args,
+                    "confidence": 0.98,
+                    "requires_confirmation": False,
+                }
+            ],
+            "should_answer_normally": False,
+        }
 
     def _extract_signals(self, joined: str) -> dict[str, Any]:
         message = _extract_user_message(joined)

@@ -191,7 +191,7 @@ class User(Base):
     last_name: Mapped[str | None] = mapped_column(Text)
     language_code: Mapped[str | None] = mapped_column(Text)
     timezone: Mapped[str] = mapped_column(Text, nullable=False, default="Europe/Moscow")
-    locale: Mapped[str] = mapped_column(Text, nullable=False, default="ru")
+    locale: Mapped[str] = mapped_column(Text, nullable=False, default="en")
     # Multi-user: owners come from ALLOWED_TELEGRAM_USER_IDS (env), everyone else
     # requests access and gets approved by the owner in chat.
     is_allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))

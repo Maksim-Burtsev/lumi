@@ -30,6 +30,7 @@ from lumi.db.models import (
     ToolCall,
     User,
 )
+from lumi.i18n import ensure_language_settings
 from lumi.llm.base import LLMImagePart, LLMMessage, LLMTextPart, content_char_count
 from lumi.services.calendar import CalendarService
 from lumi.services.tasks import TaskService
@@ -244,10 +245,14 @@ class ContextBuilder:
 
         # 2. Runtime metadata
         now_local = local_now(user.timezone)
+        language_settings = ensure_language_settings(user.settings)
         sections.append(
             "Current datetime: " + now_local.strftime("%Y-%m-%d %H:%M") + "\n"
             f"Timezone: {user.timezone}\n"
-            f"User locale: {user.locale}\n"
+            f"App locale: {user.locale}\n"
+            f"Reply language mode: {language_settings['reply_language_mode']}\n"
+            "Reply policy: if mode=auto, answer in the latest user message language; "
+            "if mode=app_locale, answer in the app locale.\n"
             "Channel: telegram_private_chat"
         )
 

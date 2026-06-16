@@ -21,6 +21,7 @@ class FakeTelegramMessage:
         document=None,
         video=None,
         media_group_id: str | None = None,
+        language_code: str | None = None,
     ) -> None:
         self.message_id = message_id
         self.text = text
@@ -36,6 +37,7 @@ class FakeTelegramMessage:
             username="tester",
             first_name="Test",
             last_name="User",
+            language_code=language_code,
         )
         self.answers: list[str] = []
 
@@ -201,7 +203,7 @@ async def test_chat_message_enqueues_turn_without_inline_orchestrator(monkeypatc
     monkeypatch.setattr(handlers, "_check_allowed", fake_check_allowed)
     monkeypatch.setattr(handlers, "enqueue_job", fake_enqueue)
 
-    message = FakeTelegramMessage(message_id=901, text="поставь задачу")
+    message = FakeTelegramMessage(message_id=901, text="поставь задачу", language_code="en-US")
 
     await handlers.on_chat_message(message, FakeBot())
 
@@ -211,8 +213,11 @@ async def test_chat_message_enqueues_turn_without_inline_orchestrator(monkeypatc
 
     async with session_scope() as session:
         turn = (await session.execute(select(AssistantTurn))).scalars().one()
+        user = await handlers.UserService(session).get_by_telegram_id(TEST_TELEGRAM_ID)
     assert turn.input_text == "поставь задачу"
     assert turn.primary_message_id == 901
+    assert user.language_code == "en-US"
+    assert user.locale == "en"
 
 
 async def test_duplicate_enqueue_does_not_show_queue_unavailable(monkeypatch):

@@ -100,7 +100,7 @@ def thread_to_dict(thread: EmailThread) -> dict[str, Any]:
     }
 
 
-def confirmation_to_dict(confirmation: PendingConfirmation) -> dict[str, Any]:
+def confirmation_to_dict(confirmation: PendingConfirmation, *, locale: str | None = None) -> dict[str, Any]:
     policy = policy_for_action(confirmation.action_type)
     return {
         "id": str(confirmation.id),
@@ -111,7 +111,7 @@ def confirmation_to_dict(confirmation: PendingConfirmation) -> dict[str, Any]:
         "created_at": _iso(confirmation.created_at),
         "expires_at": _iso(confirmation.expires_at),
         "decided_at": _iso(confirmation.decided_at),
-        **policy_to_dict(policy),
+        **policy_to_dict(policy, locale=locale),
     }
 
 

@@ -76,6 +76,7 @@ export interface SettingsResponse {
 export interface PatchSettingsInput {
   timezone?: string;
   locale?: string;
+  reply_language_mode?: 'auto' | 'app_locale';
   settings?: Record<string, unknown>;
 }
 

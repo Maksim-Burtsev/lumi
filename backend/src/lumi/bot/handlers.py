@@ -54,6 +54,10 @@ def _is_owner(telegram_user_id: int) -> bool:
     return telegram_user_id in get_settings().allowed_telegram_user_ids
 
 
+def _language_code(event: TgMessage | CallbackQuery) -> str | None:
+    return getattr(event.from_user, "language_code", None) if event.from_user else None
+
+
 async def _check_allowed(event: TgMessage | CallbackQuery) -> bool:
     """Owners come from env; everyone else must be approved (users.is_allowed)."""
     tg_user = event.from_user
@@ -82,6 +86,7 @@ async def _request_access(message: TgMessage) -> None:
             tg_user.id, telegram_chat_id=message.chat.id,
             username=tg_user.username, first_name=tg_user.first_name,
             last_name=tg_user.last_name,
+            language_code=tg_user.language_code,
         )
         already_requested = bool(user.settings.get("access_requested"))
         if not already_requested:
@@ -144,6 +149,7 @@ async def _record_rejected_attachment_turn(
             username=message.from_user.username,
             first_name=message.from_user.first_name,
             last_name=message.from_user.last_name,
+            language_code=message.from_user.language_code,
         )
         conversation = await users.ensure_main_conversation(user)
         attachment_rejection = {
@@ -235,7 +241,11 @@ async def cmd_intro(message: TgMessage) -> None:
 
     async with session_scope() as session:
         users = UserService(session)
-        user = await users.ensure_user(message.from_user.id, telegram_chat_id=message.chat.id)
+        user = await users.ensure_user(
+            message.from_user.id,
+            telegram_chat_id=message.chat.id,
+            language_code=_language_code(message),
+        )
         set_intro_step(user, 0)
     await message.answer(INTRO_START_TEXT)
 
@@ -247,7 +257,10 @@ async def cmd_cancel(message: TgMessage) -> None:
     from lumi.bot.intro import intro_step, set_intro_step
 
     async with session_scope() as session:
-        user = await UserService(session).ensure_user(message.from_user.id)
+        user = await UserService(session).ensure_user(
+            message.from_user.id,
+            language_code=_language_code(message),
+        )
         if intro_step(user) is not None:
             set_intro_step(user, None)
             await message.answer("Ок, прервал знакомство. Вернуться можно командой /intro.")
@@ -287,7 +300,11 @@ async def cmd_today(message: TgMessage) -> None:
         return
     async with session_scope() as session:
         users = UserService(session)
-        user = await users.ensure_user(message.from_user.id, telegram_chat_id=message.chat.id)
+        user = await users.ensure_user(
+            message.from_user.id,
+            telegram_chat_id=message.chat.id,
+            language_code=_language_code(message),
+        )
         payload = await TodayService(session).build_payload(user)
         text = format_today(payload, user.timezone)
     await _reply_chunks(message, text)
@@ -299,7 +316,11 @@ async def cmd_tasks(message: TgMessage) -> None:
         return
     async with session_scope() as session:
         users = UserService(session)
-        user = await users.ensure_user(message.from_user.id, telegram_chat_id=message.chat.id)
+        user = await users.ensure_user(
+            message.from_user.id,
+            telegram_chat_id=message.chat.id,
+            language_code=_language_code(message),
+        )
         tasks = await TaskService(session).list_active(user, limit=25)
         text = format_tasks(tasks, user.timezone)
     await _reply_chunks(message, text)
@@ -308,7 +329,11 @@ async def cmd_tasks(message: TgMessage) -> None:
 async def _enqueue_automation_run(message: TgMessage, automation_type: str, started_text: str) -> None:
     async with session_scope() as session:
         users = UserService(session)
-        user = await users.ensure_user(message.from_user.id, telegram_chat_id=message.chat.id)
+        user = await users.ensure_user(
+            message.from_user.id,
+            telegram_chat_id=message.chat.id,
+            language_code=_language_code(message),
+        )
         run = await RunService(session).create(
             user_id=user.id,
             type_=AGENT_RUN_TYPE_BY_AUTOMATION[automation_type],
@@ -357,7 +382,9 @@ async def cmd_settings(message: TgMessage) -> None:
     google = await connection_status()
     async with session_scope() as session:
         user = await UserService(session).ensure_user(
-            message.from_user.id, telegram_chat_id=message.chat.id
+            message.from_user.id,
+            telegram_chat_id=message.chat.id,
+            language_code=_language_code(message),
         )
         tz = user.timezone
     lines = [
@@ -419,7 +446,9 @@ async def on_chat_message(message: TgMessage, bot: Bot, telegram_update_id: int 
 
     async with session_scope() as session:
         user = await UserService(session).ensure_user(
-            message.from_user.id, telegram_chat_id=message.chat.id
+            message.from_user.id,
+            telegram_chat_id=message.chat.id,
+            language_code=_language_code(message),
         )
         if intro_step(user) is not None:
             if not text:
@@ -450,6 +479,7 @@ async def on_chat_message(message: TgMessage, bot: Bot, telegram_update_id: int 
                 username=message.from_user.username,
                 first_name=message.from_user.first_name,
                 last_name=message.from_user.last_name,
+                language_code=message.from_user.language_code,
                 image_metadata=image_ref.to_metadata() if image_ref else None,
                 ignored_attachments=[],
                 payload={

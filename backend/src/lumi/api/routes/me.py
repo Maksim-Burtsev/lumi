@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +13,12 @@ from lumi.api.serializers import message_to_dict, user_to_dict
 from lumi.config import get_settings
 from lumi.connectors.google.auth import connection_status
 from lumi.db.models import Message, MessageRole, User
+from lumi.i18n import (
+    ReplyLanguageMode,
+    ensure_language_settings,
+    normalize_reply_language_mode,
+    validate_app_locale,
+)
 from lumi.services.realtime import RealtimeEventService
 
 router = APIRouter()
@@ -56,7 +62,13 @@ async def get_app_settings(
 class SettingsPatch(BaseModel):
     timezone: str | None = None
     locale: str | None = None
+    reply_language_mode: ReplyLanguageMode | None = None
     settings: dict | None = None
+
+    @field_validator("locale")
+    @classmethod
+    def locale_supported(cls, value: str | None) -> str | None:
+        return validate_app_locale(value) if value else None
 
 
 @router.patch("/settings")
@@ -72,8 +84,16 @@ async def patch_settings(
         user.timezone = payload.timezone
     if payload.locale:
         user.locale = payload.locale
+        user.settings = {**ensure_language_settings(user.settings), "locale_source": "manual"}
+    else:
+        user.settings = ensure_language_settings(user.settings)
+    if payload.reply_language_mode:
+        user.settings = {
+            **ensure_language_settings(user.settings),
+            "reply_language_mode": normalize_reply_language_mode(payload.reply_language_mode),
+        }
     if payload.settings is not None:
-        user.settings = {**user.settings, **payload.settings}
+        user.settings = ensure_language_settings({**user.settings, **payload.settings})
     session.add(user)
     await RealtimeEventService(session).emit(
         user_id=user.id,

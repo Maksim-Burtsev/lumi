@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from lumi.config import get_settings
 from lumi.db.models import Conversation, ConversationKind, User
+from lumi.i18n import ensure_language_settings, normalize_app_locale
 from lumi.utils.time import utc_now
 
 
@@ -37,6 +38,7 @@ class UserService:
             settings = get_settings()
             try:
                 async with self.session.begin_nested():
+                    user_settings = ensure_language_settings({})
                     user = User(
                         telegram_user_id=telegram_user_id,
                         telegram_chat_id=telegram_chat_id or telegram_user_id,
@@ -45,9 +47,8 @@ class UserService:
                         last_name=last_name,
                         language_code=language_code,
                         timezone=settings.default_timezone,
-                        # Start from the Telegram interface language; chat replies
-                        # mirror the message language anyway (see system prompt).
-                        locale=(language_code or "ru")[:2],
+                        locale=normalize_app_locale(language_code),
+                        settings=user_settings,
                     )
                     self.session.add(user)
                     await self.session.flush()
@@ -65,6 +66,12 @@ class UserService:
                 user.first_name = first_name
             if last_name:
                 user.last_name = last_name
+            user.settings = ensure_language_settings(user.settings)
+            if language_code:
+                user.language_code = language_code
+                if user.settings.get("locale_source") != "manual":
+                    user.locale = normalize_app_locale(language_code)
+        user.settings = ensure_language_settings(user.settings)
         if touch_last_seen:
             user.last_seen_at = utc_now()
         return user

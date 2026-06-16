@@ -2,31 +2,33 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { CalendarDays, LayoutGrid, ListChecks, Mail, Sunrise } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { haptic } from '../../telegram/webapp';
+import { useAppLocale } from '../../lib/useAppLocale';
 
 interface NavItem {
   to: string;
-  label: string;
+  label: { en: string; ru: string };
   icon: LucideIcon;
   /** Extra paths that keep this item active. */
   also?: string[];
 }
 
 const ITEMS: NavItem[] = [
-  { to: '/', label: 'Сегодня', icon: Sunrise },
-  { to: '/tasks', label: 'Задачи', icon: ListChecks },
-  { to: '/calendar', label: 'Календарь', icon: CalendarDays },
-  { to: '/inbox', label: 'Почта', icon: Mail },
-  { to: '/more', label: 'Ещё', icon: LayoutGrid, also: ['/news', '/automations', '/settings', '/runs'] },
+  { to: '/', label: { en: 'Today', ru: 'Сегодня' }, icon: Sunrise },
+  { to: '/tasks', label: { en: 'Tasks', ru: 'Задачи' }, icon: ListChecks },
+  { to: '/calendar', label: { en: 'Calendar', ru: 'Календарь' }, icon: CalendarDays },
+  { to: '/inbox', label: { en: 'Inbox', ru: 'Почта' }, icon: Mail },
+  { to: '/more', label: { en: 'More', ru: 'Ещё' }, icon: LayoutGrid, also: ['/news', '/automations', '/settings', '/runs'] },
 ];
 
 /** Floating pill bottom navigation with safe-area padding. */
 export function BottomNav() {
   const location = useLocation();
   const navigate = useNavigate();
+  const locale = useAppLocale();
 
   return (
     <nav
-      aria-label="Основная навигация"
+      aria-label={locale === 'en' ? 'Primary navigation' : 'Основная навигация'}
       className="fixed left-1/2 z-50 w-[calc(100%-24px)] max-w-[420px] -translate-x-1/2"
       style={{ bottom: 'calc(env(safe-area-inset-bottom) + 12px)' }}
     >
@@ -41,11 +43,12 @@ export function BottomNav() {
               : location.pathname.startsWith(item.to) ||
                 (item.also?.some((p) => location.pathname.startsWith(p)) ?? false);
           const Icon = item.icon;
+          const label = item.label[locale];
           return (
             <button
               key={item.to}
               type="button"
-              aria-label={item.label}
+              aria-label={label}
               aria-current={active ? 'page' : undefined}
               onClick={() => {
                 if (!active) haptic('light');
@@ -59,7 +62,7 @@ export function BottomNav() {
                 className={active ? 'text-accent-text' : 'text-hint'}
               />
               <span className={`text-[10px] leading-none ${active ? 'font-medium text-accent-text' : 'text-hint'}`}>
-                {item.label}
+                {label}
               </span>
               <span
                 aria-hidden

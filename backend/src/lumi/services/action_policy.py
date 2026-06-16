@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
+from lumi.i18n import normalize_app_locale
+
 
 @dataclass(frozen=True)
 class ActionPolicy:
@@ -96,12 +98,31 @@ UNKNOWN_ACTION_POLICY = ActionPolicy(
     primary_label="Подтвердить",
 )
 
+_LOCALIZED_LABELS: dict[str, dict[str, tuple[str, str]]] = {
+    "create_task": {"en": ("Create", "Dismiss"), "ru": ("Создать", "Отклонить")},
+    "bulk_update_tasks": {"en": ("Update", "Dismiss"), "ru": ("Обновить", "Отклонить")},
+    "store_memory": {"en": ("Remember", "Dismiss"), "ru": ("", "Отклонить")},
+    "create_automation": {"en": ("Enable", "Dismiss"), "ru": ("Включить", "Отклонить")},
+    "create_google_calendar_event": {"en": ("Add", "Dismiss"), "ru": ("Добавить", "Отклонить")},
+    "send_email": {"en": ("Send", "Dismiss"), "ru": ("Отправить", "Отклонить")},
+    "delete_email": {"en": ("Delete", "Dismiss"), "ru": ("Удалить", "Отклонить")},
+    "archive_email": {"en": ("Archive", "Dismiss"), "ru": ("Архивировать", "Отклонить")},
+    "disconnect_google": {"en": ("Disconnect", "Dismiss"), "ru": ("Отключить", "Отклонить")},
+    "disconnect_yandex": {"en": ("Disconnect", "Dismiss"), "ru": ("Отключить", "Отклонить")},
+    "unknown": {"en": ("Confirm", "Dismiss"), "ru": ("Подтвердить", "Отклонить")},
+}
+
 
 def policy_for_action(action_type: str) -> ActionPolicy:
     return ACTION_POLICIES.get(action_type, UNKNOWN_ACTION_POLICY)
 
 
-def policy_to_dict(policy: ActionPolicy) -> dict[str, str]:
+def policy_to_dict(policy: ActionPolicy, *, locale: str | None = None) -> dict[str, str]:
     data = asdict(policy)
     data.pop("action_type")
+    localized = _LOCALIZED_LABELS.get(policy.action_type, _LOCALIZED_LABELS["unknown"])[
+        normalize_app_locale(locale)
+    ]
+    data["primary_label"] = localized[0]
+    data["secondary_label"] = localized[1]
     return data

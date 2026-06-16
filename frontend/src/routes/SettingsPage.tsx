@@ -14,6 +14,7 @@ import { SkeletonList } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
 import { formatRelative } from '../lib/format';
+import { normalizeAppLocale } from '../lib/i18n';
 import { COMMON_TIMEZONES } from '../lib/labels';
 
 function BoolRow({ label, value }: { label: string; value: boolean }) {
@@ -38,11 +39,113 @@ function InfoRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-const GOOGLE_STATUS_LABELS: Record<GoogleStatus['status'], { label: string; className: string }> = {
-  connected: { label: 'Подключен', className: 'bg-[var(--success-soft)] text-success' },
-  disconnected: { label: 'Не подключен', className: 'bg-[var(--secondary-bg)] text-hint' },
-  error: { label: 'Ошибка', className: 'bg-[var(--danger-soft)] text-danger' },
-  needs_reauth: { label: 'Нужна повторная авторизация', className: 'bg-[var(--danger-soft)] text-danger' },
+const STATUS_CLASSES: Record<GoogleStatus['status'], string> = {
+  connected: 'bg-[var(--success-soft)] text-success',
+  disconnected: 'bg-[var(--secondary-bg)] text-hint',
+  error: 'bg-[var(--danger-soft)] text-danger',
+  needs_reauth: 'bg-[var(--danger-soft)] text-danger',
+};
+
+const LANGUAGE_OPTIONS = [
+  { value: 'en', label: 'English' },
+  { value: 'ru', label: 'Русский' },
+];
+
+const COPY = {
+  en: {
+    loadError: 'Could not load settings.',
+    timezone: 'Time zone',
+    appLanguage: 'App language',
+    botReplies: 'Bot replies',
+    replyAuto: 'Auto: match each message',
+    replyAppLocale: 'Use app language',
+    languageSaved: 'Language saved',
+    languageSaveFailed: 'Could not save language',
+    replyLanguageSaved: 'Reply language saved',
+    replyLanguageSaveFailed: 'Could not save reply language',
+    timezoneSaved: 'Time zone saved',
+    saveFailed: 'Could not save',
+    calendarSynced: 'Calendar synced; events are already in the schedule',
+    calendarSyncFailed: 'Sync failed; try the Calendar page button',
+    googleConnected: 'Google connected; syncing calendar',
+    googleStartFailed: 'Could not start connection',
+    googleSecretMissing: 'Put client_secret.json into data/secrets first',
+    publicUrlMissing: 'APP_PUBLIC_URL is required (HTTPS tunnel)',
+    status: 'Status',
+    connected: 'Connected',
+    disconnected: 'Disconnected',
+    error: 'Error',
+    needsReauth: 'Reconnect required',
+    lastSync: 'Last sync',
+    googleInfo: 'Lumi will get read-only mail access and calendar access. One tap opens Google; allow access and return here.',
+    waitingGoogle: 'Waiting for Google confirmation; status updates automatically.',
+    connectGoogle: 'Connect Google',
+    disconnectGoogle: 'Disconnect Google?',
+    googleDisconnected: 'Google disconnected',
+    googleDisconnectFailed: 'Could not disconnect',
+    cancel: 'Cancel',
+    disconnect: 'Disconnect',
+    yandexTitle: 'Yandex Calendar',
+    account: 'Account',
+    access: 'Access',
+    readOnlyCalDav: 'read-only (CalDAV)',
+    yandexInfo: 'Lumi will see your Yandex Calendar availability (read-only). Use an app password from Yandex ID security settings.',
+    yandexLogin: 'Yandex login',
+    appPassword: 'App password',
+    connect: 'Connect',
+    yandexConnected: 'Connected; syncing events...',
+    yandexRejected: 'Yandex rejected the login or app password',
+    disconnectYandex: 'Disconnect Yandex?',
+    yandexDisconnected: 'Yandex Calendar disconnected',
+    userFallback: 'User',
+  },
+  ru: {
+    loadError: 'Не удалось загрузить настройки.',
+    timezone: 'Часовой пояс',
+    appLanguage: 'Язык приложения',
+    botReplies: 'Ответы бота',
+    replyAuto: 'Авто: язык каждого сообщения',
+    replyAppLocale: 'Язык приложения',
+    languageSaved: 'Язык сохранен',
+    languageSaveFailed: 'Не удалось сохранить язык',
+    replyLanguageSaved: 'Язык ответов сохранен',
+    replyLanguageSaveFailed: 'Не удалось сохранить язык ответов',
+    timezoneSaved: 'Часовой пояс сохранён',
+    saveFailed: 'Не удалось сохранить',
+    calendarSynced: 'Календарь синхронизирован — события уже в расписании',
+    calendarSyncFailed: 'Синхронизация не удалась — попробуй кнопку на странице Календарь',
+    googleConnected: 'Google подключен — синхронизирую календарь',
+    googleStartFailed: 'Не удалось начать подключение',
+    googleSecretMissing: 'Сначала положи client_secret.json в data/secrets (см. доку)',
+    publicUrlMissing: 'Нужен APP_PUBLIC_URL (HTTPS-туннель)',
+    status: 'Статус',
+    connected: 'Подключен',
+    disconnected: 'Не подключен',
+    error: 'Ошибка',
+    needsReauth: 'Нужна повторная авторизация',
+    lastSync: 'Последняя синхронизация',
+    googleInfo: 'Lumi получит доступ к почте (только чтение) и календарю. Один тап — откроется Google, разреши доступ и вернись сюда.',
+    waitingGoogle: 'Жду подтверждения в Google… статус обновится сам.',
+    connectGoogle: 'Подключить Google',
+    disconnectGoogle: 'Отключить Google?',
+    googleDisconnected: 'Google отключен',
+    googleDisconnectFailed: 'Не удалось отключить',
+    cancel: 'Отмена',
+    disconnect: 'Отключить',
+    yandexTitle: 'Яндекс.Календарь',
+    account: 'Аккаунт',
+    access: 'Доступ',
+    readOnlyCalDav: 'только чтение (CalDAV)',
+    yandexInfo: 'Lumi будет видеть занятость из Яндекс.Календаря (только чтение). Нужен пароль приложения: id.yandex.ru → Безопасность → Пароли приложений → «Календарь CalDAV».',
+    yandexLogin: 'Логин Яндекса',
+    appPassword: 'Пароль приложения',
+    connect: 'Подключить',
+    yandexConnected: 'Подключено! Синхронизирую события…',
+    yandexRejected: 'Яндекс отклонил логин или пароль приложения',
+    disconnectYandex: 'Отключить Яндекс?',
+    yandexDisconnected: 'Яндекс.Календарь отключен',
+    userFallback: 'Пользователь',
+  },
 };
 
 function shortScope(scope: string): string {
@@ -63,58 +166,27 @@ export default function SettingsPage() {
   const [googleConnecting, setGoogleConnecting] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const { show } = useToast();
-
-  if (settingsQuery.isPending) return <SkeletonList count={4} lines={3} />;
-  if (settingsQuery.isError) {
-    return <ErrorState message="Не удалось загрузить настройки." onRetry={() => void settingsQuery.refetch()} />;
-  }
-
-  const { user, google, yandex } = settingsQuery.data;
-  const displayName = [user.first_name, user.last_name].filter(Boolean).join(' ') || user.username || 'Пользователь';
-  const initial = (user.first_name ?? user.username ?? 'L').slice(0, 1).toUpperCase();
-  const timezones = COMMON_TIMEZONES.includes(user.timezone)
-    ? COMMON_TIMEZONES
-    : [user.timezone, ...COMMON_TIMEZONES];
-  const googleStatus = GOOGLE_STATUS_LABELS[google.status];
-  const yandexStatus = GOOGLE_STATUS_LABELS[yandex.status];
-  const yandexConnected = yandex.status === 'connected' || yandex.status === 'needs_reauth';
   const yandexSyncPoller = useRunPoller(yandexSyncRunId, [qk.eventsAll, qk.settings, qk.today]);
+  const queryClientForGoogle = useQueryClient();
+  const locale = normalizeAppLocale(settingsQuery.data?.user.locale);
+  const copy = COPY[locale];
+
   useEffect(() => {
     if (yandexSyncRunId === null) return;
     if (yandexSyncPoller.status === 'completed') {
-      show('Календарь синхронизирован — события уже в расписании', 'success');
+      show(copy.calendarSynced, 'success');
       setYandexSyncRunId(null);
     } else if (yandexSyncPoller.status === 'failed' || yandexSyncPoller.status === 'timeout') {
-      show('Синхронизация не удалась — попробуй кнопку на странице Календарь', 'error');
+      show(copy.calendarSyncFailed, 'error');
       setYandexSyncRunId(null);
     }
-  }, [yandexSyncPoller.status, yandexSyncRunId, show]);
+  }, [copy.calendarSyncFailed, copy.calendarSynced, yandexSyncPoller.status, yandexSyncRunId, show]);
 
-  const queryClientForGoogle = useQueryClient();
-  const handleGoogleConnect = () => {
-    api
-      .getGoogleAuthUrl()
-      .then(({ url }) => {
-        setGoogleConnecting(true);
-        openExternalLink(url);
-      })
-      .catch((e: unknown) => {
-        const code = e instanceof ApiError ? e.error : '';
-        show(
-          code === 'client_secret_missing'
-            ? 'Сначала положи client_secret.json в data/secrets (см. доку)'
-            : code === 'public_url_missing'
-              ? 'Нужен APP_PUBLIC_URL (HTTPS-туннель)'
-              : 'Не удалось начать подключение',
-          'error',
-        );
-      });
-  };
   useEffect(() => {
     if (!googleConnecting) return;
-    if (google.status === 'connected') {
+    if (settingsQuery.data?.google.status === 'connected') {
       setGoogleConnecting(false);
-      show('Google подключен — синхронизирую календарь', 'success');
+      show(copy.googleConnected, 'success');
       return;
     }
     const interval = setInterval(() => {
@@ -126,7 +198,51 @@ export default function SettingsPage() {
       clearTimeout(stop);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [googleConnecting, google.status]);
+  }, [copy.googleConnected, googleConnecting, settingsQuery.data?.google.status]);
+
+  if (settingsQuery.isPending) return <SkeletonList count={4} lines={3} />;
+  if (settingsQuery.isError) {
+    return <ErrorState message={copy.loadError} onRetry={() => void settingsQuery.refetch()} />;
+  }
+
+  const { user, google, yandex } = settingsQuery.data;
+  const displayName = [user.first_name, user.last_name].filter(Boolean).join(' ') || user.username || copy.userFallback;
+  const initial = (user.first_name ?? user.username ?? 'L').slice(0, 1).toUpperCase();
+  const timezones = COMMON_TIMEZONES.includes(user.timezone)
+    ? COMMON_TIMEZONES
+    : [user.timezone, ...COMMON_TIMEZONES];
+  const statusLabels: Record<GoogleStatus['status'], string> = {
+    connected: copy.connected,
+    disconnected: copy.disconnected,
+    error: copy.error,
+    needs_reauth: copy.needsReauth,
+  };
+  const googleStatus = { label: statusLabels[google.status], className: STATUS_CLASSES[google.status] };
+  const yandexStatus = { label: statusLabels[yandex.status], className: STATUS_CLASSES[yandex.status] };
+  const yandexConnected = yandex.status === 'connected' || yandex.status === 'needs_reauth';
+  const replyLanguageMode = typeof user.settings.reply_language_mode === 'string'
+    ? user.settings.reply_language_mode
+    : 'auto';
+
+  const handleGoogleConnect = () => {
+    api
+      .getGoogleAuthUrl()
+      .then(({ url }) => {
+        setGoogleConnecting(true);
+        openExternalLink(url);
+      })
+      .catch((e: unknown) => {
+        const code = e instanceof ApiError ? e.error : '';
+        show(
+          code === 'client_secret_missing'
+            ? copy.googleSecretMissing
+            : code === 'public_url_missing'
+              ? copy.publicUrlMissing
+              : copy.googleStartFailed,
+          'error',
+        );
+      });
+  };
 
   const handleYandexConnect = () => {
     connectYandex.mutate(
@@ -135,10 +251,30 @@ export default function SettingsPage() {
         onSuccess: (data) => {
           setYandexLogin('');
           setYandexPassword('');
-          show('Подключено! Синхронизирую события…', 'success');
+          show(copy.yandexConnected, 'success');
           if (data.run_id) setYandexSyncRunId(data.run_id);
         },
-        onError: () => show('Яндекс отклонил логин или пароль приложения', 'error'),
+        onError: () => show(copy.yandexRejected, 'error'),
+      },
+    );
+  };
+
+  const handleLocale = (locale: string) => {
+    patchSettings.mutate(
+      { locale },
+      {
+        onSuccess: () => show(copy.languageSaved, 'success'),
+        onError: () => show(copy.languageSaveFailed, 'error'),
+      },
+    );
+  };
+
+  const handleReplyLanguageMode = (reply_language_mode: string) => {
+    patchSettings.mutate(
+      { reply_language_mode: reply_language_mode as 'auto' | 'app_locale' },
+      {
+        onSuccess: () => show(copy.replyLanguageSaved, 'success'),
+        onError: () => show(copy.replyLanguageSaveFailed, 'error'),
       },
     );
   };
@@ -147,8 +283,8 @@ export default function SettingsPage() {
     patchSettings.mutate(
       { timezone },
       {
-        onSuccess: () => show('Часовой пояс сохранён', 'success'),
-        onError: () => show('Не удалось сохранить', 'error'),
+        onSuccess: () => show(copy.timezoneSaved, 'success'),
+        onError: () => show(copy.saveFailed, 'error'),
       },
     );
   };
@@ -168,13 +304,30 @@ export default function SettingsPage() {
             </div>
           </div>
           <label className="mt-4 block">
-            <FieldLabel>Часовой пояс</FieldLabel>
+            <FieldLabel>{copy.timezone}</FieldLabel>
             <Select
               value={user.timezone}
               onChange={handleTimezone}
               options={timezones.map((tz) => ({ value: tz, label: tz }))}
             />
           </label>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <label className="block">
+              <FieldLabel>{copy.appLanguage}</FieldLabel>
+              <Select value={user.locale || 'en'} onChange={handleLocale} options={LANGUAGE_OPTIONS} />
+            </label>
+            <label className="block">
+              <FieldLabel>{copy.botReplies}</FieldLabel>
+              <Select
+                value={replyLanguageMode}
+                onChange={handleReplyLanguageMode}
+                options={[
+                  { value: 'auto', label: copy.replyAuto },
+                  { value: 'app_locale', label: copy.replyAppLocale },
+                ]}
+              />
+            </label>
+          </div>
         </Card>
       </Rise>
 
@@ -183,7 +336,7 @@ export default function SettingsPage() {
         <SectionHeader title="Google" />
         <Card className="card-strong !p-0">
           <div className="flex min-h-[48px] items-center justify-between gap-3 px-4 py-2.5">
-            <span className="text-[13.5px] text-ink">Статус</span>
+            <span className="text-[13.5px] text-ink">{copy.status}</span>
             <span className={`rounded-full px-2.5 py-0.5 text-[11.5px] font-medium ${googleStatus.className}`}>
               {googleStatus.label}
             </span>
@@ -192,7 +345,7 @@ export default function SettingsPage() {
             <BoolRow label="Gmail" value={google.gmail_available} />
             <BoolRow label="Calendar" value={google.calendar_available} />
             <InfoRow
-              label="Последняя синхронизация"
+              label={copy.lastSync}
               value={google.last_sync_at ? formatRelative(google.last_sync_at) : '—'}
             />
           </div>
@@ -212,9 +365,9 @@ export default function SettingsPage() {
             {google.status === 'connected' || google.status === 'needs_reauth' || google.status === 'error' ? (
               confirmDisconnect ? (
                 <div className="flex items-center gap-2.5">
-                  <span className="mr-auto text-[13px] text-danger">Отключить Google?</span>
+                  <span className="mr-auto text-[13px] text-danger">{copy.disconnectGoogle}</span>
                   <Button size="sm" variant="ghost" onClick={() => setConfirmDisconnect(false)}>
-                    Отмена
+                    {copy.cancel}
                   </Button>
                   <Button
                     size="sm"
@@ -224,36 +377,35 @@ export default function SettingsPage() {
                       disconnectGoogle.mutate(undefined, {
                         onSuccess: () => {
                           setConfirmDisconnect(false);
-                          show('Google отключен', 'success');
+                          show(copy.googleDisconnected, 'success');
                         },
-                        onError: () => show('Не удалось отключить', 'error'),
+                        onError: () => show(copy.googleDisconnectFailed, 'error'),
                       })
                     }
                   >
-                    Отключить
+                    {copy.disconnect}
                   </Button>
                 </div>
               ) : (
                 <Button size="sm" variant="danger" onClick={() => setConfirmDisconnect(true)}>
-                  Отключить
+                  {copy.disconnect}
                 </Button>
               )
             ) : (
               <div>
                 <p className="text-[13px] leading-relaxed text-hint">
-                  Lumi получит доступ к почте (только чтение) и календарю. Один тап —
-                  откроется Google, разреши доступ и вернись сюда.
+                  {copy.googleInfo}
                 </p>
                 <Button
                   className="mt-3"
                   busy={googleConnecting}
                   onClick={handleGoogleConnect}
                 >
-                  Подключить Google
+                  {copy.connectGoogle}
                 </Button>
                 {googleConnecting && (
                   <p className="mt-2 text-[12.5px] text-hint">
-                    Жду подтверждения в Google… статус обновится сам.
+                    {copy.waitingGoogle}
                   </p>
                 )}
               </div>
@@ -264,10 +416,10 @@ export default function SettingsPage() {
 
       {/* Yandex Calendar */}
       <Rise>
-        <SectionHeader title="Яндекс.Календарь" />
+        <SectionHeader title={copy.yandexTitle} />
         <Card className="card-strong !p-0">
           <div className="flex min-h-[48px] items-center justify-between gap-3 px-4 py-2.5">
-            <span className="text-[13.5px] text-ink">Статус</span>
+            <span className="text-[13.5px] text-ink">{copy.status}</span>
             <span className={`rounded-full px-2.5 py-0.5 text-[11.5px] font-medium ${yandexStatus.className}`}>
               {yandexStatus.label}
             </span>
@@ -275,12 +427,12 @@ export default function SettingsPage() {
           {yandexConnected ? (
             <>
               <div className="divide-y divide-[var(--hairline)] border-t border-hairline">
-                <InfoRow label="Аккаунт" value={yandex.username ?? '—'} />
+                <InfoRow label={copy.account} value={yandex.username ?? '—'} />
                 <InfoRow
-                  label="Последняя синхронизация"
+                  label={copy.lastSync}
                   value={yandex.last_sync_at ? formatRelative(yandex.last_sync_at) : '—'}
                 />
-                <InfoRow label="Доступ" value="только чтение (CalDAV)" />
+                <InfoRow label={copy.access} value={copy.readOnlyCalDav} />
               </div>
               {yandex.last_error && (
                 <p className="border-t border-hairline px-4 py-3 text-[12.5px] leading-snug text-danger">
@@ -290,9 +442,9 @@ export default function SettingsPage() {
               <div className="border-t border-hairline px-4 py-3.5">
                 {confirmYandexDisconnect ? (
                   <div className="flex items-center gap-2.5">
-                    <span className="mr-auto text-[13px] text-danger">Отключить Яндекс?</span>
+                    <span className="mr-auto text-[13px] text-danger">{copy.disconnectYandex}</span>
                     <Button size="sm" variant="ghost" onClick={() => setConfirmYandexDisconnect(false)}>
-                      Отмена
+                      {copy.cancel}
                     </Button>
                     <Button
                       size="sm"
@@ -302,18 +454,18 @@ export default function SettingsPage() {
                         disconnectYandex.mutate(undefined, {
                           onSuccess: () => {
                             setConfirmYandexDisconnect(false);
-                            show('Яндекс.Календарь отключен', 'success');
+                            show(copy.yandexDisconnected, 'success');
                           },
-                          onError: () => show('Не удалось отключить', 'error'),
+                          onError: () => show(copy.googleDisconnectFailed, 'error'),
                         })
                       }
                     >
-                      Отключить
+                      {copy.disconnect}
                     </Button>
                   </div>
                 ) : (
                   <Button size="sm" variant="danger" onClick={() => setConfirmYandexDisconnect(true)}>
-                    Отключить
+                    {copy.disconnect}
                   </Button>
                 )}
               </div>
@@ -321,16 +473,14 @@ export default function SettingsPage() {
           ) : (
             <div className="space-y-3 border-t border-hairline px-4 py-3.5">
               <p className="text-[13px] leading-relaxed text-hint">
-                Lumi будет видеть занятость из Яндекс.Календаря (только чтение). Нужен{' '}
-                <span className="text-ink">пароль приложения</span>: id.yandex.ru → Безопасность →
-                Пароли приложений → «Календарь CalDAV».
+                {copy.yandexInfo}
               </p>
               <label className="block">
-                <FieldLabel>Логин Яндекса</FieldLabel>
+                <FieldLabel>{copy.yandexLogin}</FieldLabel>
                 <Input value={yandexLogin} onChange={setYandexLogin} placeholder="you@yandex.ru" />
               </label>
               <label className="block">
-                <FieldLabel>Пароль приложения</FieldLabel>
+                <FieldLabel>{copy.appPassword}</FieldLabel>
                 <Input
                   type="password"
                   value={yandexPassword}
@@ -344,7 +494,7 @@ export default function SettingsPage() {
                 disabled={yandexLogin.trim().length < 3 || yandexPassword.trim().length < 8}
                 onClick={handleYandexConnect}
               >
-                Подключить
+                {copy.connect}
               </Button>
             </div>
           )}

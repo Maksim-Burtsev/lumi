@@ -50,8 +50,16 @@ def fmt_local(dt: datetime | None, tz_name: str | None, fmt: str = "%d.%m %H:%M"
     return utc_to_local(dt, tz_name).strftime(fmt)
 
 
-def greeting_for(dt_local: datetime) -> str:
+def greeting_for(dt_local: datetime, locale: str | None = "ru") -> str:
     hour = dt_local.hour
+    if str(locale or "").lower().startswith("en"):
+        if 5 <= hour < 12:
+            return "Good morning"
+        if 12 <= hour < 18:
+            return "Good afternoon"
+        if 18 <= hour < 23:
+            return "Good evening"
+        return "Good night"
     if 5 <= hour < 12:
         return "Доброе утро"
     if 12 <= hour < 18:

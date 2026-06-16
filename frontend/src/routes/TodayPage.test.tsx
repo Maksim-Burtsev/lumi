@@ -4,12 +4,45 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
-import type { ConfirmationDecisionResponse, TodayResponse } from '../api/types';
+import type { ConfirmationDecisionResponse, SettingsResponse, TodayResponse, User } from '../api/types';
 import { ToastProvider } from '../components/ui/Toast';
 import TodayPage from './TodayPage';
 
 const firstConfirmationId = '11111111-1111-4111-8111-111111111111';
 const secondConfirmationId = '22222222-2222-4222-8222-222222222222';
+
+function makeUser(locale: 'en' | 'ru' = 'ru'): User {
+  return {
+    id: '33333333-3333-4333-8333-333333333333',
+    telegram_user_id: 777000,
+    username: 'tester',
+    first_name: 'Test',
+    last_name: 'User',
+    timezone: 'Asia/Yerevan',
+    locale,
+    settings: { reply_language_mode: 'auto' },
+    created_at: '2026-06-12T00:00:00Z',
+    last_seen_at: null,
+  };
+}
+
+function makeSettingsResponse(locale: 'en' | 'ru' = 'ru'): SettingsResponse {
+  return {
+    user: makeUser(locale),
+    llm: { provider: 'mock', model: 'mock-1', configured: true },
+    google: {
+      status: 'disconnected',
+      gmail_available: false,
+      calendar_available: false,
+      scopes: [],
+      last_sync_at: null,
+      last_error: null,
+    },
+    yandex: { status: 'disconnected', username: null, last_sync_at: null, last_error: null },
+    flags: { store_email_bodies: false, store_llm_debug_payloads: false, dev_auth: true },
+    app: { public_url: null, env: 'local' },
+  };
+}
 
 function makeTodayResponse(overrides: Partial<TodayResponse> = {}): TodayResponse {
   return {
@@ -93,7 +126,8 @@ function makeRejectResponse(): ConfirmationDecisionResponse {
   };
 }
 
-function renderTodayPage() {
+function renderTodayPage(locale: 'en' | 'ru' = 'ru') {
+  vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettingsResponse(locale));
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -181,6 +215,26 @@ describe('TodayPage timeline gaps', () => {
     expect(screen.getByText('15:00–15:30')).toBeInTheDocument();
     expect(screen.queryByText('14:30–14:45')).not.toBeInTheDocument();
     expect(screen.getByText('Daily MT')).toBeInTheDocument();
+  });
+});
+
+describe('TodayPage locale', () => {
+  it('renders the empty state in English when the app locale is English', async () => {
+    vi.spyOn(api, 'getToday').mockResolvedValue(
+      makeTodayResponse({
+        greeting: 'Good evening',
+        needs_attention: [],
+        suggestions: [],
+        timeline: [],
+      }),
+    );
+
+    renderTodayPage('en');
+
+    expect(await screen.findByText('No meetings or blocks today')).toBeInTheDocument();
+    expect(screen.getByText('Build plan')).toBeInTheDocument();
+    expect(screen.getByText('Nothing urgent — everything is under control')).toBeInTheDocument();
+    expect(screen.queryByText('Сегодня нет встреч и блоков')).not.toBeInTheDocument();
   });
 });
 

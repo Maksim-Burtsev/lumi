@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lumi.api.deps import get_current_user, get_db
 from lumi.api.serializers import confirmation_to_dict
 from lumi.db.models import ConfirmationStatus, User
+from lumi.i18n import normalize_app_locale
 from lumi.services.confirmation_executor import ConfirmationExecutor
 from lumi.services.confirmations import ConfirmationService
 
@@ -40,19 +41,20 @@ async def accept_confirmation(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
+    locale = normalize_app_locale(user.locale)
     service = ConfirmationService(session)
     confirmation = await _get_pending_confirmation(confirmation_id, user, session)
     confirmation = await service.decide(user, confirmation, accept=True)
     if confirmation.status == ConfirmationStatus.EXPIRED:
         return {
-            "confirmation": confirmation_to_dict(confirmation),
-            "result_text": "Это предложение уже истекло.",
+            "confirmation": confirmation_to_dict(confirmation, locale=locale),
+            "result_text": _text(locale, "This suggestion has expired.", "Это предложение уже истекло."),
             "executed": False,
         }
 
     result_text = await ConfirmationExecutor(session).execute(user, confirmation)
     return {
-        "confirmation": confirmation_to_dict(confirmation),
+        "confirmation": confirmation_to_dict(confirmation, locale=locale),
         "result_text": result_text,
         "executed": True,
     }
@@ -64,12 +66,21 @@ async def reject_confirmation(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
+    locale = normalize_app_locale(user.locale)
     service = ConfirmationService(session)
     confirmation = await _get_pending_confirmation(confirmation_id, user, session)
     confirmation = await service.decide(user, confirmation, accept=False)
-    result_text = "Это предложение уже истекло." if confirmation.status == ConfirmationStatus.EXPIRED else "Ок, не делаю."
+    result_text = (
+        _text(locale, "This suggestion has expired.", "Это предложение уже истекло.")
+        if confirmation.status == ConfirmationStatus.EXPIRED
+        else _text(locale, "Ok, I won't do it.", "Ок, не делаю.")
+    )
     return {
-        "confirmation": confirmation_to_dict(confirmation),
+        "confirmation": confirmation_to_dict(confirmation, locale=locale),
         "result_text": result_text,
         "executed": False,
     }
+
+
+def _text(locale: str, en: str, ru: str) -> str:
+    return en if locale == "en" else ru

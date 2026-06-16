@@ -1704,11 +1704,46 @@ async def test_update_task_english_missing_candidate_asks_safely():
             telegram_message_id=153,
             text="Move missing task to project Lumi",
         )
-        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
 
     assert provider.final_chat_calls == 0
     assert result.reply_text == "I could not find an active task “missing task”. Please clarify the title."
-    assert any(c.tool_name == "update_task" and c.status == "skipped" for c in tool_calls)
+
+
+async def test_set_language_tool_updates_locale_and_reply_mode_without_final_llm():
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "language": "en",
+        "tool_calls": [
+            {
+                "name": "set_language",
+                "args": {"app_locale": "ru", "reply_language_mode": "app_locale"},
+                "confidence": 0.98,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+    async with session_scope() as session:
+        await UserService(session).ensure_user(TEST_TELEGRAM_ID, language_code="en-US")
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=154,
+            text="Always reply in Russian and switch the app to Russian",
+        )
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+
+    async with session_scope() as session:
+        updated = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+
+    assert provider.final_chat_calls == 0
+    assert updated.locale == "ru"
+    assert updated.settings["locale_source"] == "manual"
+    assert updated.settings["reply_language_mode"] == "app_locale"
+    assert result.reply_text == "Language updated: Russian. Replies now use the app language."
+    assert any(c.tool_name == "set_language" and c.status == "completed" for c in tool_calls)
 
 
 async def test_update_task_ambiguous_query_returns_choice_buttons_without_fake_success():

@@ -51,12 +51,19 @@ from lumi.db.models import (
     TaskStatus,
     User,
 )
+from lumi.i18n import (
+    ensure_language_settings,
+    format_language_settings_reply,
+    normalize_reply_language,
+    normalize_reply_language_mode,
+    validate_app_locale,
+)
 from lumi.llm.gateway import LLMGateway
 from lumi.logging import agent_run_id_var, get_logger
 from lumi.services.calendar import CalendarService
 from lumi.services.confirmations import ConfirmationService
 from lumi.services.planning import CalendarSyncService, PlanningService
-from lumi.services.realtime import commit_with_realtime
+from lumi.services.realtime import RealtimeEventService, commit_with_realtime
 from lumi.services.runs import RunService
 from lumi.services.task_update_replies import (
     format_task_bulk_update_reply,
@@ -283,9 +290,30 @@ def _reply_result(reply_text: str, *, run_id: uuid.UUID, needs_compaction: bool)
     )
 
 
-def _safe_action_failure_reply(user: User, reason: str) -> str:
-    locale = (user.locale or "ru").lower()
-    english = locale.startswith("en")
+def _infer_message_language(text: str) -> str | None:
+    cyrillic = sum(1 for char in text if "\u0400" <= char <= "\u04ff")
+    latin = sum(1 for char in text if ("a" <= char.lower() <= "z"))
+    if cyrillic >= 2 and cyrillic >= latin:
+        return "ru"
+    if latin >= 2:
+        return "en"
+    return None
+
+
+def _reply_language_for_turn(user: User, text: str, planner_language: str | None) -> str:
+    language_settings = ensure_language_settings(user.settings)
+    if language_settings.get("reply_language_mode") == "app_locale":
+        return normalize_reply_language(user.locale)
+    return _infer_message_language(text) or normalize_reply_language(planner_language)
+
+
+def _with_reply_language(user: User, text: str, plan: AgentPlan) -> AgentPlan:
+    language = _reply_language_for_turn(user, text, plan.language)
+    return plan if plan.language == language else plan.model_copy(update={"language": language})
+
+
+def _safe_action_failure_reply(language: str | None, reason: str) -> str:
+    english = _language_is_english(language)
     if reason == "low_confidence":
         return (
             "Did not perform the action: planner confidence was too low."
@@ -299,9 +327,8 @@ def _safe_action_failure_reply(user: User, reason: str) -> str:
     )
 
 
-def _safe_no_answer_reply(user: User) -> str:
-    locale = (user.locale or "ru").lower()
-    if locale.startswith("en"):
+def _safe_no_answer_reply(language: str | None) -> str:
+    if _language_is_english(language):
         return "I could not choose a safe response. Please rephrase."
     return "Не смог безопасно выбрать ответ. Переформулируй запрос."
 
@@ -524,6 +551,7 @@ class AssistantOrchestrator:
             stage="initial",
             planner_context=planner_context,
         )
+        plan = _with_reply_language(user, text, plan)
         selected_media = _selected_or_current_media(plan, available_media, current_media)
         focused_question_override: str | None = None
         if selected_media is None and available_media and text.strip():
@@ -606,6 +634,7 @@ class AssistantOrchestrator:
                 stage="after_media_understanding",
                 planner_context=planner_context,
             )
+            plan = _with_reply_language(user, text, plan)
             selected_media = _selected_or_current_media(plan, available_media, selected_media)
             if selected_media is not None:
                 selected_image = selected_media.image or selected_image
@@ -799,7 +828,7 @@ class AssistantOrchestrator:
         )
 
         if not action_results and plan.mode == "tool_calls":
-            reply_text = _safe_action_failure_reply(user, "missing_tool")
+            reply_text = _safe_action_failure_reply(plan.language, "missing_tool")
             outbound = Message(
                 conversation_id=conversation.id,
                 user_id=user.id,
@@ -860,7 +889,7 @@ class AssistantOrchestrator:
             )
 
         if not action_results and not plan.final_answer:
-            reply_text = _safe_no_answer_reply(user)
+            reply_text = _safe_no_answer_reply(plan.language)
             outbound = Message(
                 conversation_id=conversation.id,
                 user_id=user.id,
@@ -1175,8 +1204,87 @@ class AssistantOrchestrator:
                     request=request,
                     results=results,
                 )
+            elif call.name == "set_language":
+                await self._apply_set_language_tool(
+                    user=user,
+                    run=run,
+                    call=call,
+                    language=plan.language,
+                    results=results,
+                )
 
         return results, buttons, rich_html
+
+    async def _apply_set_language_tool(
+        self,
+        *,
+        user: User,
+        run,
+        call: PlannedToolCall,
+        language: str,
+        results: list[str],
+    ) -> None:
+        args = dict(call.args)
+        updates: dict[str, str] = {}
+        current_settings = ensure_language_settings(user.settings)
+        app_locale_raw = args.get("app_locale") or args.get("locale")
+        if app_locale_raw is not None:
+            try:
+                app_locale = validate_app_locale(str(app_locale_raw))
+            except ValueError:
+                await self.runs.log_tool_call(
+                    run=run,
+                    tool_name="set_language",
+                    status="skipped",
+                    args=args,
+                    result={"reason": "unsupported_locale"},
+                )
+                if _language_is_english(language):
+                    results.append("Unsupported app language. Use English or Russian.")
+                else:
+                    results.append("Неподдерживаемый язык приложения. Доступны английский и русский.")
+                return
+            user.locale = app_locale
+            current_settings["locale_source"] = "manual"
+            updates["app_locale"] = app_locale
+        mode_raw = args.get("reply_language_mode")
+        if mode_raw is not None:
+            mode = normalize_reply_language_mode(str(mode_raw))
+            current_settings["reply_language_mode"] = mode
+            updates["reply_language_mode"] = mode
+        if not updates:
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name="set_language",
+                status="skipped",
+                args=args,
+                result={"reason": "no_language_updates"},
+            )
+            if _language_is_english(language):
+                results.append("I did not understand which language setting to change.")
+            else:
+                results.append("Не понял, какую языковую настройку изменить.")
+            return
+
+        user.settings = current_settings
+        await self.runs.log_tool_call(
+            run=run,
+            tool_name="set_language",
+            status="completed",
+            args=args,
+            result={"locale": user.locale, "reply_language_mode": user.settings["reply_language_mode"]},
+        )
+        await RealtimeEventService(self.session).emit(
+            user_id=user.id,
+            topics=["settings"],
+            event_type="settings.updated",
+            payload={},
+        )
+        results.append(format_language_settings_reply(
+            app_locale=user.locale,
+            reply_language_mode=str(user.settings.get("reply_language_mode") or "auto"),
+            language=language,
+        ))
 
     async def _apply_create_task_tool(
         self,
@@ -1257,7 +1365,7 @@ class AssistantOrchestrator:
                 args=args,
                 result={"reason": "low_confidence"},
             )
-            results.append(_safe_action_failure_reply(user, "low_confidence"))
+            results.append(_safe_action_failure_reply(language, "low_confidence"))
 
     async def _apply_read_tasks_tool(
         self,
