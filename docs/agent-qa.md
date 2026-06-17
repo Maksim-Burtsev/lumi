@@ -23,6 +23,9 @@ git worktree add -b codex/<task> .worktrees/<task> main
 cd .worktrees/<task>
 ```
 
+Перед запуском compose в новом worktree скопируй `.env` из основного checkout,
+если файла нет: из `.worktrees/<task>` выполни `cp ../../.env .env`.
+
 Используй override с отдельными портами:
 
 ```bash
