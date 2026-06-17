@@ -28,6 +28,31 @@ async def test_invalid_cron_rejected(user):
             )
 
 
+async def test_invalid_timezone_rejected_on_create(user):
+    async with session_scope() as session:
+        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        with pytest.raises(ValueError, match="invalid_timezone"):
+            await AutomationService(session).create(
+                u,
+                type_="news_digest",
+                title="x",
+                cron_expression="30 8 * * 1-5",
+                timezone="Mars/Olympus",
+            )
+
+
+async def test_invalid_timezone_rejected_on_update(user):
+    async with session_scope() as session:
+        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        service = AutomationService(session)
+        automation = await service.create(
+            u, type_="news_digest", title="Утро", cron_expression="30 8 * * 1-5"
+        )
+
+        with pytest.raises(ValueError, match="invalid_timezone"):
+            await service.update(u, automation, {"timezone": "Mars/Olympus"})
+
+
 async def test_due_and_lock(user):
     async with session_scope() as session:
         u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)

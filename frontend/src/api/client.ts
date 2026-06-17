@@ -36,6 +36,7 @@ import type {
   TaskFilter,
   TaskResponse,
   TasksResponse,
+  TimezonesResponse,
   TodayResponse,
 } from './types';
 
@@ -137,6 +138,10 @@ export class LumiApiClient {
 
   getSettings(): Promise<SettingsResponse> {
     return request('GET', '/api/settings');
+  }
+
+  getTimezones(): Promise<TimezonesResponse> {
+    return request('GET', '/api/timezones');
   }
 
   patchSettings(input: PatchSettingsInput): Promise<MeResponse> {

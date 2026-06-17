@@ -90,6 +90,34 @@ async def test_me(client):
     assert response.json()["user"]["telegram_user_id"] == TEST_TELEGRAM_ID
 
 
+async def test_patch_settings_accepts_valid_timezone(client):
+    response = await client.patch("/api/settings", json={"timezone": "Asia/Yerevan"})
+
+    assert response.status_code == 200
+    assert response.json()["user"]["timezone"] == "Asia/Yerevan"
+
+
+async def test_patch_settings_rejects_invalid_timezone(client):
+    response = await client.patch("/api/settings", json={"timezone": "Mars/Olympus"})
+
+    assert response.status_code == 422
+    assert response.json() == {"error": "invalid_timezone"}
+
+
+async def test_timezones_endpoint_returns_full_selectable_list(client):
+    response = await client.get("/api/timezones")
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    ids = [item["id"] for item in items]
+    assert len(ids) > 300
+    assert ids == sorted(ids)
+    assert "UTC" in ids
+    assert "Asia/Yerevan" in ids
+    assert "Pacific/Chatham" in ids
+    assert not any(tz.startswith(("posix/", "right/")) for tz in ids)
+
+
 async def test_today_shape(client):
     response = await client.get("/api/today")
     assert response.status_code == 200

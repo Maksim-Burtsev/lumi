@@ -1,11 +1,21 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
 import type { MeResponse, SettingsResponse, User } from '../api/types';
 import { ToastProvider } from '../components/ui/Toast';
 import SettingsPage from './SettingsPage';
+
+const TIMEZONES_RESPONSE = {
+  items: [
+    { id: 'Asia/Yerevan' },
+    { id: 'America/St_Johns' },
+    { id: 'Asia/Kathmandu' },
+    { id: 'Pacific/Chatham' },
+    { id: 'UTC' },
+  ],
+};
 
 function makeUser(overrides: Partial<User> = {}): User {
   return {
@@ -60,11 +70,18 @@ function renderSettingsPage() {
   return queryClient;
 }
 
+beforeEach(() => {
+  vi.restoreAllMocks();
+  localStorage.clear();
+  sessionStorage.clear();
+});
+
 describe('SettingsPage language settings', () => {
   it('lets the user change app language and bot reply mode', async () => {
     const user = userEvent.setup();
     vi.spyOn(api, 'health').mockResolvedValue({ status: 'ok', app: 'Lumi', env: 'local', version: '0.1.0' });
     vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettingsResponse());
+    vi.spyOn(api, 'getTimezones').mockResolvedValue(TIMEZONES_RESPONSE);
     const patchSpy = vi.spyOn(api, 'patchSettings').mockImplementation(async (input): Promise<MeResponse> => ({
       user: makeUser({
         locale: input.locale ?? 'en',
@@ -88,6 +105,26 @@ describe('SettingsPage language settings', () => {
 
     await waitFor(() => {
       expect(patchSpy).toHaveBeenCalledWith({ reply_language_mode: 'app_locale' });
+    });
+  });
+
+  it('lets the user search and select a rare timezone', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'health').mockResolvedValue({ status: 'ok', app: 'Lumi', env: 'local', version: '0.1.0' });
+    vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettingsResponse());
+    vi.spyOn(api, 'getTimezones').mockResolvedValue(TIMEZONES_RESPONSE);
+    const patchSpy = vi.spyOn(api, 'patchSettings').mockImplementation(async (input): Promise<MeResponse> => ({
+      user: makeUser({ timezone: input.timezone ?? 'Asia/Yerevan' }),
+    }));
+
+    renderSettingsPage();
+
+    await user.click(await screen.findByRole('button', { name: /change time zone/i }));
+    await user.type(screen.getByPlaceholderText('Search city or time zone'), 'Chatham');
+    await user.click(await screen.findByRole('button', { name: /Pacific\/Chatham/i }));
+
+    await waitFor(() => {
+      expect(patchSpy).toHaveBeenCalledWith({ timezone: 'Pacific/Chatham' });
     });
   });
 });

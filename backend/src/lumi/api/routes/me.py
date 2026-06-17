@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +20,7 @@ from lumi.i18n import (
     validate_app_locale,
 )
 from lumi.services.realtime import RealtimeEventService
+from lumi.utils.time import selectable_timezone_names, validate_timezone_name
 
 router = APIRouter()
 
@@ -59,6 +60,11 @@ async def get_app_settings(
     }
 
 
+@router.get("/timezones")
+async def list_timezones() -> dict:
+    return {"items": [{"id": tz} for tz in selectable_timezone_names()]}
+
+
 class SettingsPatch(BaseModel):
     timezone: str | None = None
     locale: str | None = None
@@ -78,10 +84,10 @@ async def patch_settings(
     session: AsyncSession = Depends(get_db),
 ) -> dict:
     if payload.timezone:
-        from lumi.utils.time import get_zone
-
-        get_zone(payload.timezone)  # validates / falls back
-        user.timezone = payload.timezone
+        try:
+            user.timezone = validate_timezone_name(payload.timezone)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="invalid_timezone") from exc
     if payload.locale:
         user.locale = payload.locale
         user.settings = {**ensure_language_settings(user.settings), "locale_source": "manual"}

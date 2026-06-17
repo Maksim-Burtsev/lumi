@@ -83,32 +83,3 @@ export const PRIORITY_LABELS: Record<string, string> = {
   high: 'высокий',
   urgent: 'срочно',
 };
-
-/** Common timezone choices for the Settings select. */
-export const COMMON_TIMEZONES: string[] = [
-  'Europe/Moscow',
-  'Europe/Kaliningrad',
-  'Europe/Samara',
-  'Asia/Yekaterinburg',
-  'Asia/Novosibirsk',
-  'Asia/Krasnoyarsk',
-  'Asia/Irkutsk',
-  'Asia/Vladivostok',
-  'Europe/Kyiv',
-  'Europe/Minsk',
-  'Europe/Belgrade',
-  'Europe/Berlin',
-  'Europe/Paris',
-  'Europe/London',
-  'Europe/Lisbon',
-  'Asia/Tbilisi',
-  'Asia/Yerevan',
-  'Asia/Almaty',
-  'Asia/Tashkent',
-  'Asia/Dubai',
-  'Asia/Bangkok',
-  'Asia/Singapore',
-  'America/New_York',
-  'America/Los_Angeles',
-  'UTC',
-];

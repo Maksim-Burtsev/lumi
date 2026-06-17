@@ -3,9 +3,38 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, time, timedelta
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from functools import lru_cache
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 DEFAULT_TZ = "Europe/Moscow"
+_EXCLUDED_TZ_PREFIXES = ("posix/", "right/")
+_EXCLUDED_TZ_NAMES = {"Factory", "localtime"}
+
+
+def _is_selectable_timezone(tz_name: str) -> bool:
+    return (
+        bool(tz_name)
+        and not tz_name.startswith(_EXCLUDED_TZ_PREFIXES)
+        and tz_name not in _EXCLUDED_TZ_NAMES
+    )
+
+
+@lru_cache(maxsize=1)
+def selectable_timezone_names() -> tuple[str, ...]:
+    zones = {tz for tz in available_timezones() if _is_selectable_timezone(tz)}
+    zones.add("UTC")
+    return tuple(sorted(zones))
+
+
+def validate_timezone_name(tz_name: str | None) -> str:
+    candidate = (tz_name or "").strip()
+    if not _is_selectable_timezone(candidate):
+        raise ValueError("invalid_timezone")
+    try:
+        ZoneInfo(candidate)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError("invalid_timezone") from exc
+    return candidate
 
 
 def get_zone(tz_name: str | None) -> ZoneInfo:

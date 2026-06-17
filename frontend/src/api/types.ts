@@ -73,6 +73,14 @@ export interface SettingsResponse {
   app: AppInfo;
 }
 
+export interface TimezoneItem {
+  id: string;
+}
+
+export interface TimezonesResponse {
+  items: TimezoneItem[];
+}
+
 export interface PatchSettingsInput {
   timezone?: string;
   locale?: string;

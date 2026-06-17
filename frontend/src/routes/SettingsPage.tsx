@@ -9,13 +9,13 @@ import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { ErrorState } from '../components/ui/ErrorState';
 import { FieldLabel, Input, Select } from '../components/ui/Field';
+import { TimezonePicker } from '../components/settings/TimezonePicker';
 import { SectionHeader } from '../components/ui/SectionHeader';
 import { SkeletonList } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
 import { formatRelative } from '../lib/format';
 import { normalizeAppLocale } from '../lib/i18n';
-import { COMMON_TIMEZONES } from '../lib/labels';
 
 function BoolRow({ label, value }: { label: string; value: boolean }) {
   return (
@@ -208,9 +208,6 @@ export default function SettingsPage() {
   const { user, google, yandex } = settingsQuery.data;
   const displayName = [user.first_name, user.last_name].filter(Boolean).join(' ') || user.username || copy.userFallback;
   const initial = (user.first_name ?? user.username ?? 'L').slice(0, 1).toUpperCase();
-  const timezones = COMMON_TIMEZONES.includes(user.timezone)
-    ? COMMON_TIMEZONES
-    : [user.timezone, ...COMMON_TIMEZONES];
   const statusLabels: Record<GoogleStatus['status'], string> = {
     connected: copy.connected,
     disconnected: copy.disconnected,
@@ -305,10 +302,10 @@ export default function SettingsPage() {
           </div>
           <label className="mt-4 block">
             <FieldLabel>{copy.timezone}</FieldLabel>
-            <Select
+            <TimezonePicker
               value={user.timezone}
               onChange={handleTimezone}
-              options={timezones.map((tz) => ({ value: tz, label: tz }))}
+              locale={locale}
             />
           </label>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">

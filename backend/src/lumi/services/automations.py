@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lumi.db.models import ScheduledTask, ScheduledTaskType, User
 from lumi.services.audit import AuditService
 from lumi.services.realtime import RealtimeEventService
-from lumi.utils.time import get_zone, utc_now
+from lumi.utils.time import get_zone, utc_now, validate_timezone_name
 
 
 def compute_next_run(cron_expression: str, tz_name: str, *, after: datetime | None = None) -> datetime:
@@ -62,7 +62,7 @@ class AutomationService:
         run_at: datetime | None = None,
         actor: str = "user",
     ) -> ScheduledTask:
-        tz_name = timezone or user.timezone
+        tz_name = validate_timezone_name(timezone or user.timezone)
         config = dict(config or {})
         if run_at is not None:
             # One-shot: fire once at run_at, scheduler disables it afterwards.
@@ -123,10 +123,13 @@ class AutomationService:
     async def update(
         self, user: User, task: ScheduledTask, updates: dict[str, Any], *, actor: str = "user"
     ) -> ScheduledTask:
+        updates = dict(updates)
         if "cron_expression" in updates and updates["cron_expression"]:
             if not croniter.is_valid(updates["cron_expression"]):
                 raise ValueError(f"invalid cron expression: {updates['cron_expression']}")
             task.cron_expression = updates["cron_expression"]
+        if "timezone" in updates and updates["timezone"] is not None:
+            updates["timezone"] = validate_timezone_name(updates["timezone"])
         for key in ("title", "timezone", "config"):
             if key in updates and updates[key] is not None:
                 setattr(task, key, updates[key])

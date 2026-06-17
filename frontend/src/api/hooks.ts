@@ -18,6 +18,7 @@ import type {
   Task,
   TaskFilter,
   TasksResponse,
+  TimezonesResponse,
   TodayResponse,
 } from './types';
 import { haptic } from '../telegram/webapp';
@@ -28,6 +29,7 @@ import { useToast } from '../components/ui/Toast';
 export const qk = {
   health: ['health'] as const,
   settings: ['settings'] as const,
+  timezones: ['timezones'] as const,
   today: ['today'] as const,
   tasksAll: ['tasks'] as const,
   tasks: (filter: TaskFilter) => ['tasks', filter] as const,
@@ -152,31 +154,12 @@ export function useSettings() {
   return useQuery({ queryKey: qk.settings, queryFn: () => api.getSettings() });
 }
 
-/**
- * One-shot per session: if the device timezone differs from the profile,
- * silently update the profile so "today" and reminders match the user's clock.
- */
-export function useAutoTimezone() {
-  const settingsQuery = useSettings();
-  const patch = usePatchSettings();
-  useEffect(() => {
-    const data = settingsQuery.data;
-    if (!data) return;
-    if (sessionStorage.getItem('lumi-tz-checked')) return;
-    let deviceTz: string | undefined;
-    try {
-      deviceTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    } catch {
-      return;
-    }
-    if (!deviceTz || deviceTz === data.user.timezone) {
-      sessionStorage.setItem('lumi-tz-checked', '1');
-      return;
-    }
-    sessionStorage.setItem('lumi-tz-checked', '1');
-    patch.mutate({ timezone: deviceTz });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settingsQuery.data]);
+export function useTimezones() {
+  return useQuery<TimezonesResponse>({
+    queryKey: qk.timezones,
+    queryFn: () => api.getTimezones(),
+    staleTime: Infinity,
+  });
 }
 
 export function useToday() {
