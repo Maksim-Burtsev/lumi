@@ -26,7 +26,7 @@ function makeUser(overrides: Partial<User> = {}): User {
     last_name: 'User',
     timezone: 'Asia/Yerevan',
     locale: 'en',
-    settings: { reply_language_mode: 'auto' },
+    settings: { reply_language_mode: 'auto', time_format: '24h' },
     created_at: '2026-06-12T00:00:00Z',
     last_seen_at: null,
     ...overrides,
@@ -87,6 +87,7 @@ describe('SettingsPage language settings', () => {
         locale: input.locale ?? 'en',
         settings: {
           reply_language_mode: input.reply_language_mode ?? 'auto',
+          time_format: '24h',
           locale_source: input.locale ? 'manual' : 'telegram',
         },
       }),
@@ -125,6 +126,30 @@ describe('SettingsPage language settings', () => {
 
     await waitFor(() => {
       expect(patchSpy).toHaveBeenCalledWith({ timezone: 'Pacific/Chatham' });
+    });
+  });
+
+  it('lets the user switch to a 12-hour time format', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'health').mockResolvedValue({ status: 'ok', app: 'Lumi', env: 'local', version: '0.1.0' });
+    vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettingsResponse());
+    vi.spyOn(api, 'getTimezones').mockResolvedValue(TIMEZONES_RESPONSE);
+    const patchSpy = vi.spyOn(api, 'patchSettings').mockImplementation(async (input): Promise<MeResponse> => ({
+      user: makeUser({
+        settings: {
+          reply_language_mode: 'auto',
+          time_format: input.time_format ?? '24h',
+        },
+      }),
+    }));
+
+    renderSettingsPage();
+
+    expect(await screen.findByText('Time format')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '12 hours' }));
+
+    await waitFor(() => {
+      expect(patchSpy).toHaveBeenCalledWith({ time_format: '12h' });
     });
   });
 });

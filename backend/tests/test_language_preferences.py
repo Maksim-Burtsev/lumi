@@ -5,6 +5,7 @@ from lumi.api.routes.me import SettingsPatch, patch_settings
 from lumi.i18n import (
     DEFAULT_APP_LOCALE,
     DEFAULT_REPLY_LANGUAGE_MODE,
+    DEFAULT_TIME_FORMAT,
     normalize_app_locale,
     normalize_reply_language,
 )
@@ -39,6 +40,7 @@ async def test_new_user_locale_comes_from_telegram_or_defaults_to_english(db_ses
     assert english.locale == "en"
     assert english.settings["locale_source"] == "telegram"
     assert english.settings["reply_language_mode"] == DEFAULT_REPLY_LANGUAGE_MODE
+    assert english.settings["time_format"] == DEFAULT_TIME_FORMAT
     assert russian.locale == "ru"
     assert unsupported.locale == "en"
     assert missing.locale == "en"

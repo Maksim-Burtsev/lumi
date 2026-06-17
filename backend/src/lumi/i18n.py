@@ -7,7 +7,10 @@ from typing import Literal
 DEFAULT_APP_LOCALE = "en"
 SUPPORTED_APP_LOCALES = ("en", "ru")
 DEFAULT_REPLY_LANGUAGE_MODE = "auto"
+DEFAULT_TIME_FORMAT = "24h"
+SUPPORTED_TIME_FORMATS = ("24h", "12h")
 ReplyLanguageMode = Literal["auto", "app_locale"]
+TimeFormat = Literal["24h", "12h"]
 
 
 def primary_language_tag(value: str | None) -> str | None:
@@ -46,13 +49,28 @@ def normalize_reply_language_mode(value: str | None) -> ReplyLanguageMode:
     return DEFAULT_REPLY_LANGUAGE_MODE
 
 
+def normalize_time_format(value: str | None) -> TimeFormat:
+    if value == "12h":
+        return "12h"
+    return DEFAULT_TIME_FORMAT
+
+
+def validate_time_format(value: str | None) -> TimeFormat:
+    if value in SUPPORTED_TIME_FORMATS:
+        return value
+    supported = ", ".join(SUPPORTED_TIME_FORMATS)
+    raise ValueError(f"unsupported time format; expected one of: {supported}")
+
+
 def ensure_language_settings(settings: dict | None) -> dict:
     merged = dict(settings or {})
     merged.setdefault("locale_source", "telegram")
     merged.setdefault("reply_language_mode", DEFAULT_REPLY_LANGUAGE_MODE)
+    merged.setdefault("time_format", DEFAULT_TIME_FORMAT)
     merged["reply_language_mode"] = normalize_reply_language_mode(
         str(merged.get("reply_language_mode") or "")
     )
+    merged["time_format"] = normalize_time_format(str(merged.get("time_format") or ""))
     return merged
 
 

@@ -4,17 +4,18 @@ import { useQueryClient } from '@tanstack/react-query';
 import { ApiError, api } from '../api/client';
 import { openExternalLink } from '../telegram/webapp';
 import { qk, useConnectYandex, useDisconnectGoogle, useDisconnectYandex, useHealth, usePatchSettings, useRunPoller, useSettings } from '../api/hooks';
-import type { GoogleStatus } from '../api/types';
+import type { GoogleStatus, TimeFormat } from '../api/types';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { ErrorState } from '../components/ui/ErrorState';
 import { FieldLabel, Input, Select } from '../components/ui/Field';
+import { TimeFormatControl } from '../components/settings/TimeFormatControl';
 import { TimezonePicker } from '../components/settings/TimezonePicker';
 import { SectionHeader } from '../components/ui/SectionHeader';
 import { SkeletonList } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
-import { formatRelative } from '../lib/format';
+import { formatRelative, normalizeTimeFormat } from '../lib/format';
 import { normalizeAppLocale } from '../lib/i18n';
 
 function BoolRow({ label, value }: { label: string; value: boolean }) {
@@ -55,6 +56,7 @@ const COPY = {
   en: {
     loadError: 'Could not load settings.',
     timezone: 'Time zone',
+    timeFormat: 'Time format',
     appLanguage: 'App language',
     botReplies: 'Bot replies',
     replyAuto: 'Auto: match each message',
@@ -64,6 +66,7 @@ const COPY = {
     replyLanguageSaved: 'Reply language saved',
     replyLanguageSaveFailed: 'Could not save reply language',
     timezoneSaved: 'Time zone saved',
+    timeFormatSaved: 'Time format saved',
     saveFailed: 'Could not save',
     calendarSynced: 'Calendar synced; events are already in the schedule',
     calendarSyncFailed: 'Sync failed; try the Calendar page button',
@@ -102,6 +105,7 @@ const COPY = {
   ru: {
     loadError: 'Не удалось загрузить настройки.',
     timezone: 'Часовой пояс',
+    timeFormat: 'Формат времени',
     appLanguage: 'Язык приложения',
     botReplies: 'Ответы бота',
     replyAuto: 'Авто: язык каждого сообщения',
@@ -111,6 +115,7 @@ const COPY = {
     replyLanguageSaved: 'Язык ответов сохранен',
     replyLanguageSaveFailed: 'Не удалось сохранить язык ответов',
     timezoneSaved: 'Часовой пояс сохранён',
+    timeFormatSaved: 'Формат времени сохранён',
     saveFailed: 'Не удалось сохранить',
     calendarSynced: 'Календарь синхронизирован — события уже в расписании',
     calendarSyncFailed: 'Синхронизация не удалась — попробуй кнопку на странице Календарь',
@@ -220,6 +225,8 @@ export default function SettingsPage() {
   const replyLanguageMode = typeof user.settings.reply_language_mode === 'string'
     ? user.settings.reply_language_mode
     : 'auto';
+  const timeFormat = normalizeTimeFormat(user.settings.time_format);
+  const timeDisplay = { locale, timeFormat, timezone: user.timezone };
 
   const handleGoogleConnect = () => {
     api
@@ -286,6 +293,16 @@ export default function SettingsPage() {
     );
   };
 
+  const handleTimeFormat = (time_format: TimeFormat) => {
+    patchSettings.mutate(
+      { time_format },
+      {
+        onSuccess: () => show(copy.timeFormatSaved, 'success'),
+        onError: () => show(copy.saveFailed, 'error'),
+      },
+    );
+  };
+
   return (
     <Stagger>
       {/* Profile */}
@@ -308,6 +325,15 @@ export default function SettingsPage() {
               locale={locale}
             />
           </label>
+          <div className="mt-3">
+            <FieldLabel>{copy.timeFormat}</FieldLabel>
+            <TimeFormatControl
+              value={timeFormat}
+              onChange={handleTimeFormat}
+              locale={locale}
+              timezone={user.timezone}
+            />
+          </div>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             <label className="block">
               <FieldLabel>{copy.appLanguage}</FieldLabel>
@@ -343,7 +369,7 @@ export default function SettingsPage() {
             <BoolRow label="Calendar" value={google.calendar_available} />
             <InfoRow
               label={copy.lastSync}
-              value={google.last_sync_at ? formatRelative(google.last_sync_at) : '—'}
+              value={google.last_sync_at ? formatRelative(google.last_sync_at, timeDisplay) : '—'}
             />
           </div>
           {google.scopes.length > 0 && (
@@ -427,7 +453,7 @@ export default function SettingsPage() {
                 <InfoRow label={copy.account} value={yandex.username ?? '—'} />
                 <InfoRow
                   label={copy.lastSync}
-                  value={yandex.last_sync_at ? formatRelative(yandex.last_sync_at) : '—'}
+                  value={yandex.last_sync_at ? formatRelative(yandex.last_sync_at, timeDisplay) : '—'}
                 />
                 <InfoRow label={copy.access} value={copy.readOnlyCalDav} />
               </div>

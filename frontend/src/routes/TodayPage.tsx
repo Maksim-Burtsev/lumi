@@ -34,9 +34,11 @@ import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
 import { Timeline } from '../components/timeline/Timeline';
 import type { TimelineEntry } from '../components/timeline/Timeline';
-import { countLabel, formatDateHeading, formatDueLabel, formatSpanMinutes, plural } from '../lib/format';
+import { countLabel, formatDateHeading, formatDueLabel, formatSpanMinutes, normalizeTimeFormat, plural } from '../lib/format';
+import type { TimeDisplayOptions } from '../lib/format';
 import type { AppLocale } from '../lib/i18n';
 import { useAppLocale } from '../lib/useAppLocale';
+import { useTimeDisplay } from '../lib/useTimeDisplay';
 import { haptic } from '../telegram/webapp';
 
 const TODAY_COPY = {
@@ -156,15 +158,18 @@ function formatDateHeadingLocalized(date: Date, locale: AppLocale): string {
   return new Intl.DateTimeFormat('en-US', { weekday: 'long', day: 'numeric', month: 'long' }).format(date);
 }
 
-function formatDueLabelLocalized(ts: string, locale: AppLocale): string {
-  if (locale === 'ru') return formatDueLabel(ts);
+function formatDueLabelLocalized(ts: string, locale: AppLocale, timeDisplay: TimeDisplayOptions): string {
+  if (locale === 'ru') return formatDueLabel(ts, timeDisplay);
   const date = new Date(ts);
   if (Number.isNaN(date.getTime())) return '—';
+  const timeFormat = normalizeTimeFormat(timeDisplay.timeFormat);
   return new Intl.DateTimeFormat('en-US', {
     day: 'numeric',
-    hour: '2-digit',
+    hour: timeFormat === '12h' ? 'numeric' : '2-digit',
     minute: '2-digit',
     month: 'short',
+    hour12: timeFormat === '12h',
+    ...(timeDisplay.timezone ? { timeZone: timeDisplay.timezone } : {}),
   }).format(date);
 }
 
@@ -258,14 +263,14 @@ function payloadText(value: unknown): string | null {
   return null;
 }
 
-function payloadDate(value: unknown, locale: AppLocale): string | null {
+function payloadDate(value: unknown, locale: AppLocale, timeDisplay: TimeDisplayOptions): string | null {
   if (typeof value !== 'string' || !value.trim()) return null;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return formatDueLabelLocalized(date.toISOString(), locale);
+  return formatDueLabelLocalized(date.toISOString(), locale, timeDisplay);
 }
 
-function confirmationDetailRows(item: AttentionItem, locale: AppLocale): { label: string; value: string }[] {
+function confirmationDetailRows(item: AttentionItem, locale: AppLocale, timeDisplay: TimeDisplayOptions): { label: string; value: string }[] {
   const payload = item.action_payload ?? {};
   const rows: { label: string; value: string }[] = [];
   const push = (label: string, value: string | null) => {
@@ -276,8 +281,8 @@ function confirmationDetailRows(item: AttentionItem, locale: AppLocale): { label
     case 'create_google_calendar_event':
       push(locale === 'en' ? 'Action' : 'Действие', locale === 'en' ? 'Add to Google Calendar' : 'Добавить в Google Calendar');
       push(locale === 'en' ? 'Title' : 'Название', payloadText(payload.title));
-      push(locale === 'en' ? 'Start' : 'Начало', payloadDate(payload.start_at_local, locale));
-      push(locale === 'en' ? 'End' : 'Конец', payloadDate(payload.end_at_local, locale));
+      push(locale === 'en' ? 'Start' : 'Начало', payloadDate(payload.start_at_local, locale, timeDisplay));
+      push(locale === 'en' ? 'End' : 'Конец', payloadDate(payload.end_at_local, locale, timeDisplay));
       break;
     case 'store_memory':
       push(locale === 'en' ? 'Remember' : 'Запомнить', payloadText(payload.text));
@@ -285,8 +290,8 @@ function confirmationDetailRows(item: AttentionItem, locale: AppLocale): { label
       break;
     case 'create_task':
       push(locale === 'en' ? 'Task' : 'Задача', payloadText(payload.title));
-      push(locale === 'en' ? 'Due' : 'Срок', payloadDate(payload.due_at_local, locale));
-      push(locale === 'en' ? 'Reminder' : 'Напоминание', payloadDate(payload.reminder_at_local, locale));
+      push(locale === 'en' ? 'Due' : 'Срок', payloadDate(payload.due_at_local, locale, timeDisplay));
+      push(locale === 'en' ? 'Reminder' : 'Напоминание', payloadDate(payload.reminder_at_local, locale, timeDisplay));
       push(locale === 'en' ? 'Project' : 'Проект', payloadText(payload.project));
       break;
     case 'create_automation':
@@ -333,6 +338,7 @@ function TodaySkeleton() {
 
 export default function TodayPage() {
   const locale = useAppLocale();
+  const timeDisplay = useTimeDisplay();
   const copy = TODAY_COPY[locale];
   const todayQuery = useToday();
   const navigate = useNavigate();
@@ -603,7 +609,7 @@ export default function TodayPage() {
           <Card className="card-strong divide-y divide-[var(--hairline)] overflow-hidden !p-0">
             {data.needs_attention.map((item) => {
               const expanded = expandedAttentionId === item.id;
-              const detailRows = confirmationDetailRows(item, locale);
+              const detailRows = confirmationDetailRows(item, locale, timeDisplay);
               return (
                 <div key={item.id}>
                   <button

@@ -18,6 +18,7 @@ from lumi.i18n import (
     ensure_language_settings,
     normalize_reply_language_mode,
     validate_app_locale,
+    validate_time_format,
 )
 from lumi.services.realtime import RealtimeEventService
 from lumi.utils.time import selectable_timezone_names, validate_timezone_name
@@ -69,6 +70,7 @@ class SettingsPatch(BaseModel):
     timezone: str | None = None
     locale: str | None = None
     reply_language_mode: ReplyLanguageMode | None = None
+    time_format: str | None = None
     settings: dict | None = None
 
     @field_validator("locale")
@@ -98,8 +100,24 @@ async def patch_settings(
             **ensure_language_settings(user.settings),
             "reply_language_mode": normalize_reply_language_mode(payload.reply_language_mode),
         }
+    if payload.time_format is not None:
+        try:
+            user.settings = {
+                **ensure_language_settings(user.settings),
+                "time_format": validate_time_format(payload.time_format),
+            }
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="invalid_time_format") from exc
     if payload.settings is not None:
-        user.settings = ensure_language_settings({**user.settings, **payload.settings})
+        merged_settings = {**user.settings, **payload.settings}
+        if "time_format" in payload.settings:
+            try:
+                merged_settings["time_format"] = validate_time_format(
+                    str(payload.settings["time_format"] or "")
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail="invalid_time_format") from exc
+        user.settings = ensure_language_settings(merged_settings)
     session.add(user)
     await RealtimeEventService(session).emit(
         user_id=user.id,

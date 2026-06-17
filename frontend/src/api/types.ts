@@ -81,10 +81,13 @@ export interface TimezonesResponse {
   items: TimezoneItem[];
 }
 
+export type TimeFormat = '24h' | '12h';
+
 export interface PatchSettingsInput {
   timezone?: string;
   locale?: string;
   reply_language_mode?: 'auto' | 'app_locale';
+  time_format?: TimeFormat;
   settings?: Record<string, unknown>;
 }
 

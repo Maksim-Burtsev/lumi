@@ -11,6 +11,7 @@ import { Skeleton, SkeletonList } from '../components/ui/Skeleton';
 import { Rise, Stagger } from '../components/ui/motion';
 import { formatDuration, formatRelative, formatTime } from '../lib/format';
 import { runTypeLabel } from '../lib/labels';
+import { useTimeDisplay } from '../lib/useTimeDisplay';
 
 function safeJson(value: unknown): string {
   try {
@@ -22,12 +23,13 @@ function safeJson(value: unknown): string {
 }
 
 function ToolCallRow({ call }: { call: ToolCall }) {
+  const timeDisplay = useTimeDisplay();
   return (
     <details className="border-b border-hairline px-1 py-2 last:border-b-0">
       <summary className="flex cursor-pointer select-none items-center gap-2.5 text-[13px]">
         <RunStatusDot status={call.status === 'success' || call.status === 'ok' ? 'completed' : call.status} />
         <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-ink">{call.tool_name}</span>
-        <span className="tnum shrink-0 text-[11.5px] text-hint">{formatTime(call.created_at)}</span>
+        <span className="tnum shrink-0 text-[11.5px] text-hint">{formatTime(call.created_at, timeDisplay)}</span>
       </summary>
       <div className="mt-2 flex flex-col gap-2 pl-5">
         {call.error_message && <p className="text-[12px] text-danger">{call.error_message}</p>}

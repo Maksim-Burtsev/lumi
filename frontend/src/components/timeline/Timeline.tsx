@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import { Button } from '../ui/Button';
 import { formatTime, formatTimeRange } from '../../lib/format';
+import { useTimeDisplay } from '../../lib/useTimeDisplay';
 
 export type TimelineEntryKind = 'event' | 'focus' | 'proposed' | 'free' | 'task';
 
@@ -45,11 +46,12 @@ function entryCardClass(kind: TimelineEntryKind): string {
 
 function EntryRow({ entry }: { entry: TimelineEntry }) {
   const reduceMotion = useReducedMotion();
+  const timeDisplay = useTimeDisplay();
 
   const inner: ReactNode = (
     <>
-      <span className="tnum absolute -left-16 top-[13px] w-11 text-right text-[12.5px] font-medium text-hint">
-        {formatTime(entry.start_at)}
+      <span className="tnum absolute -left-20 top-[13px] w-16 whitespace-nowrap text-right text-[12.5px] font-medium text-hint">
+        {formatTime(entry.start_at, timeDisplay)}
       </span>
       <span
         aria-hidden
@@ -67,8 +69,8 @@ function EntryRow({ entry }: { entry: TimelineEntry }) {
             </p>
             <p className="tnum mt-0.5 text-[12px] text-hint">
               {entry.kind === 'task'
-                ? `к ${formatTime(entry.start_at)}`
-                : formatTimeRange(entry.start_at, entry.end_at)}
+                ? `к ${formatTime(entry.start_at, timeDisplay)}`
+                : formatTimeRange(entry.start_at, entry.end_at, timeDisplay)}
               {entry.subtitle ? ` · ${entry.subtitle}` : ''}
             </p>
           </div>
@@ -112,8 +114,8 @@ function EntryRow({ entry }: { entry: TimelineEntry }) {
 /** Thin vertical rail with dot markers; times in tabular figures. */
 export function Timeline({ entries }: { entries: TimelineEntry[] }) {
   return (
-    <div className="relative flex flex-col gap-2.5 pl-16">
-      <div aria-hidden className="absolute bottom-3 left-[52px] top-3 w-px bg-hairline" />
+    <div className="relative flex flex-col gap-2.5 pl-20">
+      <div aria-hidden className="absolute bottom-3 left-[68px] top-3 w-px bg-hairline" />
       {entries.map((entry) => (
         <EntryRow key={entry.id} entry={entry} />
       ))}

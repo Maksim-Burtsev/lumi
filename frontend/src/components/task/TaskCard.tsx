@@ -3,6 +3,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { Clock } from 'lucide-react';
 import type { Task, SnoozePreset, TaskPriority } from '../../api/types';
 import { formatDueLabel } from '../../lib/format';
+import { useTimeDisplay } from '../../lib/useTimeDisplay';
 import { haptic } from '../../telegram/webapp';
 
 interface TaskCardProps {
@@ -29,6 +30,7 @@ const SNOOZE_PRESETS: { preset: SnoozePreset; label: string }[] = [
 export function TaskCard({ task, onComplete, onSnooze, onEdit }: TaskCardProps) {
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const reduceMotion = useReducedMotion();
+  const timeDisplay = useTimeDisplay();
   const done = task.status === 'done';
   const overdue = !done && task.due_at !== null && new Date(task.due_at).getTime() < Date.now();
   const priority = PRIORITY_DOTS[task.priority];
@@ -97,7 +99,7 @@ export function TaskCard({ task, onComplete, onSnooze, onEdit }: TaskCardProps) 
             />
             {task.due_at && (
               <span className={`tnum text-[12.5px] ${overdue ? 'font-medium text-danger' : 'text-hint'}`}>
-                {formatDueLabel(task.due_at)}
+                {formatDueLabel(task.due_at, timeDisplay)}
               </span>
             )}
             {task.project && (

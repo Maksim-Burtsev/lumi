@@ -1,6 +1,7 @@
 import { useMemo, useRef } from 'react';
 import type { CalendarEvent } from '../../api/types';
 import { formatTime } from '../../lib/format';
+import { useTimeDisplay } from '../../lib/useTimeDisplay';
 
 /**
  * Mac-style proportional day grid: hour lines, events positioned by start
@@ -89,6 +90,7 @@ const SOURCE_LABELS: Record<string, string> = { google: 'Google', yandex: 'Ян�
 
 export function DayGrid({ events, dayStart, onEventTap, onEmptyTap, nowLine }: DayGridProps) {
   const gridRef = useRef<HTMLDivElement>(null);
+  const timeDisplay = useTimeDisplay();
 
   const DAY_MIN = 24 * 60;
   const visible = events.filter((e) => e.status !== 'cancelled');
@@ -118,6 +120,10 @@ export function DayGrid({ events, dayStart, onEventTap, onEmptyTap, nowLine }: D
   const offsetPx = startHour * 60 * PX_PER_MINUTE;
   const heightPx = (endHour - startHour) * 60 * PX_PER_MINUTE;
   const hours = Array.from({ length: endHour - startHour + 1 }, (_, i) => startHour + i);
+  const hourLabel = (hour: number) => formatTime(
+    new Date(dayStart.getTime() + hour * 60 * 60000),
+    timeDisplay,
+  );
 
   const nowMinutes = minutesFromMidnight(new Date().toISOString(), dayStart);
   const showNow = nowLine && nowMinutes >= startHour * 60 && nowMinutes <= endHour * 60;
@@ -148,7 +154,7 @@ export function DayGrid({ events, dayStart, onEventTap, onEmptyTap, nowLine }: D
         </div>
       )}
 
-      <div className="relative ml-12" style={{ height: heightPx }} ref={gridRef}>
+      <div className="relative ml-16" style={{ height: heightPx }} ref={gridRef}>
         {/* hour lines + labels */}
         {hours.map((hour) => (
           <div
@@ -156,8 +162,8 @@ export function DayGrid({ events, dayStart, onEventTap, onEmptyTap, nowLine }: D
             className="absolute left-0 right-0 border-t border-[var(--hairline)]"
             style={{ top: (hour - startHour) * 60 * PX_PER_MINUTE }}
           >
-            <span className="tnum absolute -left-12 -top-2 w-10 text-right text-[11px] text-hint">
-              {String(hour).padStart(2, '0')}:00
+            <span className="tnum absolute -left-16 -top-2 w-14 whitespace-nowrap text-right text-[11px] text-hint">
+              {hourLabel(hour)}
             </span>
           </div>
         ))}
@@ -205,11 +211,11 @@ export function DayGrid({ events, dayStart, onEventTap, onEmptyTap, nowLine }: D
                   height < 32 ? 'text-[11px]' : 'text-[12.5px]'
                 }`}
               >
-                {height < 32 ? `${formatTime(event.start_at)} ${event.title}` : event.title}
+                {height < 32 ? `${formatTime(event.start_at, timeDisplay)} ${event.title}` : event.title}
               </p>
               {height >= 42 && (
                 <p className="tnum mt-0.5 truncate text-[11px] leading-tight text-hint">
-                  {formatTime(event.start_at)}–{formatTime(event.end_at)}
+                  {formatTime(event.start_at, timeDisplay)}–{formatTime(event.end_at, timeDisplay)}
                   {event.source !== 'internal'
                     ? ` · ${SOURCE_LABELS[event.source] ?? event.source}`
                     : event.status === 'proposed'

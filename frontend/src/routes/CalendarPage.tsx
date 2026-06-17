@@ -38,6 +38,7 @@ import { SkeletonTimeline } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
 import { addDays, formatDateParam, formatDayLabel, formatRelative, formatTime, formatTimeRange, isSameDay, startOfDay } from '../lib/format';
+import { useTimeDisplay } from '../lib/useTimeDisplay';
 import { haptic, openExternalLink } from '../telegram/webapp';
 
 interface SheetPrefill {
@@ -353,6 +354,7 @@ export default function CalendarPage() {
   const navigate = useNavigate();
   const { show } = useToast();
   const reduceMotion = useReducedMotion();
+  const timeDisplay = useTimeDisplay();
 
   const rangeStart = day.toISOString();
   const rangeEnd = addDays(day, 1).toISOString();
@@ -465,7 +467,7 @@ export default function CalendarPage() {
           {syncState?.stale && syncState.refresh_queued
             ? 'Календарь обновляется из внешнего источника.'
             : syncState?.last_sync_at
-              ? `Последний sync: ${formatRelative(syncState.last_sync_at)}.`
+              ? `Последний sync: ${formatRelative(syncState.last_sync_at, timeDisplay)}.`
               : 'Внешний календарь обновится после подключения или ручного sync.'}
         </p>
       </Rise>
@@ -548,7 +550,7 @@ export default function CalendarPage() {
         {selectedEvent && (
           <div className="space-y-4">
             <p className="tnum text-[14px] text-hint">
-              {formatTimeRange(selectedEvent.start_at, selectedEvent.end_at)}
+              {formatTimeRange(selectedEvent.start_at, selectedEvent.end_at, timeDisplay)}
               {selectedEvent.source === 'google' && ' · Google Calendar'}
               {selectedEvent.source === 'yandex' && ' · Яндекс.Календарь'}
               {selectedEvent.status === 'proposed' && ' · предложение Lumi'}

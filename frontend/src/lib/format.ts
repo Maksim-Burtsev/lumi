@@ -1,3 +1,5 @@
+import type { AppLocale } from './i18n';
+
 /** Russian formatting helpers: pluralization, times, relative dates. */
 
 /** Proper Russian pluralization: plural(3, ['задача', 'задачи', 'задач']) → 'задачи' */
@@ -14,30 +16,86 @@ export function countLabel(n: number, forms: [string, string, string]): string {
   return `${n} ${plural(n, forms)}`;
 }
 
-const timeFmt = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', hour12: false });
 const dayMonthFmt = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short' });
-const dayMonthTimeFmt = new Intl.DateTimeFormat('ru-RU', {
-  day: 'numeric',
-  month: 'short',
-  hour: '2-digit',
-  minute: '2-digit',
-});
 const headingFmt = new Intl.DateTimeFormat('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' });
 const weekdayShortFmt = new Intl.DateTimeFormat('ru-RU', { weekday: 'short', day: 'numeric', month: 'long' });
+
+export type TimeFormat = '24h' | '12h';
+
+export interface TimeDisplayOptions {
+  locale?: AppLocale;
+  timeFormat?: TimeFormat;
+  timezone?: string | null;
+}
+
+export function normalizeTimeFormat(value: unknown): TimeFormat {
+  return value === '12h' ? '12h' : '24h';
+}
+
+function localeTag(locale: AppLocale | undefined): string {
+  return locale === 'en' ? 'en-US' : 'ru-RU';
+}
+
+function withTimezone(timezone: string | null | undefined): Pick<Intl.DateTimeFormatOptions, 'timeZone'> {
+  return timezone ? { timeZone: timezone } : {};
+}
+
+function safeDateTimeFormat(locale: string, options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  try {
+    return new Intl.DateTimeFormat(locale, options);
+  } catch (error) {
+    if (!(error instanceof RangeError) || !('timeZone' in options)) throw error;
+    const { timeZone: _timeZone, ...fallback } = options;
+    return new Intl.DateTimeFormat(locale, fallback);
+  }
+}
+
+function timeFormatter(options: TimeDisplayOptions = {}): Intl.DateTimeFormat {
+  const timeFormat = normalizeTimeFormat(options.timeFormat);
+  return safeDateTimeFormat(localeTag(options.locale), {
+    hour: timeFormat === '12h' ? 'numeric' : '2-digit',
+    minute: '2-digit',
+    hour12: timeFormat === '12h',
+    ...withTimezone(options.timezone),
+  });
+}
+
+function dayMonthTimeFormatter(options: TimeDisplayOptions = {}): Intl.DateTimeFormat {
+  const timeFormat = normalizeTimeFormat(options.timeFormat);
+  return safeDateTimeFormat(localeTag(options.locale), {
+    day: 'numeric',
+    hour: timeFormat === '12h' ? 'numeric' : '2-digit',
+    minute: '2-digit',
+    month: 'short',
+    hour12: timeFormat === '12h',
+    ...withTimezone(options.timezone),
+  });
+}
+
+function dayKey(d: Date, timezone?: string | null): string {
+  const parts = safeDateTimeFormat('en-CA', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    ...withTimezone(timezone),
+  }).formatToParts(d);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? '';
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
 
 function capitalize(s: string): string {
   return s.length > 0 ? s[0].toUpperCase() + s.slice(1) : s;
 }
 
 /** "14:05" with tabular figures expected at render site */
-export function formatTime(ts: string | Date): string {
+export function formatTime(ts: string | Date, options: TimeDisplayOptions = {}): string {
   const d = typeof ts === 'string' ? new Date(ts) : ts;
   if (Number.isNaN(d.getTime())) return '—';
-  return timeFmt.format(d);
+  return timeFormatter(options).format(d);
 }
 
-export function formatTimeRange(start: string, end: string): string {
-  return `${formatTime(start)}–${formatTime(end)}`;
+export function formatTimeRange(start: string, end: string, options: TimeDisplayOptions = {}): string {
+  return `${formatTime(start, options)}–${formatTime(end, options)}`;
 }
 
 /** "Вторник, 10 июня" */
@@ -45,7 +103,8 @@ export function formatDateHeading(d: Date): string {
   return capitalize(headingFmt.format(d));
 }
 
-export function isSameDay(a: Date, b: Date): boolean {
+export function isSameDay(a: Date, b: Date, timezone?: string | null): boolean {
+  if (timezone) return dayKey(a, timezone) === dayKey(b, timezone);
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
@@ -81,7 +140,7 @@ function dayMonthLong(d: Date): string {
 }
 
 /** Relative time: "только что", "2 мин назад", "вчера", "через 3 ч" … */
-export function formatRelative(ts: string | null | undefined): string {
+export function formatRelative(ts: string | null | undefined, options: TimeDisplayOptions = {}): string {
   if (!ts) return '—';
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return '—';
@@ -95,11 +154,11 @@ export function formatRelative(ts: string | null | undefined): string {
 
   if (abs < 45_000) return future ? 'через минуту' : 'только что';
   if (min < 60) return future ? `через ${min} мин` : `${min} мин назад`;
-  if (hours < 24 && isSameDay(d, now)) return future ? `через ${countLabel(hours, ['час', 'часа', 'часов'])}` : `${hours} ч назад`;
+  if (hours < 24 && isSameDay(d, now, options.timezone)) return future ? `через ${countLabel(hours, ['час', 'часа', 'часов'])}` : `${hours} ч назад`;
 
   const today = startOfDay(now);
-  if (isSameDay(d, addDays(today, -1))) return 'вчера';
-  if (isSameDay(d, addDays(today, 1))) return `завтра в ${formatTime(d)}`;
+  if (isSameDay(d, addDays(today, -1), options.timezone)) return 'вчера';
+  if (isSameDay(d, addDays(today, 1), options.timezone)) return `завтра в ${formatTime(d, options)}`;
 
   const days = Math.round(abs / 86_400_000);
   if (!future && days < 7) return `${countLabel(days, ['день', 'дня', 'дней'])} назад`;
@@ -109,14 +168,14 @@ export function formatRelative(ts: string | null | undefined): string {
 }
 
 /** Due label for tasks: "Сегодня 14:00", "Завтра 09:00", "10 июн 09:00" */
-export function formatDueLabel(ts: string): string {
+export function formatDueLabel(ts: string, options: TimeDisplayOptions = {}): string {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return '—';
   const today = startOfDay(new Date());
-  if (isSameDay(d, today)) return `Сегодня ${formatTime(d)}`;
-  if (isSameDay(d, addDays(today, 1))) return `Завтра ${formatTime(d)}`;
-  if (isSameDay(d, addDays(today, -1))) return `Вчера ${formatTime(d)}`;
-  return dayMonthTimeFmt.format(d);
+  if (isSameDay(d, today, options.timezone)) return `Сегодня ${formatTime(d, options)}`;
+  if (isSameDay(d, addDays(today, 1), options.timezone)) return `Завтра ${formatTime(d, options)}`;
+  if (isSameDay(d, addDays(today, -1), options.timezone)) return `Вчера ${formatTime(d, options)}`;
+  return dayMonthTimeFormatter(options).format(d);
 }
 
 /** "12,3 с" / "2 мин 05 с" — for run durations */

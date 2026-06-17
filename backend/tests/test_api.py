@@ -104,6 +104,34 @@ async def test_patch_settings_rejects_invalid_timezone(client):
     assert response.json() == {"error": "invalid_timezone"}
 
 
+async def test_patch_settings_accepts_time_format(client):
+    response = await client.patch("/api/settings", json={"time_format": "12h"})
+
+    assert response.status_code == 200
+    assert response.json()["user"]["settings"]["time_format"] == "12h"
+
+
+async def test_patch_settings_rejects_invalid_time_format(client):
+    response = await client.patch("/api/settings", json={"time_format": "ampm"})
+
+    assert response.status_code == 422
+    assert response.json() == {"error": "invalid_time_format"}
+
+
+async def test_patch_settings_rejects_empty_time_format(client):
+    response = await client.patch("/api/settings", json={"time_format": ""})
+
+    assert response.status_code == 422
+    assert response.json() == {"error": "invalid_time_format"}
+
+
+async def test_patch_settings_rejects_invalid_time_format_in_settings_payload(client):
+    response = await client.patch("/api/settings", json={"settings": {"time_format": "ampm"}})
+
+    assert response.status_code == 422
+    assert response.json() == {"error": "invalid_time_format"}
+
+
 async def test_timezones_endpoint_returns_full_selectable_list(client):
     response = await client.get("/api/timezones")
 
