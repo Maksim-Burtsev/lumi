@@ -42,7 +42,7 @@ PATCH /api/settings  body: {"timezone"?: str, "locale"?: str, "settings"?: objec
 ```
 GET /api/today → {
   "date": "YYYY-MM-DD",
-  "greeting": str,                      // localized: Доброе утро / Добрый день / ...
+  "greeting": str,                      // localized greeting, e.g. Good morning / Good afternoon / ...
   "summary": {
     "meetings_today": int, "tasks_active": int, "tasks_due_today": int,
     "tasks_overdue": int, "emails_need_reply": int

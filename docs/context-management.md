@@ -1,106 +1,90 @@
-# Контекст, память и compaction
+# Context, Memory, and Compaction
 
-## Почему stateless
+## Why stateless
 
-Lumi не доверяет провайдеру LLM хранить диалог. Каждый вызов — полный, свежесобранный
-контекст из БД. Что это даёт: смена провайдера без потери истории, полный контроль
-бюджета, отлаживаемый промпт (`GET /api/debug/context/latest`), один источник правды.
+Lumi does not trust the LLM provider to store the conversation. Every call receives a full, freshly assembled context from the database. This provides provider switching without history loss, full budget control, a debuggable prompt (`GET /api/debug/context/latest`), and one source of truth.
 
-## Что входит в контекст (ContextBuilder)
+## What goes into context (ContextBuilder)
 
-Порядок секций (`backend/src/lumi/assistant/context_builder.py`):
+Section order (`backend/src/lumi/assistant/context_builder.py`):
 
-1. **System prompt** — идентичность Lumi и правила поведения (`prompts.py: LUMI_SYSTEM_PROMPT`)
-2. **Runtime** — текущие дата/время в TZ пользователя, locale, канал
-3. **Профиль** — имя, username, timezone
-4. **Permissions** — что можно автоматически, что только через подтверждение
-5. **Активные задачи как текущее состояние** (≤15, с просрочкой) и **календарь на сегодня**
-6. **Снимок почты** (счётчик «ждут ответа») и **активные автоматизации**
-7. **Релевантная память** (top-10 по скорингу)
-8. **Summary диалога** (последняя версия после compaction)
-9. **Только результаты действий текущего сообщения** («Создана задача …») — чтобы модель не смешивала их с активным состоянием
-10. **Последние сообщения** (до 30, в остаток бюджета)
-11. **Текущее сообщение**
+1. **System prompt**: Lumi identity and behavior rules (`prompts.py: LUMI_SYSTEM_PROMPT`)
+2. **Runtime**: current date/time in the user's timezone, locale, channel
+3. **Profile**: name, username, timezone
+4. **Permissions**: what can be automatic and what requires confirmation
+5. **Active tasks as current state** (<=15, with overdue items) and **today's calendar**
+6. **Email snapshot** (need-reply count) and **active automations**
+7. **Relevant memory** (top 10 by score)
+8. **Conversation summary** (latest compacted version)
+9. **Only current-message action results** ("Created task ...") so the model does not confuse them with active state
+10. **Recent messages** (up to 30, within remaining budget)
+11. **Current message**
 
-Бюджет: `LLM_CONTEXT_MAX_CHARS=120000` (~30k токенов, оценка chars/4). Секции 1–9 идут
-всегда; история «последних сообщений» ужимается под остаток.
+Budget: `LLM_CONTEXT_MAX_CHARS=120000` (~30k tokens, estimated as chars/4). Sections 1-9 are always included; recent-message history is squeezed into the remaining budget.
 
-## Извлечение сигналов
+## Signal extraction
 
-Отдельный JSON-вызов (`signal_extraction`) до финального ответа. Схема: задачи, напоминания,
-memory candidates, календарные запросы, автоматизации, команды почты/новостей + confidence
-и requires_confirmation на каждый элемент. Сбой extraction никогда не ломает чат — просто
-не будет авто-действий (есть и пофрагментный salvage невалидного JSON).
+A separate JSON call (`signal_extraction`) runs before the final reply. Schema: tasks, reminders, memory candidates, calendar requests, automations, email/news commands, plus confidence and requires_confirmation for each item. Extraction failure never breaks chat: it only prevents auto-actions. Invalid JSON also has fragment-level salvage.
 
-### Пороги применения (orchestrator)
+### Application thresholds (orchestrator)
 
 ```text
-Задача:        confidence ≥ 0.85 и !requires_confirmation → создать
-               0.50–0.85 → pending confirmation + кнопки
-Память:        явное «запомни» и ≥ 0.85 → сохранить
-               preference/instruction и ≥ 0.92 + !requires_confirmation → сохранить
-               иначе игнор без pending confirmation
-Внутр. блок:   явная просьба и ≥ 0.75 → создать
-Внешний календарь: ВСЕГДА pending confirmation
-Автоматизация: ≥ 0.60 → pending confirmation (включение только руками)
-Почта send/delete: не реализовано вовсе
+Task:             confidence >= 0.85 and !requires_confirmation -> create
+                  0.50-0.85 -> pending confirmation + buttons
+Memory:           explicit "remember this" and >= 0.85 -> store
+                  preference/instruction and >= 0.92 + !requires_confirmation -> store
+                  otherwise ignore without pending confirmation
+Internal block:   explicit request and >= 0.75 -> create
+External calendar: ALWAYS pending confirmation
+Automation:       >= 0.60 -> pending confirmation (enable only manually)
+Email send/delete: not implemented at all
 ```
 
-## Память
+## Memory
 
-**Запись** (MemoryService.store_candidate): нормализация → поиск дубликата по
-keyword-overlap ≥ 0.75 → дубликат обновляется (importance/confidence), а не вставляется;
-overlap 0.45–0.75 — новая запись с пометкой `potential_conflict`.
+**Write** (`MemoryService.store_candidate`): normalize -> find duplicate by keyword-overlap >= 0.75 -> update duplicate (importance/confidence) instead of inserting; overlap 0.45-0.75 creates a new row marked `potential_conflict`.
 
-**Чтение** (retrieve_relevant) — скоринг без векторов:
+**Read** (`retrieve_relevant`) uses scoring without vectors:
 
 ```python
 score = importance*3 + keyword_overlap(query, text)*5 + tag_overlap*4
-      + recency_boost(last_accessed_at < 7d: +1.5) + kind_boost(instruction 3, preference 2, …)
+      + recency_boost(last_accessed_at < 7d: +1.5) + kind_boost(instruction 3, preference 2, ...)
 ```
 
-Top-10 попадают в контекст; у использованных обновляется `last_accessed_at`.
-Память не вынесена в пользовательскую навигацию Mini App; это внутренняя часть контекста.
-Замена на pgvector — один метод.
+Top 10 memories enter context; used memories have `last_accessed_at` updated. Memory is not exposed as user navigation in the Mini App; it is an internal part of context. Replacing it with pgvector is one method.
 
 ## Compaction
 
-Триггер после ответа: больше `COMPACT_AFTER_MESSAGES=80` несжатых сообщений (сверх
-защищённых 30 последних) или суммарно > `COMPACT_AFTER_CHARS=160000`. Бот кладёт джобу
-`compact_conversation` в очередь — пользователь ничего не ждёт.
+Trigger after reply: more than `COMPACT_AFTER_MESSAGES=80` uncompacted messages beyond the protected 30 most recent messages, or total size > `COMPACT_AFTER_CHARS=160000`. The bot enqueues `compact_conversation`; the user does not wait.
 
-Джоба: предыдущее summary + старые сообщения → промпт сжатия → структурированный текст
-(Summary / Decisions / Preferences / Projects / Open loops / Things to avoid) →
-новая строка `conversation_summaries` (version+1) → старым сообщениям `is_compacted=true` →
-указатели на conversation. Последние 30 сообщений не сжимаются никогда.
+Job: previous summary + old messages -> compaction prompt -> structured text (Summary / Decisions / Preferences / Projects / Open loops / Things to avoid) -> new `conversation_summaries` row (version+1) -> old messages get `is_compacted=true` -> conversation pointers update. The latest 30 messages are never compacted.
 
-## Пример от и до
+## End-to-end example
 
-Пользователь: «Напомни завтра в 10 написать Саше»
+User: "Remind me tomorrow at 10 to write Sasha"
 
 ```text
-messages       + role=user «Напомни завтра в 10 написать Саше»
+messages       + role=user "Remind me tomorrow at 10 to write Sasha"
 agent_runs     + type=chat, trigger=telegram_message, running
 llm_calls      + signal_extraction (mock: 1ms / MiniMax: ~1-2s)
-tasks          + «написать Саше», reminder_at=завтра 10:00 (TZ юзера → UTC)
+tasks          + "write Sasha", reminder_at=tomorrow 10:00 (user TZ -> UTC)
 task_events    + created (actor=agent)
 tool_calls     + create_task completed {task_id}
 audit_logs     + task created
 llm_calls      + final_chat
-messages       + role=assistant «Готово. Создал задачу…»
-agent_runs     → completed, metadata.context_snapshot = {...}
+messages       + role=assistant "Done. Created task..."
+agent_runs     -> completed, metadata.context_snapshot = {...}
 ```
 
-Завтра в 10:00 worker-cron `send_due_reminders` найдёт задачу и пришлёт
-«⏰ Напоминание: написать Саше [✓ Выполнено] [⏰ Через час] [📅 Завтра]».
+Tomorrow at 10:00, worker-cron `send_due_reminders` finds the task and sends a reminder with action buttons.
 
-## Где что менять
+## Where to change things
 
-| Что | Где |
+| What | Where |
 |---|---|
-| Характер/правила Lumi | `assistant/prompts.py: LUMI_SYSTEM_PROMPT` |
-| Пороги авто-действий | `assistant/orchestrator.py` (константы сверху) |
-| Бюджеты контекста | `.env`: LLM_CONTEXT_MAX_CHARS, RECENT_MESSAGES_LIMIT, COMPACT_* |
-| Скоринг памяти | `assistant/memory_service.py: retrieve_relevant` |
-| Промпт compaction | `assistant/prompts.py: COMPACTION_SYSTEM` |
-| Посмотреть готовый контекст | `GET /api/debug/context/latest` (только APP_ENV=local) |
+| Lumi personality/rules | `assistant/prompts.py: LUMI_SYSTEM_PROMPT` |
+| Auto-action thresholds | `assistant/orchestrator.py` (constants at the top) |
+| Context budgets | `.env`: LLM_CONTEXT_MAX_CHARS, RECENT_MESSAGES_LIMIT, COMPACT_* |
+| Memory scoring | `assistant/memory_service.py: retrieve_relevant` |
+| Compaction prompt | `assistant/prompts.py: COMPACTION_SYSTEM` |
+| Inspect built context | `GET /api/debug/context/latest` (APP_ENV=local only) |

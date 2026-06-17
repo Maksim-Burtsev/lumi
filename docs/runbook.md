@@ -1,22 +1,22 @@
-# Runbook — операции и отладка
+# Runbook: Operations and Debugging
 
-## Запуск с нуля
+## Start from scratch
 
 ```bash
-make setup              # .env из шаблона + data/
+make setup              # .env from template + data/
 # .env: TELEGRAM_BOT_TOKEN, ALLOWED_TELEGRAM_USER_IDS, MINIMAX_API_KEY
 make frontend-build
 make up-detached
 make migrate
 make seed
-make smoke              # SMOKE OK = ядро живо (mock LLM, без ключей)
+make smoke              # SMOKE OK = core is alive (mock LLM, no external keys)
 ```
 
-Бот: `/start` в Telegram. Mini App: см. чеклист ниже.
+Bot: send `/start` in Telegram. Mini App: see the checklist below.
 
-## Локальный Mini App в Telegram
+## Local Telegram Mini App
 
-Браузерная проверка без Telegram:
+Browser check without Telegram:
 
 ```bash
 make frontend-build
@@ -25,17 +25,15 @@ make dev-auth-up
 open http://localhost:8001/app/
 ```
 
-Telegram-проверка:
+Telegram check:
 
 ```bash
 make miniapp-local-up
 ```
 
-Команда сама соберет фронтенд, поднимет Docker, создаст fresh `cloudflared` tunnel,
-обновит `.env`, пересоздаст `api/bot` и сверит Telegram menu button для default и
-каждого `ALLOWED_TELEGRAM_USER_IDS`.
+The command builds the frontend, starts Docker, creates a fresh `cloudflared` tunnel, updates `.env`, recreates `api/bot`, and verifies the Telegram menu button for the default menu and every `ALLOWED_TELEGRAM_USER_IDS` chat.
 
-Ручной вариант:
+Manual path:
 
 ```bash
 make frontend-build
@@ -43,24 +41,23 @@ make up-detached
 make tunnel
 ```
 
-Скопируй HTTPS URL из `make tunnel` в `.env`:
+Copy the HTTPS URL from `make tunnel` into `.env`:
 
 ```dotenv
 APP_PUBLIC_URL=https://your-tunnel.trycloudflare.com
 FRONTEND_PUBLIC_PATH=/app/
 ```
 
-Перечитай `.env` и пересинхронизируй кнопку Mini App:
+Reload `.env` and resync the Mini App button:
 
 ```bash
 docker compose up -d --force-recreate api bot
 curl "$APP_PUBLIC_URL/health"
 ```
 
-Открой `/app` у бота или кнопку меню. Если использовалась старая tunnel-ссылка,
-закрой старое окно Mini App в Telegram и открой свежую кнопку.
+Open `/app` from the bot or use the menu button. If an old tunnel URL was used, close the old Mini App window in Telegram and open the fresh button.
 
-Быстрая диагностика:
+Quick diagnostics:
 
 ```bash
 docker compose ps
@@ -69,85 +66,71 @@ curl "$APP_PUBLIC_URL/app/"
 python3 scripts/miniapp_local_up.py
 ```
 
-В норме в логах `api` видны `GET /app`, загрузка ассетов и `GET /api/today` со статусом
-`200`. Если Telegram показывает только белый экран с роботом, почти всегда причина одна из
-четырех: tunnel умер после сна Mac, `APP_PUBLIC_URL` указывает на старый tunnel,
-контейнеры были только `restart` и не перечитали `.env`, или Telegram открыл старую
-chat-specific кнопку. Бот на старте синхронизирует default и per-chat menu для
-`ALLOWED_TELEGRAM_USER_IDS`; в логах должны быть `mini app menu button set` и
-`mini app chat menu button set`.
+Expected API logs: `GET /app`, asset loads, and `GET /api/today` with status `200`. If Telegram shows only a blank page or robot icon, the cause is almost always one of four things: the tunnel died after the Mac slept, `APP_PUBLIC_URL` points at an old tunnel, containers were only restarted and did not reread `.env`, or Telegram opened a stale chat-specific button. The bot syncs both the default menu and per-chat menu for `ALLOWED_TELEGRAM_USER_IDS` on startup; logs should include `mini app menu button set` and `mini app chat menu button set`.
 
-## Ежедневные команды
+## Daily commands
 
 ```bash
-make logs                                   # все сервисы
-docker compose logs bot -f --tail 100       # только бот
-docker compose up -d --force-recreate bot api # после смены .env
-make test                                   # 48 pytest в контейнере
-make down / make up-detached                # стоп/старт
-make reset-local-db                         # снести volumes (данные!) и начать заново
+make logs                                      # all services
+docker compose logs bot -f --tail 100          # bot only
+docker compose up -d --force-recreate bot api  # after .env changes
+make test                                      # pytest in container
+make down / make up-detached                   # stop/start
+make reset-local-db                            # remove volumes (data!) and start over
 ```
 
-Логи — JSON-строки с корреляцией: `request_id` (API), `agent_run_id` (агентные операции),
-`telegram_update_id` (бот). История запусков — Mini App → Agent Runs (статусы, длительности,
-tool calls, LLM calls, ошибки).
+Logs are JSON lines with correlation fields: `request_id` (API), `agent_run_id` (agent operations), `telegram_update_id` (bot). Run history is in Mini App -> Agent Runs: statuses, durations, tool calls, LLM calls, errors.
 
 ## Agent self-QA
 
-Для нетривиальных изменений бота, Mini App, planner/tools или observability агент должен
-пройти [agent self-QA](agent-qa.md): isolated worktree/runtime, Telegram Web через
-Chrome/CDP, Mini App через HTTPS tunnel, DB/log evidence и release gates.
+For non-trivial bot, Mini App, planner/tools, or observability changes, the agent must pass [agent self-QA](agent-qa.md): isolated worktree/runtime, Telegram Web through Chrome/CDP, Mini App through HTTPS tunnel, DB/log evidence, and release gates.
 
-## Типовые проблемы
+## Common issues
 
-| Симптом | Причина → решение |
+| Symptom | Cause -> fix |
 |---|---|
-| Бот молчит | 1) `docker compose logs bot` — крутится ли polling. 2) Твой id не в `ALLOWED_TELEGRAM_USER_IDS` — в логах будет `unauthorized telegram user` с id (включено `LOG_UNAUTHORIZED_TELEGRAM_IDS`). 3) Токен неверный. |
-| `bot` в Restarting | `TELEGRAM_BOT_TOKEN` пуст — заполни .env, `docker compose restart bot` |
-| Conflict: terminated by other getUpdates | Где-то запущен второй инстанс бота ИЛИ висит webhook. Бот сам делает deleteWebhook при старте; вручную: `curl https://api.telegram.org/bot<TOKEN>/deleteWebhook?drop_pending_updates=true` |
-| Mini App: «Открой Lumi внутри Telegram» (401) | Mini App открыт не из Telegram. Для браузера используй `make dev-auth-up` и `http://localhost:8001/app/`. |
-| Mini App не открывается с кнопки | URL должен быть **https** (туннель), `APP_PUBLIC_URL` должен быть текущим, после смены нужен `docker compose up -d --force-recreate api bot`. |
-| Mini App висит на белом экране с роботом | Старый/мертвый tunnel, контейнеры не перечитали `.env`, или stale chat-specific menu. Запусти `make miniapp-local-up`; проверь `curl "$APP_PUBLIC_URL/health"`, логи `api/bot`, закрой старое окно Mini App и открой свежую кнопку `/app`. |
-| Ответы «Готово, я это зафиксировал» на всё | Работает mock LLM: `MINIMAX_API_KEY` пуст или `LLM_PROVIDER=mock`. В логах api/worker: `falling back to mock` |
-| MiniMax error в ответах | `docker compose logs worker api \| grep -i minimax` — ключ/квота/таймаут; ретраи и фоллбеки уже встроены |
-| «Очередь задач недоступна» | Redis упал: `docker compose ps redis`, `docker compose up -d redis` |
-| Run висит в queued | Worker не жив: `docker compose logs worker`. Перезапусти `docker compose restart worker` |
-| Автоматизация не срабатывает | Включена ли (Mini App → Automations)? `next_run_at` в будущем? Логи scheduler: `scheduled job enqueued` |
-| Google: needs_reauth | Токен протух без refresh — повтори `make google-auth-local` |
-| Миграция падает | `docker compose logs postgres`; крайний случай: `make reset-local-db && make migrate && make seed` |
-| Напоминание не пришло | Worker-cron каждую минуту; проверь `reminder_at` (UTC в БД!), логи worker `cron:send_due_reminders` |
+| Bot is silent | 1) `docker compose logs bot`: check whether polling is running. 2) Your id is not in `ALLOWED_TELEGRAM_USER_IDS`; logs show `unauthorized telegram user` with the id when `LOG_UNAUTHORIZED_TELEGRAM_IDS` is enabled. 3) Token is wrong. |
+| `bot` is Restarting | `TELEGRAM_BOT_TOKEN` is empty; fill `.env`, then `docker compose restart bot`. |
+| Conflict: terminated by other getUpdates | A second bot instance is running somewhere OR a webhook is still set. The bot calls deleteWebhook on startup; manual fix: `curl https://api.telegram.org/bot<TOKEN>/deleteWebhook?drop_pending_updates=true`. |
+| Mini App says "Open Lumi inside Telegram" (401) | Mini App was opened outside Telegram. For browser checks use `make dev-auth-up` and `http://localhost:8001/app/`. |
+| Mini App does not open from the button | URL must be **https** (tunnel), `APP_PUBLIC_URL` must be current, and after changing it you need `docker compose up -d --force-recreate api bot`. |
+| Mini App hangs on a blank page or robot icon | Old/dead tunnel, containers did not reread `.env`, or stale chat-specific menu. Run `make miniapp-local-up`; check `curl "$APP_PUBLIC_URL/health"`, `api/bot` logs, close the old Mini App window, and reopen the fresh `/app` button. |
+| Bot replies "Done, I recorded that" to everything | Mock LLM is active: `MINIMAX_API_KEY` is empty or `LLM_PROVIDER=mock`. API/worker logs show `falling back to mock`. |
+| MiniMax error in replies | `docker compose logs worker api \| grep -i minimax`; check key/quota/timeout. Retries and fallbacks are already built in. |
+| "Task queue unavailable" | Redis is down: `docker compose ps redis`, `docker compose up -d redis`. |
+| Run is stuck in queued | Worker is not alive: `docker compose logs worker`; restart with `docker compose restart worker`. |
+| Automation does not run | Is it enabled in Mini App -> Automations? Is `next_run_at` in the future? Scheduler logs should show `scheduled job enqueued`. |
+| Google: needs_reauth | Token expired without refresh; rerun `make google-auth-local`. |
+| Migration fails | `docker compose logs postgres`; last resort: `make reset-local-db && make migrate && make seed`. |
+| Reminder did not arrive | Worker cron runs every minute; check `reminder_at` (UTC in DB) and worker logs for `cron:send_due_reminders`. |
 
-## Отладка контекста LLM
+## Debug LLM context
 
 ```bash
 curl -s localhost:8000/api/debug/context/latest \
   -H "X-Telegram-Init-Data: <initData>" | python3 -m json.tool
 ```
 
-(только `APP_ENV=local`; снапшот пишется в `agent_runs.metadata` каждого chat-рана).
-Для разработки без Telegram: `DEV_AUTH_ENABLED=true` + `DEV_AUTH_TELEGRAM_USER_ID=<id>`
-в .env — API будет аутентифицировать без initData. Не включай за туннелем!
+Only with `APP_ENV=local`; the snapshot is written to `agent_runs.metadata` for every chat run. For development without Telegram, set `DEV_AUTH_ENABLED=true` + `DEV_AUTH_TELEGRAM_USER_ID=<id>` in `.env`; the API will authenticate without initData. Do not enable this behind the tunnel.
 
-## Mac засыпает — бот останавливается
+## Mac sleeps, bot stops
 
 ```bash
-caffeinate -dimsu          # держать Mac бодрым, пока терминал открыт
+caffeinate -dimsu          # keep the Mac awake while the terminal is open
 ```
 
-## Производство
+## Production
 
-MVP сознательно локальный. Путь на VPS:
+The MVP is intentionally local. VPS path:
 
 ```text
-polling → webhook (bot/runner.py, нужен HTTPS-домен)
-туннель → домен + reverse proxy (caddy/traefik)
-.env → secrets manager
-один пользователь → мультиюзер (allowlist уже список; добавить onboarding)
-+ бэкапы Postgres, мониторинг, rate limits, security review
+polling -> webhook (bot/runner.py, requires HTTPS domain)
+tunnel -> domain + reverse proxy (caddy/traefik)
+.env -> secrets manager
+single user -> multi-user (allowlist is already a list; add onboarding)
++ Postgres backups, monitoring, rate limits, security review
 ```
 
-Docker Compose переносится на VPS как есть (`restart: unless-stopped` уже стоит).
+Docker Compose can be moved to a VPS as-is (`restart: unless-stopped` is already set).
 
-Для Mini App real-time `/api/realtime` нужен long-running backend и reverse proxy без
-буферизации SSE: отключить response buffering/gzip для этого пути и поставить долгий read
-timeout. Serverless request runtime для этого endpoint не подходит.
+For Mini App real-time `/api/realtime`, use a long-running backend and a reverse proxy without SSE response buffering: disable response buffering/gzip for this path and configure a long read timeout. Serverless request runtime is not suitable for this endpoint.

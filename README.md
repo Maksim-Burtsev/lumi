@@ -1,34 +1,33 @@
 # Lumi
 
-**Lumi — личный AI-ассистент в Telegram.** Один чат и премиальное Mini App поверх задач, календаря, почты, новостей и долгосрочной памяти. Lumi превращает поток сообщений, писем и встреч в понятный план действий.
+**Lumi is a personal AI assistant in Telegram.** One chat plus a polished Mini App for tasks, calendar, email, news, and long-term memory. Lumi turns messages, emails, and meetings into a clear action plan.
 
 ```text
-Ты:    Напомни завтра в 10 написать Саше по договору,
-       а после обеда найди слот на архитектуру.
+You:   Remind me tomorrow at 10 to write Sasha about the contract,
+       and find an architecture slot after lunch.
 
-Lumi:  Готово.
-       Создал задачу: написать Саше по договору.
-       Напоминание: завтра в 10:00.
-       Нашел окно 14:30–16:00 под архитектуру — принять фокус-блок?
-       [✓ Принять блок]
+Lumi:  Done.
+       Created a task: write Sasha about the contract.
+       Reminder: tomorrow at 10:00.
+       Found a 14:30-16:00 window for architecture - accept the focus block?
+       [Accept block]
 ```
 
-## Что умеет MVP
+## MVP capabilities
 
-- **Чат-ассистент** на MiniMax M3 — stateless LLM, всё состояние в собственной БД
-- **Задачи и напоминания** из естественного языка, с подтверждениями для неоднозначных
-- **Календарь** — внутренний + синк Google Calendar и Яндекс.Календаря (CalDAV, read-only), свободные слоты, план дня с фокус-блоками
-- **Почта** — read-only triage Gmail: что ждет ответа, что важно, задачи из писем
-- **Новости** — дайджесты по темам (Google News RSS) по расписанию
-- **Память** — Lumi запоминает предпочтения и проекты; всё видно и управляемо в Mini App
-- **Автоматизации** — свои cron-расписания (новости, почта, план дня, синк, свой промпт); создаются пользователем в Mini App, дефолтных нет
-- **Mini App** — Today, Tasks, Calendar, Inbox, News, Automations, Memory, Settings, Agent Runs
-- **Наблюдаемость** — каждый запуск агента, каждый вызов LLM и каждое действие в журнале
+- **Chat assistant** on MiniMax M3: stateless LLM, all state stored in Lumi's own database
+- **Tasks and reminders** from natural language, with confirmations for ambiguous cases
+- **Calendar**: internal calendar plus Google Calendar and Yandex.Calendar sync (CalDAV, read-only), free slots, day planning with focus blocks
+- **Email**: read-only Gmail triage for replies, important mail, and task candidates from emails
+- **News**: scheduled topic digests from Google News RSS
+- **Memory**: Lumi remembers preferences and projects; everything is visible and manageable in the Mini App
+- **Automations**: user-defined cron schedules for news, email, daily planning, sync, and custom prompts; no default automations are enabled
+- **Mini App**: Today, Tasks, Calendar, Inbox, News, Automations, Memory, Settings, Agent Runs
+- **Observability**: every agent run, LLM call, and action is logged
 
-Безопасность по умолчанию: allowlist Telegram ID, валидация initData, подтверждение для
-внешних записей (календарь/почта), никакого доступа LLM к shell или файлам.
+Security by default: Telegram ID allowlist, initData validation, confirmation for external writes (calendar/email), and no LLM access to shell or files.
 
-## Архитектура в одну картинку
+## Architecture at a glance
 
 ```mermaid
 flowchart LR
@@ -43,48 +42,48 @@ flowchart LR
     RQ --> WRK[worker]
     WRK --> SVC
     WRK --> LLM
-    WRK -. дайджесты/напоминания .-> U
+    WRK -. digests/reminders .-> U
     SVC --> GOOGLE[Gmail / GCal]
     SVC --> RSS[RSS / Google News]
 ```
 
-Шесть контейнеров: `postgres`, `redis`, `api`, `bot`, `worker`, `scheduler`. Подробности — в [docs/architecture.md](docs/architecture.md).
+Six containers: `postgres`, `redis`, `api`, `bot`, `worker`, `scheduler`. Details: [docs/architecture.md](docs/architecture.md).
 
-## Быстрый старт (5 минут)
+## Quick start (5 minutes)
 
-Нужны: Docker (OrbStack/Docker Desktop), Node 18+, токен бота от [@BotFather](https://t.me/BotFather).
+Requirements: Docker (OrbStack/Docker Desktop), Node 18+, a bot token from [@BotFather](https://t.me/BotFather).
 
 ```bash
-# 1. Подготовка
-make setup                 # создаст .env из шаблона и data/-каталоги
+# 1. Prepare local files
+make setup                 # creates .env from the template and data/ directories
 
-# 2. Заполни .env:
-#    TELEGRAM_BOT_TOKEN        — от @BotFather
-#    ALLOWED_TELEGRAM_USER_IDS — твой id (узнать: @userinfobot)
-#    MINIMAX_API_KEY           — ключ MiniMax (или LLM_PROVIDER=mock без ключа)
+# 2. Fill .env:
+#    TELEGRAM_BOT_TOKEN        - from @BotFather
+#    ALLOWED_TELEGRAM_USER_IDS - your id (check with @userinfobot)
+#    MINIMAX_API_KEY           - MiniMax key (or LLM_PROVIDER=mock without a key)
 
-# 3. Сборка и запуск
-make frontend-build        # соберет Mini App в frontend/dist
-make up-detached           # поднимет все 6 сервисов
-make migrate               # применит миграции
-make seed                  # создаст пользователя, темы новостей, автоматизации
+# 3. Build and start
+make frontend-build        # builds the Mini App into frontend/dist
+make up-detached           # starts all 6 services
+make migrate               # applies migrations
+make seed                  # creates the user, news topics, and automations
 
-# 4. Проверка без ключей
-make smoke                 # сквозной тест на mock LLM — должно быть SMOKE OK
+# 4. Check without external keys
+make smoke                 # end-to-end mock LLM check; should print SMOKE OK
 ```
 
-Теперь напиши своему боту `/start` в Telegram.
+Now send `/start` to your bot in Telegram.
 
-### Mini App локально и в Telegram
+### Mini App locally and in Telegram
 
-Backend отдает собранный `frontend/dist` на `/app`. После изменений фронта всегда делай:
+The backend serves the built `frontend/dist` at `/app`. After frontend changes, always run:
 
 ```bash
 make frontend-build
 docker compose up -d --force-recreate api
 ```
 
-Проверка в обычном браузере без Telegram `initData`:
+Browser check without Telegram `initData`:
 
 ```bash
 make up-detached
@@ -92,95 +91,87 @@ make dev-auth-up
 open http://localhost:8001/app/
 ```
 
-Самый быстрый путь поднять Mini App для Telegram:
+Fastest Telegram Mini App path:
 
 ```bash
 make miniapp-local-up
 ```
 
-Команда соберет фронтенд, поднимет Docker, создаст fresh `cloudflared` tunnel в `tmux`,
-запишет `APP_PUBLIC_URL`, пересоздаст `api/bot` и проверит default/per-chat Telegram menu.
-Ручной вариант:
+This builds the frontend, starts Docker, creates a fresh `cloudflared` tunnel in `tmux`, writes `APP_PUBLIC_URL`, recreates `api/bot`, and verifies the default and per-chat Telegram menu buttons.
+
+Manual path:
 
 ```bash
 make tunnel
 ```
 
-Скопируй выданный `https://…trycloudflare.com` в `.env`:
+Copy the generated `https://...trycloudflare.com` URL into `.env`:
 
 ```dotenv
 APP_PUBLIC_URL=https://your-tunnel.trycloudflare.com
 FRONTEND_PUBLIC_PATH=/app/
 ```
 
-Потом синхронизируй API и кнопку Mini App:
+Then reload API and Mini App menu state:
 
 ```bash
 docker compose up -d --force-recreate api bot
 curl "$APP_PUBLIC_URL/health"
 ```
 
-Открой `/app` у бота или кнопку меню. Если Telegram показывает пустой экран с роботом,
-проверь не только default menu, но и chat-specific menu: Telegram может держать старую
-кнопку для конкретного чата.
+Open `/app` from the bot or use the menu button. If Telegram shows a blank page or robot icon, check both the default menu and the chat-specific menu: Telegram can keep an old button for a specific chat.
 
-### Яндекс.Календарь (опционально)
+### Yandex.Calendar (optional)
 
-Прямо в Mini App: Settings → Яндекс.Календарь → логин + пароль приложения
-(id.yandex.ru → Безопасность → Пароли приложений → «Календарь CalDAV»). Read-only.
+In the Mini App: Settings -> Yandex.Calendar -> username + app password (id.yandex.ru -> Security -> App passwords -> Calendar CalDAV). Read-only.
 
-### Google (Gmail + Calendar, опционально)
+### Google (Gmail + Calendar, optional)
 
-1. В Google Cloud Console создай OAuth client (**Desktop app**), включи Gmail API и Calendar API,
-   добавь себя в test users.
-2. Сохрани client secret как `data/secrets/google_client_secret.json`.
-3. `make google-auth-local` — откроется браузер, дай доступ.
+1. In Google Cloud Console, create an OAuth client (**Desktop app**), enable Gmail API and Calendar API, and add yourself to test users.
+2. Save the client secret as `data/secrets/google_client_secret.json`.
+3. Run `make google-auth-local`; a browser opens for consent.
 
-После этого работают `/email`, синк календаря и утренний разбор почты. Без Google
-Lumi полноценно работает на внутреннем календаре.
+After that, `/email`, calendar sync, and morning email triage work. Without Google, Lumi still works fully with the internal calendar.
 
-## Команды бота
+## Bot commands
 
-| Команда | Что делает |
+| Command | What it does |
 |---|---|
-| обычный текст | главный сценарий: задачи, напоминания, планирование, память |
-| `/today` | сводка дня: встречи, задачи, что требует внимания |
-| `/tasks` | активные задачи |
-| `/plan` | собрать план дня с фокус-блоками |
-| `/news` | новостной дайджест по твоим темам |
-| `/email` | разбор почты (нужен Google) |
-| `/app` | открыть Mini App |
-| `/settings` | статус подключений |
+| plain text | main flow: tasks, reminders, planning, memory |
+| `/today` | day summary: meetings, tasks, attention items |
+| `/tasks` | active tasks |
+| `/plan` | build a day plan with focus blocks |
+| `/news` | news digest for your topics |
+| `/email` | email triage (requires Google) |
+| `/app` | open the Mini App |
+| `/settings` | connection status |
 
-## Полезные команды
+## Useful commands
 
 ```bash
-make logs            # хвост логов всех сервисов
-make test            # pytest в контейнере (50 тестов)
+make logs            # tail logs for all services
+make test            # pytest in the container
 make lint            # ruff
-make smoke           # сквозная проверка на mock LLM
-make down            # остановить всё
-make reset-local-db  # снести volumes и начать заново
+make smoke           # end-to-end mock LLM check
+make down            # stop everything
+make reset-local-db  # remove volumes and start over
 ```
 
-## Документация
+## Documentation
 
-- [docs/architecture.md](docs/architecture.md) — сервисы, потоки, диаграммы
-- [docs/database.md](docs/database.md) — схема БД и ERD
-- [docs/context-management.md](docs/context-management.md) — контекст, память, compaction
-- [docs/connectors.md](docs/connectors.md) — Google, RSS, как добавить Outlook
-- [docs/runbook.md](docs/runbook.md) — операции, отладка, типовые проблемы
-- [docs/agent-qa.md](docs/agent-qa.md) — самостоятельная QA-проверка агентом через Telegram Web, Mini App, БД и логи
-- [docs/security.md](docs/security.md) — модель угроз и контроли
-- [docs/api-contract.md](docs/api-contract.md) — контракт API Mini App
+- [docs/architecture.md](docs/architecture.md) - services, flows, diagrams
+- [docs/database.md](docs/database.md) - database schema and ERD
+- [docs/context-management.md](docs/context-management.md) - context, memory, compaction
+- [docs/connectors.md](docs/connectors.md) - Google, RSS, adding Outlook
+- [docs/runbook.md](docs/runbook.md) - operations, debugging, common issues
+- [docs/agent-qa.md](docs/agent-qa.md) - agent self-QA via Telegram Web, Mini App, DB, and logs
+- [docs/security.md](docs/security.md) - threat model and controls
+- [docs/api-contract.md](docs/api-contract.md) - Mini App API contract
 
-## Стек
+## Stack
 
-Python 3.12 · FastAPI · aiogram 3 · SQLAlchemy 2 (async) · Alembic · Postgres 16 · Redis 7 ·
-arq · croniter · React 18 · TypeScript · Vite · Tailwind · TanStack Query · MiniMax M3
+Python 3.12 · FastAPI · aiogram 3 · SQLAlchemy 2 (async) · Alembic · Postgres 16 · Redis 7 · arq · croniter · React 18 · TypeScript · Vite · Tailwind · TanStack Query · MiniMax M3
 
-## Ограничения MVP
+## MVP limits
 
-Локальный однопользовательский продукт: один Telegram-аккаунт в allowlist, polling вместо
-webhook, файлы локально, без голосовых. Бот работает, пока Mac не спит (`caffeinate -dimsu`).
-План миграции на VPS — в [docs/runbook.md](docs/runbook.md#производство).
+Local single-user product: one Telegram account in the allowlist, polling instead of webhooks, local files, no voice. The bot runs while the Mac is awake (`caffeinate -dimsu`). VPS migration plan: [docs/runbook.md#production](docs/runbook.md#production).

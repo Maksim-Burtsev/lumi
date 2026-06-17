@@ -1,32 +1,25 @@
 # Agent self-QA
 
-Этот чеклист обязателен для нетривиальных изменений Lumi, особенно для бота,
-Mini App, planner/orchestrator, tools, DB state, observability и Telegram UX.
+This checklist is mandatory for non-trivial Lumi changes, especially bot, Mini App, planner/orchestrator, tools, DB state, observability, and Telegram UX changes.
 
 ## Canonical manual path
 
-Основной ручной путь: Telegram Web в Chrome, автоматизированный через Chrome/CDP.
-Он использует реальную сессию пользователя, настоящего Telegram-бота и тот же Mini App
-iframe, который видит пользователь.
+Primary manual path: Telegram Web in Chrome, automated through Chrome/CDP. It uses the real user session, the real Telegram bot, and the same Mini App iframe the user sees.
 
-Native Telegram Desktop — только дополнительная ручная cross-check проверка. Ее не
-считать обязательной для агента: стабильная автоматизация Desktop зависит от macOS
-Accessibility и локальных разрешений.
+Native Telegram Desktop is only an additional manual cross-check. Do not treat it as mandatory for the agent: stable Desktop automation depends on macOS Accessibility and local permissions.
 
 ## Isolated QA runtime
 
-Для рискованных изменений не трогай основной compose project. Поднимай отдельный
-worktree и отдельный project:
+For risky changes, do not touch the main compose project. Use a separate worktree and compose project:
 
 ```bash
 git worktree add -b codex/<task> .worktrees/<task> main
 cd .worktrees/<task>
 ```
 
-Перед запуском compose в новом worktree скопируй `.env` из основного checkout,
-если файла нет: из `.worktrees/<task>` выполни `cp ../../.env .env`.
+Before running compose in a new worktree, copy `.env` from the main checkout if it is missing. From `.worktrees/<task>`, run `cp ../../.env .env`.
 
-Используй override с отдельными портами:
+Use an override with separate ports:
 
 ```bash
 COMPOSE_PROJECT_NAME=lumi_fix \
@@ -34,26 +27,25 @@ COMPOSE_FILE=docker-compose.yml:/tmp/lumi-fix.override.yml \
 docker compose up -d --build api bot worker
 ```
 
-Не запускай второй Telegram poller на тот же token. Если `lumi_fix-bot-1` активен,
-основной/default bot должен быть остановлен.
+Do not run a second Telegram poller on the same token. If `lumi_fix-bot-1` is active, the main/default bot must be stopped.
 
 ## Mini App setup
 
-Mini App в Telegram требует HTTPS URL. `localhost` недостаточен.
+Telegram Mini App requires an HTTPS URL. `localhost` is not enough.
 
 ```bash
 make frontend-build
 cloudflared tunnel --url http://localhost:18000
 ```
 
-В `.env` worktree:
+In the worktree `.env`:
 
 ```dotenv
 APP_PUBLIC_URL=https://your-fresh-tunnel.trycloudflare.com
 FRONTEND_PUBLIC_PATH=/app/
 ```
 
-После смены URL пересоздай процессы, которые читают `.env` и выставляют Telegram menu:
+After changing the URL, recreate processes that read `.env` and set the Telegram menu:
 
 ```bash
 COMPOSE_PROJECT_NAME=lumi_fix \
@@ -61,7 +53,7 @@ COMPOSE_FILE=docker-compose.yml:/tmp/lumi-fix.override.yml \
 docker compose up -d --force-recreate api bot worker
 ```
 
-Проверки:
+Checks:
 
 ```bash
 curl http://localhost:18000/health
@@ -72,34 +64,30 @@ COMPOSE_FILE=docker-compose.yml:/tmp/lumi-fix.override.yml \
 docker compose logs bot --tail 200 | rg "mini app menu button set|mini app chat menu button set"
 ```
 
-Если Mini App в Telegram показывает белый экран или робота, сначала проверь stale
-tunnel/menu: текущий `APP_PUBLIC_URL`, fresh `curl "$APP_PUBLIC_URL/health"`, bot logs
-и закрыто ли старое окно Mini App.
+If Telegram Mini App shows a blank page or robot icon, first check for stale tunnel/menu: current `APP_PUBLIC_URL`, fresh `curl "$APP_PUBLIC_URL/health"`, bot logs, and whether the old Mini App window was closed.
 
 ## Required real-user flows
 
-Проверяй не только happy path и не только русский язык. Минимальный набор:
+Check more than the happy path, and check both English and Russian phrasing. Minimum set:
 
-- Telegram chat action: создать задачу.
-- Follow-up на недавнее действие: обновить эту/последнюю задачу, например привязать
-  к проекту.
-- Exact-title flow: обновить задачу по названию.
-- Ambiguous flow: несколько похожих задач дают pending confirmation/buttons, а не
-  ложный success.
-- Missing-candidate flow: безопасное уточнение, без фейкового "готово".
-- Ordinary no-tool question: обычный ответ без tool execution.
+- Telegram chat action: create a task.
+- Follow-up on a recent action: update this/the latest task, for example attach it to a project.
+- Exact-title flow: update a task by title.
+- Ambiguous flow: several similar tasks produce pending confirmation/buttons, not a false success.
+- Missing-candidate flow: safe clarification, no fake "done".
+- Ordinary no-tool question: normal answer without tool execution.
 - English + Russian phrasing for realistic user messages.
 - Mini App load from Telegram menu: `/app`, assets, `/api/settings`, `/api/today`.
 
-Для planner/tool изменений дополнительно проверь:
+For planner/tool changes, also verify:
 
-- запросы на Lumi state идут через structured `tool_calls`;
-- backend, а не final_chat, формирует success для выполненных actions;
-- final_chat не пишет success, если backend action не был выполнен.
+- requests for Lumi state go through structured `tool_calls`;
+- backend, not final_chat, forms success for executed actions;
+- final_chat does not claim success if the backend action was not executed.
 
 ## Evidence to collect
 
-После ручных Telegram flows проверь БД, логи и Mini App.
+After manual Telegram flows, check DB, logs, and Mini App.
 
 ```bash
 COMPOSE_PROJECT_NAME=lumi_fix \
@@ -107,7 +95,7 @@ COMPOSE_FILE=docker-compose.yml:/tmp/lumi-fix.override.yml \
 docker compose exec postgres psql -U lumi -d lumi
 ```
 
-Полезные SQL:
+Useful SQL:
 
 ```sql
 select created_at, tool_name, status, result_json
@@ -136,7 +124,7 @@ order by created_at desc
 limit 20;
 ```
 
-Логи:
+Logs:
 
 ```bash
 COMPOSE_PROJECT_NAME=lumi_fix \
@@ -144,25 +132,23 @@ COMPOSE_FILE=docker-compose.yml:/tmp/lumi-fix.override.yml \
 docker compose logs api bot worker --tail 300
 ```
 
-Минимальная evidence summary перед "готово":
+Minimum evidence summary before saying "done":
 
 - automated checks: exact commands + pass/fail;
 - real Telegram Web flows: messages sent + observed bot replies;
 - Mini App: tunnel URL + `/app` loaded + API endpoints seen in logs;
-- DB: `tool_calls`, `tasks`/`pending_confirmations`, `agent_runs.metadata.planner_trace`,
-  `llm_calls`;
+- DB: `tool_calls`, `tasks`/`pending_confirmations`, `agent_runs.metadata.planner_trace`, `llm_calls`;
 - any skipped native-app/manual checks and why.
 
 ## Release gates
 
-Не релизить, если выполняется хоть одно условие:
+Do not release if any condition is true:
 
-- action request не создает нужный `tool_call`;
-- есть fake success без completed `tool_call` и соответствующей записи в
-  `tasks`/`pending_confirmations`;
-- follow-up на недавнее backend action теряет state;
-- ambiguous task reference auto-updates не тот объект вместо confirmation;
-- planner trace не пишет sanitized причину провала;
-- Mini App menu указывает на stale tunnel;
-- `backend/uv.lock` появился untracked;
-- основной/default bot и QA bot одновременно poll один token.
+- action request does not create the required `tool_call`;
+- fake success exists without completed `tool_call` and a matching row in `tasks`/`pending_confirmations`;
+- follow-up on a recent backend action loses state;
+- ambiguous task reference auto-updates the wrong object instead of asking for confirmation;
+- planner trace does not write a sanitized failure reason;
+- Mini App menu points at a stale tunnel;
+- `backend/uv.lock` appears untracked;
+- main/default bot and QA bot poll the same token at the same time.
