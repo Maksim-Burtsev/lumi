@@ -81,7 +81,7 @@ export interface TimezonesResponse {
   items: TimezoneItem[];
 }
 
-export type TimeFormat = '24h' | '12h';
+export type TimeFormat = 'auto' | '24h' | '12h';
 
 export interface PatchSettingsInput {
   timezone?: string;

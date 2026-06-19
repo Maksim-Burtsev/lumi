@@ -7,10 +7,10 @@ from typing import Literal
 DEFAULT_APP_LOCALE = "en"
 SUPPORTED_APP_LOCALES = ("en", "ru")
 DEFAULT_REPLY_LANGUAGE_MODE = "auto"
-DEFAULT_TIME_FORMAT = "24h"
-SUPPORTED_TIME_FORMATS = ("24h", "12h")
+DEFAULT_TIME_FORMAT = "auto"
+SUPPORTED_TIME_FORMATS = ("auto", "24h", "12h")
 ReplyLanguageMode = Literal["auto", "app_locale"]
-TimeFormat = Literal["24h", "12h"]
+TimeFormat = Literal["auto", "24h", "12h"]
 
 
 def primary_language_tag(value: str | None) -> str | None:
@@ -50,8 +50,12 @@ def normalize_reply_language_mode(value: str | None) -> ReplyLanguageMode:
 
 
 def normalize_time_format(value: str | None) -> TimeFormat:
+    if value == "auto":
+        return "auto"
     if value == "12h":
         return "12h"
+    if value == "24h":
+        return "24h"
     return DEFAULT_TIME_FORMAT
 
 

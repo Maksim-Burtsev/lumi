@@ -254,6 +254,7 @@ function CreateBlockSheet({
   const [error, setError] = useState<string | null>(null);
   const createEvent = useCreateEvent();
   const { show } = useToast();
+  const timeDisplay = useTimeDisplay();
 
   // Re-seed fields each time the sheet opens (keyed remount from parent)
   const [seeded, setSeeded] = useState(false);
@@ -311,7 +312,7 @@ function CreateBlockSheet({
 
   return (
     <Sheet open={open} onClose={onClose} title="Новый блок">
-      <p className="mb-4 text-[13px] text-hint">{formatDayLabel(day)} · внутренний календарь Lumi</p>
+      <p className="mb-4 text-[13px] text-hint">{formatDayLabel(day, timeDisplay)} · внутренний календарь Lumi</p>
       <label className="block">
         <FieldLabel>Название</FieldLabel>
         <Input value={title} onChange={setTitle} placeholder="Фокус: архитектура Lumi" />
@@ -423,7 +424,7 @@ export default function CalendarPage() {
             <ChevronLeft size={20} />
           </button>
           <div className="text-center">
-            <p className="tnum text-[15px] font-semibold text-ink">{formatDayLabel(day)}</p>
+            <p className="tnum text-[15px] font-semibold text-ink">{formatDayLabel(day, timeDisplay)}</p>
             {!isToday && (
               <button
                 type="button"

@@ -111,6 +111,13 @@ async def test_patch_settings_accepts_time_format(client):
     assert response.json()["user"]["settings"]["time_format"] == "12h"
 
 
+async def test_patch_settings_accepts_auto_time_format(client):
+    response = await client.patch("/api/settings", json={"time_format": "auto"})
+
+    assert response.status_code == 200
+    assert response.json()["user"]["settings"]["time_format"] == "auto"
+
+
 async def test_patch_settings_rejects_invalid_time_format(client):
     response = await client.patch("/api/settings", json={"time_format": "ampm"})
 
@@ -215,7 +222,7 @@ async def test_memories_and_automations_endpoints(client):
 
 
 async def test_confirmations_accept_and_reject(client, db_session):
-    user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID)
+    user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID, language_code="ru")
     service = ConfirmationService(db_session)
     accept_item = await service.create(
         user,

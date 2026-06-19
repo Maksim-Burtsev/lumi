@@ -8,6 +8,7 @@ import {
   buildTimezoneOptions,
   getBrowserTimezones,
   getDeviceTimezone,
+  sortTimezoneOptions,
   timezoneOptionMatches,
 } from '../../lib/timezones';
 
@@ -44,11 +45,15 @@ export function TimezonePicker({ value, onChange, locale }: TimezonePickerProps)
     apiTimezones: timezones.data?.items.map((item) => item.id),
     browserTimezones: getBrowserTimezones(),
     extraTimezones: [value, deviceTimezone],
+    currentTimezone: value,
+    deviceTimezone,
   }), [deviceTimezone, timezones.data?.items, value]);
   const selected = options.find((option) => option.value === value);
   const normalizedQuery = query.trim().toLowerCase();
   const filtered = (normalizedQuery
-    ? options.filter((option) => timezoneOptionMatches(option, query))
+    ? options
+      .filter((option) => timezoneOptionMatches(option, query))
+      .sort((a, b) => sortTimezoneOptions(a, b, query))
     : options
   ).slice(0, 80);
 
@@ -67,7 +72,12 @@ export function TimezonePicker({ value, onChange, locale }: TimezonePickerProps)
         className="flex min-h-[44px] w-full items-center justify-between gap-3 rounded-xl border border-hairline bg-[var(--surface-strong)] px-3.5 py-2 text-left text-[15px] text-ink outline-none transition-shadow focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
       >
         <span className="min-w-0">
-          <span className="block truncate">{selected?.label ?? value}</span>
+          <span className="block truncate">{selected?.primaryLabel ?? value}</span>
+          {selected?.secondaryLabel && (
+            <span className="mt-0.5 block truncate text-[12px] text-hint">
+              {selected.secondaryLabel}
+            </span>
+          )}
           {deviceTimezone && deviceTimezone !== value && (
             <span className="mt-0.5 block truncate text-[12px] text-hint">
               {copy.detected}: {deviceTimezone}
@@ -100,7 +110,8 @@ export function TimezonePicker({ value, onChange, locale }: TimezonePickerProps)
               }`}
             >
               <span className="min-w-0">
-                <span className="block truncate">{option.label}</span>
+                <span className="block truncate">{option.primaryLabel}</span>
+                <span className="mt-0.5 block truncate text-[12px] text-hint">{option.secondaryLabel}</span>
               </span>
               {option.value === value && <Check size={16} className="shrink-0 text-accent-text" />}
             </button>

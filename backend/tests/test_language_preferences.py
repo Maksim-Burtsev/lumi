@@ -14,6 +14,10 @@ from lumi.services.users import UserService
 from .conftest import TEST_TELEGRAM_ID
 
 
+def test_default_time_format_is_automatic():
+    assert DEFAULT_TIME_FORMAT == "auto"
+
+
 def test_normalize_app_locale_supports_only_english_and_russian():
     assert normalize_app_locale("en-US") == "en"
     assert normalize_app_locale("ru-RU") == "ru"

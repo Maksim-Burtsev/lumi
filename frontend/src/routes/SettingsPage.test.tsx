@@ -15,8 +15,14 @@ const TIMEZONES_RESPONSE = {
     { id: 'America/Chicago' },
     { id: 'America/Denver' },
     { id: 'America/Los_Angeles' },
+    { id: 'America/Phoenix' },
     { id: 'America/Anchorage' },
     { id: 'Pacific/Honolulu' },
+    { id: 'America/Puerto_Rico' },
+    { id: 'Pacific/Guam' },
+    { id: 'Europe/London' },
+    { id: 'Europe/Berlin' },
+    { id: 'Europe/Paris' },
     { id: 'Asia/Bangkok' },
     { id: 'Asia/Makassar' },
     { id: 'Asia/Kathmandu' },
@@ -34,7 +40,7 @@ function makeUser(overrides: Partial<User> = {}): User {
     last_name: 'User',
     timezone: 'Asia/Yerevan',
     locale: 'en',
-    settings: { reply_language_mode: 'auto', time_format: '24h' },
+    settings: { reply_language_mode: 'auto', time_format: 'auto' },
     created_at: '2026-06-12T00:00:00Z',
     last_seen_at: null,
     ...overrides,
@@ -147,10 +153,13 @@ describe('SettingsPage language settings', () => {
 
     await user.click(await screen.findByRole('button', { name: /change time zone/i }));
     fireEvent.change(screen.getByPlaceholderText('Search city or time zone'), { target: { value: 'USA' } });
-    expect(await screen.findByRole('button', { name: /America\/Los_Angeles/i })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /Pacific Time/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /America\/New_York/i })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Africa\/Lusaka/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Asia\/Jerusalem/i })).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText('Search city or time zone'), { target: { value: 'Germany' } });
+    expect(await screen.findByRole('button', { name: /Central European Time.*Europe\/Berlin/i })).toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText('Search city or time zone'), { target: { value: 'Thailand' } });
     expect(await screen.findByRole('button', { name: /Asia\/Bangkok/i })).toBeInTheDocument();
@@ -168,7 +177,7 @@ describe('SettingsPage language settings', () => {
       user: makeUser({
         settings: {
           reply_language_mode: 'auto',
-          time_format: input.time_format ?? '24h',
+          time_format: input.time_format ?? 'auto',
         },
       }),
     }));
@@ -176,7 +185,8 @@ describe('SettingsPage language settings', () => {
     renderSettingsPage();
 
     expect(await screen.findByText('Time format')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: '12 hours' }));
+    expect(screen.getByRole('button', { name: 'Automatic' })).toHaveAttribute('aria-pressed', 'true');
+    await user.click(screen.getByRole('button', { name: '12-hour' }));
 
     await waitFor(() => {
       expect(patchSpy).toHaveBeenCalledWith({ time_format: '12h' });

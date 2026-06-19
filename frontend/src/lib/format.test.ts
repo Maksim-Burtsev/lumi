@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { formatTime, formatTimeRange } from './format';
+import {
+  formatDateHeading,
+  formatDueLabel,
+  formatTime,
+  formatTimeRange,
+  resolveTimeFormat,
+} from './format';
 
 describe('time formatting preferences', () => {
   it('formats time in the profile timezone with the selected clock format', () => {
@@ -15,5 +21,34 @@ describe('time formatting preferences', () => {
       '2026-06-17T11:45:00Z',
       { locale: 'en', timeFormat: '12h', timezone: 'Asia/Yerevan' },
     )).toBe('2:30 PM–3:45 PM');
+  });
+
+  it('resolves automatic clock format from the regional locale', () => {
+    expect(resolveTimeFormat({ locale: 'en', timeFormat: 'auto', regionalLocale: 'en-US' })).toBe('12h');
+    expect(resolveTimeFormat({ locale: 'en', timeFormat: 'auto', regionalLocale: 'en-GB' })).toBe('24h');
+  });
+
+  it('formats English dates with US and European regional ordering', () => {
+    const friday = new Date('2026-06-19T12:00:00Z');
+
+    expect(formatDateHeading(friday, { locale: 'en', regionalLocale: 'en-US' })).toBe('Friday, June 19');
+    expect(formatDateHeading(friday, { locale: 'en', regionalLocale: 'en-GB' })).toBe('Friday 19 June');
+  });
+
+  it('formats English due labels with regional date ordering', () => {
+    const ts = '2026-08-19T14:30:00Z';
+
+    expect(formatDueLabel(ts, {
+      locale: 'en',
+      regionalLocale: 'en-US',
+      timeFormat: '12h',
+      timezone: 'UTC',
+    })).toBe('Aug 19, 2:30 PM');
+    expect(formatDueLabel(ts, {
+      locale: 'en',
+      regionalLocale: 'en-GB',
+      timeFormat: '24h',
+      timezone: 'UTC',
+    })).toBe('19 Aug, 14:30');
   });
 });

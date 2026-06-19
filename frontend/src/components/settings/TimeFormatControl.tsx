@@ -13,15 +13,17 @@ const COPY = {
   en: {
     example: 'Example',
     options: [
-      { value: '24h', label: '24 hours' },
-      { value: '12h', label: '12 hours' },
+      { value: 'auto', label: 'Automatic' },
+      { value: '12h', label: '12-hour' },
+      { value: '24h', label: '24-hour' },
     ],
   },
   ru: {
     example: 'Пример',
     options: [
-      { value: '24h', label: '24 часа' },
+      { value: 'auto', label: 'Авто' },
       { value: '12h', label: '12 часов' },
+      { value: '24h', label: '24 часа' },
     ],
   },
 } satisfies Record<AppLocale, {
@@ -38,7 +40,7 @@ export function TimeFormatControl({ value, onChange, locale, timezone }: TimeFor
   return (
     <div>
       <div
-        className="grid min-h-[44px] grid-cols-2 gap-1 rounded-xl border border-hairline bg-[var(--surface-strong)] p-1"
+        className="grid min-h-[44px] grid-cols-3 gap-1 rounded-xl border border-hairline bg-[var(--surface-strong)] p-1"
         role="group"
       >
         {copy.options.map((option) => {

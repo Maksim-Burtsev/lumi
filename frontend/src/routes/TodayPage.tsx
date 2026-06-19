@@ -34,7 +34,7 @@ import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
 import { Timeline } from '../components/timeline/Timeline';
 import type { TimelineEntry } from '../components/timeline/Timeline';
-import { countLabel, formatDateHeading, formatDueLabel, formatSpanMinutes, normalizeTimeFormat, plural } from '../lib/format';
+import { countLabel, formatDateHeading, formatDueLabel, formatSpanMinutes, plural } from '../lib/format';
 import type { TimeDisplayOptions } from '../lib/format';
 import type { AppLocale } from '../lib/i18n';
 import { useAppLocale } from '../lib/useAppLocale';
@@ -153,24 +153,12 @@ function buildSummaryLine(summary: TodaySummary, locale: AppLocale): string {
   return parts.join(' · ');
 }
 
-function formatDateHeadingLocalized(date: Date, locale: AppLocale): string {
-  if (locale === 'ru') return formatDateHeading(date);
-  return new Intl.DateTimeFormat('en-US', { weekday: 'long', day: 'numeric', month: 'long' }).format(date);
+function formatDateHeadingLocalized(date: Date, locale: AppLocale, timeDisplay: TimeDisplayOptions): string {
+  return formatDateHeading(date, { ...timeDisplay, locale });
 }
 
 function formatDueLabelLocalized(ts: string, locale: AppLocale, timeDisplay: TimeDisplayOptions): string {
-  if (locale === 'ru') return formatDueLabel(ts, timeDisplay);
-  const date = new Date(ts);
-  if (Number.isNaN(date.getTime())) return '—';
-  const timeFormat = normalizeTimeFormat(timeDisplay.timeFormat);
-  return new Intl.DateTimeFormat('en-US', {
-    day: 'numeric',
-    hour: timeFormat === '12h' ? 'numeric' : '2-digit',
-    minute: '2-digit',
-    month: 'short',
-    hour12: timeFormat === '12h',
-    ...(timeDisplay.timezone ? { timeZone: timeDisplay.timezone } : {}),
-  }).format(date);
+  return formatDueLabel(ts, { ...timeDisplay, locale });
 }
 
 function formatSpanMinutesLocalized(startTs: string, endTs: string, locale: AppLocale): string {
@@ -555,7 +543,7 @@ export default function TodayPage() {
             <h2 className="font-display text-[24px] font-normal leading-tight tracking-[-0.01em] text-ink">
               {data.greeting}
             </h2>
-            <p className="mt-1 text-[13px] text-hint">{formatDateHeadingLocalized(date, locale)}</p>
+            <p className="mt-1 text-[13px] text-hint">{formatDateHeadingLocalized(date, locale, timeDisplay)}</p>
             <p className="tnum mt-3 text-[15px] leading-relaxed text-ink">{buildSummaryLine(data.summary, locale)}</p>
             {data.summary.tasks_overdue > 0 && (
               <div className="mt-2.5">

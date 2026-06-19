@@ -20,20 +20,38 @@ const dayMonthFmt = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 's
 const headingFmt = new Intl.DateTimeFormat('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' });
 const weekdayShortFmt = new Intl.DateTimeFormat('ru-RU', { weekday: 'short', day: 'numeric', month: 'long' });
 
-export type TimeFormat = '24h' | '12h';
+export type ResolvedTimeFormat = '24h' | '12h';
+export type TimeFormat = 'auto' | ResolvedTimeFormat;
 
 export interface TimeDisplayOptions {
   locale?: AppLocale;
   timeFormat?: TimeFormat;
   timezone?: string | null;
+  regionalLocale?: string | null;
 }
 
 export function normalizeTimeFormat(value: unknown): TimeFormat {
-  return value === '12h' ? '12h' : '24h';
+  if (value === 'auto') return 'auto';
+  if (value === '12h') return '12h';
+  if (value === '24h') return '24h';
+  return 'auto';
 }
 
-function localeTag(locale: AppLocale | undefined): string {
-  return locale === 'en' ? 'en-US' : 'ru-RU';
+function browserLocale(): string | null {
+  if (typeof navigator === 'undefined') return null;
+  return navigator.languages?.[0] ?? navigator.language ?? null;
+}
+
+export function regionalLocaleTag(options: TimeDisplayOptions = {}): string {
+  if (options.locale === 'ru') return 'ru-RU';
+  const regional = options.regionalLocale ?? browserLocale();
+  if (regional?.toLowerCase().startsWith('en-')) return regional;
+  if (options.timezone?.startsWith('Europe/')) return 'en-GB';
+  return 'en-US';
+}
+
+function localeTag(options: TimeDisplayOptions = {}): string {
+  return !options.locale || options.locale === 'ru' ? 'ru-RU' : regionalLocaleTag(options);
 }
 
 function withTimezone(timezone: string | null | undefined): Pick<Intl.DateTimeFormatOptions, 'timeZone'> {
@@ -50,9 +68,23 @@ function safeDateTimeFormat(locale: string, options: Intl.DateTimeFormatOptions)
   }
 }
 
-function timeFormatter(options: TimeDisplayOptions = {}): Intl.DateTimeFormat {
+export function resolveTimeFormat(options: TimeDisplayOptions = {}): ResolvedTimeFormat {
   const timeFormat = normalizeTimeFormat(options.timeFormat);
-  return safeDateTimeFormat(localeTag(options.locale), {
+  if (timeFormat !== 'auto') return timeFormat;
+  try {
+    const resolved = new Intl.DateTimeFormat(regionalLocaleTag(options), { hour: 'numeric' })
+      .resolvedOptions() as Intl.ResolvedDateTimeFormatOptions & { hourCycle?: string; hour12?: boolean };
+    const hourCycle = resolved.hourCycle;
+    if (typeof resolved.hour12 === 'boolean') return resolved.hour12 ? '12h' : '24h';
+    return hourCycle === 'h11' || hourCycle === 'h12' ? '12h' : '24h';
+  } catch {
+    return regionalLocaleTag(options) === 'en-US' ? '12h' : '24h';
+  }
+}
+
+function timeFormatter(options: TimeDisplayOptions = {}): Intl.DateTimeFormat {
+  const timeFormat = resolveTimeFormat(options);
+  return safeDateTimeFormat(localeTag(options), {
     hour: timeFormat === '12h' ? 'numeric' : '2-digit',
     minute: '2-digit',
     hour12: timeFormat === '12h',
@@ -61,8 +93,8 @@ function timeFormatter(options: TimeDisplayOptions = {}): Intl.DateTimeFormat {
 }
 
 function dayMonthTimeFormatter(options: TimeDisplayOptions = {}): Intl.DateTimeFormat {
-  const timeFormat = normalizeTimeFormat(options.timeFormat);
-  return safeDateTimeFormat(localeTag(options.locale), {
+  const timeFormat = resolveTimeFormat(options);
+  return safeDateTimeFormat(localeTag(options), {
     day: 'numeric',
     hour: timeFormat === '12h' ? 'numeric' : '2-digit',
     minute: '2-digit',
@@ -98,8 +130,15 @@ export function formatTimeRange(start: string, end: string, options: TimeDisplay
   return `${formatTime(start, options)}–${formatTime(end, options)}`;
 }
 
-/** "Вторник, 10 июня" */
-export function formatDateHeading(d: Date): string {
+/** "Вторник, 10 июня" / "Friday, June 19" / "Friday, 19 June" */
+export function formatDateHeading(d: Date, options: TimeDisplayOptions = {}): string {
+  if (options.locale === 'en') {
+    return safeDateTimeFormat(regionalLocaleTag(options), {
+      day: 'numeric',
+      month: 'long',
+      weekday: 'long',
+    }).format(d);
+  }
   return capitalize(headingFmt.format(d));
 }
 
@@ -126,17 +165,27 @@ export function formatDateParam(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-/** Day switcher label: "Сегодня, 10 июня" / "Завтра, 11 июня" / "Пт, 13 июня" */
-export function formatDayLabel(d: Date): string {
+/** Day switcher label: "Сегодня, 10 июня" / "Today, June 10" / "Today, 10 June" */
+export function formatDayLabel(d: Date, options: TimeDisplayOptions = {}): string {
   const today = startOfDay(new Date());
-  if (isSameDay(d, today)) return `Сегодня, ${dayMonthLong(d)}`;
-  if (isSameDay(d, addDays(today, 1))) return `Завтра, ${dayMonthLong(d)}`;
-  if (isSameDay(d, addDays(today, -1))) return `Вчера, ${dayMonthLong(d)}`;
+  if (options.locale === 'en') {
+    if (isSameDay(d, today, options.timezone)) return `Today, ${dayMonthLong(d, options)}`;
+    if (isSameDay(d, addDays(today, 1), options.timezone)) return `Tomorrow, ${dayMonthLong(d, options)}`;
+    if (isSameDay(d, addDays(today, -1), options.timezone)) return `Yesterday, ${dayMonthLong(d, options)}`;
+    return safeDateTimeFormat(regionalLocaleTag(options), {
+      day: 'numeric',
+      month: 'long',
+      weekday: 'short',
+    }).format(d);
+  }
+  if (isSameDay(d, today, options.timezone)) return `Сегодня, ${dayMonthLong(d, options)}`;
+  if (isSameDay(d, addDays(today, 1), options.timezone)) return `Завтра, ${dayMonthLong(d, options)}`;
+  if (isSameDay(d, addDays(today, -1), options.timezone)) return `Вчера, ${dayMonthLong(d, options)}`;
   return capitalize(weekdayShortFmt.format(d));
 }
 
-function dayMonthLong(d: Date): string {
-  return new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' }).format(d);
+function dayMonthLong(d: Date, options: TimeDisplayOptions = {}): string {
+  return safeDateTimeFormat(localeTag(options), { day: 'numeric', month: 'long' }).format(d);
 }
 
 /** Relative time: "только что", "2 мин назад", "вчера", "через 3 ч" … */
@@ -172,6 +221,12 @@ export function formatDueLabel(ts: string, options: TimeDisplayOptions = {}): st
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return '—';
   const today = startOfDay(new Date());
+  if (options.locale === 'en') {
+    if (isSameDay(d, today, options.timezone)) return `Today ${formatTime(d, options)}`;
+    if (isSameDay(d, addDays(today, 1), options.timezone)) return `Tomorrow ${formatTime(d, options)}`;
+    if (isSameDay(d, addDays(today, -1), options.timezone)) return `Yesterday ${formatTime(d, options)}`;
+    return dayMonthTimeFormatter(options).format(d);
+  }
   if (isSameDay(d, today, options.timezone)) return `Сегодня ${formatTime(d, options)}`;
   if (isSameDay(d, addDays(today, 1), options.timezone)) return `Завтра ${formatTime(d, options)}`;
   if (isSameDay(d, addDays(today, -1), options.timezone)) return `Вчера ${formatTime(d, options)}`;
