@@ -8,6 +8,7 @@ import {
   buildTimezoneOptions,
   getBrowserTimezones,
   getDeviceTimezone,
+  timezoneOptionMatches,
 } from '../../lib/timezones';
 
 interface TimezonePickerProps {
@@ -47,7 +48,7 @@ export function TimezonePicker({ value, onChange, locale }: TimezonePickerProps)
   const selected = options.find((option) => option.value === value);
   const normalizedQuery = query.trim().toLowerCase();
   const filtered = (normalizedQuery
-    ? options.filter((option) => option.searchText.includes(normalizedQuery))
+    ? options.filter((option) => timezoneOptionMatches(option, query))
     : options
   ).slice(0, 80);
 

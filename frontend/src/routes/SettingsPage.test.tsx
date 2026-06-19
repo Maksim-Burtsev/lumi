@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
@@ -11,6 +11,14 @@ const TIMEZONES_RESPONSE = {
   items: [
     { id: 'Asia/Yerevan' },
     { id: 'America/St_Johns' },
+    { id: 'America/New_York' },
+    { id: 'America/Chicago' },
+    { id: 'America/Denver' },
+    { id: 'America/Los_Angeles' },
+    { id: 'America/Anchorage' },
+    { id: 'Pacific/Honolulu' },
+    { id: 'Asia/Bangkok' },
+    { id: 'Asia/Makassar' },
     { id: 'Asia/Kathmandu' },
     { id: 'Pacific/Chatham' },
     { id: 'UTC' },
@@ -127,6 +135,28 @@ describe('SettingsPage language settings', () => {
     await waitFor(() => {
       expect(patchSpy).toHaveBeenCalledWith({ timezone: 'Pacific/Chatham' });
     });
+  });
+
+  it('lets the user search timezones by country and common place names', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'health').mockResolvedValue({ status: 'ok', app: 'Lumi', env: 'local', version: '0.1.0' });
+    vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettingsResponse());
+    vi.spyOn(api, 'getTimezones').mockResolvedValue(TIMEZONES_RESPONSE);
+
+    renderSettingsPage();
+
+    await user.click(await screen.findByRole('button', { name: /change time zone/i }));
+    fireEvent.change(screen.getByPlaceholderText('Search city or time zone'), { target: { value: 'USA' } });
+    expect(await screen.findByRole('button', { name: /America\/Los_Angeles/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /America\/New_York/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Africa\/Lusaka/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Asia\/Jerusalem/i })).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText('Search city or time zone'), { target: { value: 'Thailand' } });
+    expect(await screen.findByRole('button', { name: /Asia\/Bangkok/i })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText('Search city or time zone'), { target: { value: 'Bali' } });
+    expect(await screen.findByRole('button', { name: /Asia\/Makassar/i })).toBeInTheDocument();
   });
 
   it('lets the user switch to a 12-hour time format', async () => {
