@@ -53,6 +53,13 @@ const EUROPE_ALIASES = ['Europe', 'European', 'EU'];
 const US_QUERY_TOKENS = new Set(['usa', 'us', 'america', 'united', 'states']);
 const EUROPE_QUERY_TOKENS = new Set(['europe', 'european', 'eu']);
 const GENERIC_QUERY_TOKENS = new Set([...US_QUERY_TOKENS, ...EUROPE_QUERY_TOKENS]);
+const CANONICAL_TIMEZONE_ALIASES: Record<string, string> = {
+  'Asia/Katmandu': 'Asia/Kathmandu',
+};
+
+function canonicalizeTimezone(timezone: string): string {
+  return CANONICAL_TIMEZONE_ALIASES[timezone] ?? timezone;
+}
 
 const TIMEZONE_META: Record<string, TimezoneMeta> = {
   'America/New_York': {
@@ -385,7 +392,8 @@ const TIMEZONE_META: Record<string, TimezoneMeta> = {
 
 export function getDeviceTimezone(): string | null {
   try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return timezone ? canonicalizeTimezone(timezone) : null;
   } catch {
     return null;
   }
@@ -393,7 +401,7 @@ export function getDeviceTimezone(): string | null {
 
 export function getBrowserTimezones(): string[] {
   try {
-    return SUPPORTED_VALUES.supportedValuesOf?.('timeZone') ?? [];
+    return [...new Set((SUPPORTED_VALUES.supportedValuesOf?.('timeZone') ?? []).map(canonicalizeTimezone))];
   } catch {
     return [];
   }
@@ -660,11 +668,11 @@ export function buildTimezoneOptions(params: {
   deviceTimezone?: string | null;
   now?: Date;
 }): TimezoneDisplayOption[] {
-  const source = params.browserTimezones?.length ? params.browserTimezones : params.apiTimezones ?? [];
-  const zones = new Set(source);
+  const source = params.apiTimezones?.length ? params.apiTimezones : params.browserTimezones ?? [];
+  const zones = new Set(source.map(canonicalizeTimezone));
   zones.add('UTC');
   for (const tz of params.extraTimezones ?? []) {
-    if (tz) zones.add(tz);
+    if (tz) zones.add(canonicalizeTimezone(tz));
   }
   const now = params.now ?? new Date();
   return [...zones].map((timezone) => {

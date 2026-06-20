@@ -98,6 +98,22 @@ describe('buildTimezoneOptions', () => {
     expect(matchingValues('Bali')).toContain('Asia/Makassar');
     expect(matchingValues('India')).toContain('Asia/Kolkata');
     expect(matchingValues('Nepal')).toContain('Asia/Kathmandu');
+    expect(matchingValues('Asia/Kathmandu')).toContain('Asia/Kathmandu');
+  });
+
+  it('canonicalizes browser timezone aliases before searching', () => {
+    const options = buildTimezoneOptions({
+      apiTimezones: [],
+      browserTimezones: ['Asia/Katmandu'],
+      now: new Date('2026-06-19T12:00:00Z'),
+    });
+
+    expect(options.map((option) => option.value)).toEqual(expect.arrayContaining(['Asia/Kathmandu', 'UTC']));
+    expect(options).toHaveLength(2);
+    expect(options.filter((option) => timezoneOptionMatches(option, 'Asia/Kathmandu')))
+      .toHaveLength(1);
+    expect(options.filter((option) => timezoneOptionMatches(option, 'Nepal'))[0]?.value)
+      .toBe('Asia/Kathmandu');
   });
 
   it('builds friendly primary labels and exact secondary labels', () => {

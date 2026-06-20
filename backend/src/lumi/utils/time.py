@@ -4,24 +4,44 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, time, timedelta
 from functools import lru_cache
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
+from pathlib import Path
+from zoneinfo import TZPATH, ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 DEFAULT_TZ = "Europe/Moscow"
-_EXCLUDED_TZ_PREFIXES = ("posix/", "right/")
+_EXCLUDED_TZ_PREFIXES = ("posix/", "right/", "Etc/", "SystemV/")
 _EXCLUDED_TZ_NAMES = {"Factory", "localtime"}
 
 
 def _is_selectable_timezone(tz_name: str) -> bool:
     return (
-        bool(tz_name)
+        (tz_name == "UTC" or "/" in tz_name)
         and not tz_name.startswith(_EXCLUDED_TZ_PREFIXES)
         and tz_name not in _EXCLUDED_TZ_NAMES
     )
 
 
+def _zone_tab_timezones() -> set[str]:
+    zones: set[str] = set()
+    for root in TZPATH:
+        for filename in ("zone1970.tab", "zone.tab"):
+            path = Path(root) / filename
+            if not path.exists():
+                continue
+            for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) >= 3:
+                    zones.add(parts[2])
+            if zones:
+                return zones
+    return zones
+
+
 @lru_cache(maxsize=1)
 def selectable_timezone_names() -> tuple[str, ...]:
-    zones = {tz for tz in available_timezones() if _is_selectable_timezone(tz)}
+    source = _zone_tab_timezones() or available_timezones()
+    zones = {tz for tz in source if _is_selectable_timezone(tz)}
     zones.add("UTC")
     return tuple(sorted(zones))
 

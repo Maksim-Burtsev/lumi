@@ -150,7 +150,14 @@ async def test_timezones_endpoint_returns_full_selectable_list(client):
     assert "UTC" in ids
     assert "Asia/Yerevan" in ids
     assert "Pacific/Chatham" in ids
+    assert "America/St_Johns" in ids
+    assert "Asia/Kathmandu" in ids
     assert not any(tz.startswith(("posix/", "right/")) for tz in ids)
+    assert not any(tz.startswith(("Etc/", "SystemV/")) for tz in ids)
+    assert not any("/" not in tz and tz != "UTC" for tz in ids)
+    assert "W-SU" not in ids
+    assert "WET" not in ids
+    assert "Zulu" not in ids
 
 
 async def test_today_shape(client):

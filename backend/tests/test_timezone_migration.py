@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import select
 
 from lumi.db.models import CalendarEvent, CalendarSource, ScheduledTask, ScheduledTaskType
@@ -25,6 +27,14 @@ def _load_timezone_migration():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_alembic_has_single_head():
+    backend_root = Path(__file__).resolve().parents[1]
+    config = Config(str(backend_root / "alembic.ini"))
+    config.set_main_option("script_location", str(backend_root / "alembic"))
+
+    assert ScriptDirectory.from_config(config).get_heads() == ["7c2d9a0f4b1a"]
 
 
 async def test_timezone_cleanup_migration_repairs_invalid_user_task_and_event(db_session):

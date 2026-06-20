@@ -1,7 +1,7 @@
 """cleanup invalid timezones
 
 Revision ID: 7c2d9a0f4b1a
-Revises: f4b7a91c2d3e
+Revises: b8f6d2a91c4e
 Create Date: 2026-06-17 12:45:00.000000
 
 """
@@ -18,7 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 revision: str = "7c2d9a0f4b1a"
-down_revision: str | None = "f4b7a91c2d3e"
+down_revision: str | None = "b8f6d2a91c4e"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
