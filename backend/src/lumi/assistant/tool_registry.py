@@ -29,7 +29,7 @@ TOOL_NAMES = {
 TOOL_CATALOG = """Available backend tools:
 - create_task(title, description?, priority?, project?, tags?, due_at_local?, reminder_at_local?)
 - read_tasks(filter?: all|today|upcoming|inbox|done, limit?)
-- update_task(task_id? | task_query? | recency_hint?: last_created_task|last_touched_task, updates={project?, title?, description?, tags?, priority?})
+- update_task(task_id? | task_query? | recency_hint?: last_created_task|last_touched_task, updates={project?, title?, description?, tags?, priority?, status?})
 - bulk_update_tasks(task_query?, from_project?, from_tags?, status?: open|all, limit?, updates={project?, description?, tags?, tags_add?, tags_remove?, priority?, status?})
 - rename_task(current_title|task_query, new_title, project?, tags?)  # project/tags here are search filters, not update targets
 - complete_task(task_query|current_title, project?, tags?)
@@ -50,6 +50,7 @@ Rules:
 - Do not request domain lists up front. The backend loads relevant data after a tool call.
 - Any user request to create, read, update, complete, or snooze Lumi-managed state must use mode=tool_calls.
 - For task project/tags/priority/description changes, use update_task. Do not use rename_task to set a project.
+- For reopening a completed task ("open again", "not done", "верни статус открыто", "она не выполнена"), use update_task with updates.status="active".
 - For changes to several tasks at once (all tasks matching a query, all tasks in a project/tag, move everything related to a project), use bulk_update_tasks. Backend will ask for confirmation before changing multiple tasks.
 - Delete/remove task requests should set updates.status="cancelled"; never physically delete tasks.
 - Calendar questions about meetings/events on today, tomorrow, a future date, or a recurring date must use read_calendar_events with the requested local time window.

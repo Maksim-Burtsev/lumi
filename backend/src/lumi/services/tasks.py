@@ -175,7 +175,31 @@ class TaskService:
             return []
         tasks = await self._list_open_for_rename(user, limit=limit)
         tasks = self._apply_rename_filters(tasks, project=project, tags=tags)
+        return self._rank_title_candidates(tasks, wanted)
 
+    async def find_reopen_task_candidates(
+        self,
+        user: User,
+        current_title: str,
+        *,
+        limit: int = 200,
+    ) -> list[Task]:
+        wanted = normalize_for_match(current_title)
+        if not wanted:
+            return []
+        result = await self.session.execute(
+            select(Task)
+            .where(
+                Task.user_id == user.id,
+                Task.status.in_([TaskStatus.ACTIVE, TaskStatus.INBOX, TaskStatus.DONE]),
+            )
+            .order_by(Task.due_at.asc().nulls_last(), Task.priority.desc(), Task.created_at.desc())
+            .limit(limit)
+        )
+        return self._rank_title_candidates(list(result.scalars()), wanted)
+
+    @staticmethod
+    def _rank_title_candidates(tasks: list[Task], wanted: str) -> list[Task]:
         exact = [task for task in tasks if normalize_for_match(task.title) == wanted]
         if exact:
             return exact[:RENAME_MAX_CANDIDATES]
@@ -490,6 +514,10 @@ class TaskService:
                 value = Priority(value)
             if key == "status" and value is not None:
                 value = TaskStatus(value)
+                if value == TaskStatus.DONE and task.completed_at is None:
+                    task.completed_at = utc_now()
+                elif value != TaskStatus.DONE:
+                    task.completed_at = None
             setattr(task, key, value)
         await self._record_event(
             task,

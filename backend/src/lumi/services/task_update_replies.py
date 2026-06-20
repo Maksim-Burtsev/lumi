@@ -61,6 +61,9 @@ def format_task_update_reply(
         changes.append("description updated" if english else "описание обновлено")
     if "title" in updates and updates.get("title"):
         changes.append(f"title “{updates['title']}”" if english else f"название — «{updates['title']}»")
+    if "status" in updates and updates.get("status"):
+        status = updates["status"]
+        changes.append(f"status {status}" if english else f"статус — {status}")
 
     if not changes:
         return f"Updated task “{title}”." if english else f"Обновил задачу «{title}»."

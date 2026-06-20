@@ -164,6 +164,10 @@ def _args_with_call_defaults(call: PlannedToolCall) -> dict:
     return args
 
 
+def _is_reopen_task_update(patch: TaskPatchRequest) -> bool:
+    return patch.update_fields().get("status") in {"active", "inbox"}
+
+
 def _image_sourced_write(call: PlannedToolCall) -> bool:
     return call.source in {"image", "mixed"} and call.name in IMAGE_SOURCED_CONFIRM_TOOLS
 
@@ -1672,18 +1676,23 @@ class AssistantOrchestrator:
         patch: TaskPatchRequest,
         planner_context: PlannerContext,
     ) -> list[Task]:
+        allow_done = _is_reopen_task_update(patch)
         if patch.task_id is not None:
             task = await self.tasks.get(user, patch.task_id)
-            return [task] if task is not None and task.status != TaskStatus.DONE else []
+            if task is not None and (task.status != TaskStatus.DONE or allow_done):
+                return [task]
+            return []
 
         if patch.recency_hint:
             ref = planner_context.task_ref_for_recency_hint(patch.recency_hint)
             if ref is not None:
                 task = await self.tasks.get(user, ref.task_id)
-                if task is not None and task.status != TaskStatus.DONE:
+                if task is not None and (task.status != TaskStatus.DONE or allow_done):
                     return [task]
 
         if patch.task_query:
+            if allow_done:
+                return await self.tasks.find_reopen_task_candidates(user, patch.task_query)
             return await self.tasks.find_open_rename_candidates(user, patch.task_query)
 
         return []

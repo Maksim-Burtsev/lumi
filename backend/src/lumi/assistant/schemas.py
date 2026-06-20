@@ -74,6 +74,7 @@ class TaskPatchRequest(BaseModel):
     project: str | None = None
     tags: list[str] | None = None
     priority: Literal["low", "medium", "high", "urgent"] | None = None
+    status_update: Literal["active", "inbox", "done", "cancelled"] | None = None
     confidence: float = 0.0
     requires_confirmation: bool = False
 
@@ -86,9 +87,11 @@ class TaskPatchRequest(BaseModel):
         if not isinstance(updates, dict):
             return data
         merged = {key: value for key, value in data.items() if key != "updates"}
-        for key in ("title", "description", "project", "tags", "priority"):
+        for key in ("title", "description", "project", "tags", "priority", "status_update"):
             if key in updates and key not in merged:
                 merged[key] = updates[key]
+        if "status" in updates and "status_update" not in merged:
+            merged["status_update"] = updates["status"]
         return merged
 
     @field_validator("task_query", "title")
@@ -138,6 +141,8 @@ class TaskPatchRequest(BaseModel):
         for key in ("title", "description", "project", "tags", "priority"):
             if key in self.model_fields_set:
                 fields[key] = getattr(self, key)
+        if "status_update" in self.model_fields_set:
+            fields["status"] = self.status_update
         return fields
 
 

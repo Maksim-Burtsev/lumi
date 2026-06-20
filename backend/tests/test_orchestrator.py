@@ -14,6 +14,7 @@ from lumi.db.models import (
     RunStatus,
     ScheduledTask,
     Task,
+    TaskStatus,
     ToolCall,
 )
 from lumi.db.session import session_scope
@@ -1611,6 +1612,142 @@ async def test_update_task_english_project_reply_without_final_llm():
     assert updated.project == "Lumi"
     assert result.reply_text == f"Moved task “{title}” to project Lumi."
     assert any(c.tool_name == "update_task" and c.status == "completed" for c in tool_calls)
+
+
+async def test_update_task_reopens_recent_done_task_without_final_llm():
+    provider = AgentPlannerProvider([
+        {
+            "mode": "tool_calls",
+            "tool_calls": [
+                {
+                    "name": "create_task",
+                    "args": {
+                        "title": "Добавить настройку начала недели",
+                        "priority": "medium",
+                        "project": None,
+                        "tags": [],
+                    },
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                }
+            ],
+            "should_answer_normally": False,
+        },
+        {
+            "mode": "tool_calls",
+            "tool_calls": [
+                {
+                    "name": "update_task",
+                    "args": {
+                        "recency_hint": "last_created_task",
+                        "updates": {"status": "active"},
+                    },
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                }
+            ],
+            "should_answer_normally": False,
+        },
+    ])
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=250,
+            text="Добавь задачу что надо настройку с началом недели добавить",
+        )
+        task = (await session.execute(select(Task))).scalars().one()
+        await TaskService(session).complete_task(user, task)
+        assert task.status == TaskStatus.DONE
+        assert task.completed_at is not None
+        task_id = task.id
+
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=251,
+            text="Верни статус открыто, она не выполнена",
+        )
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+        await session.refresh(task)
+
+    assert provider.final_chat_calls == 0
+    assert task.status == TaskStatus.ACTIVE
+    assert task.completed_at is None
+    assert result.reply_text == "Обновил задачу «Добавить настройку начала недели»: статус — active."
+    assert "recent_task_refs" in provider.planner_prompts[1]
+    assert str(task_id) in provider.planner_prompts[1]
+    assert any(c.tool_name == "update_task" and c.status == "completed" for c in tool_calls)
+
+
+async def test_update_task_reopens_done_task_by_query():
+    title = "Вернуть открытую задачу по названию"
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "tool_calls": [
+            {
+                "name": "update_task",
+                "args": {"task_query": title, "updates": {"status": "active"}},
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        task = await TaskService(session).create_task(user, title=title)
+        await TaskService(session).complete_task(user, task)
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=252,
+            text=f"Верни статус открыто у задачи {title}",
+        )
+        await session.refresh(task)
+
+    assert provider.final_chat_calls == 0
+    assert task.status == TaskStatus.ACTIVE
+    assert task.completed_at is None
+    assert result.reply_text == f"Обновил задачу «{title}»: статус — active."
+
+
+async def test_update_task_does_not_edit_done_task_without_reopen_status():
+    title = "Закрытая задача для проекта"
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "tool_calls": [
+            {
+                "name": "update_task",
+                "args": {"task_query": title, "updates": {"project": "Lumi"}},
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        task = await TaskService(session).create_task(user, title=title)
+        await TaskService(session).complete_task(user, task)
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=253,
+            text=f"Привяжи задачу {title} к проекту Lumi",
+        )
+        await session.refresh(task)
+
+    assert provider.final_chat_calls == 0
+    assert task.status == TaskStatus.DONE
+    assert task.project is None
+    assert result.reply_text == f"Не нашёл активную задачу «{title}». Уточни название."
 
 
 async def test_create_task_english_reply_without_final_llm():
