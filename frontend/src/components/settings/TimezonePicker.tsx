@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Check, ChevronRight, Globe2, MapPin, Search } from 'lucide-react';
+import { Check, ChevronRight, MapPin, Search } from 'lucide-react';
 import { useTimezones } from '../../api/hooks';
 import { FieldLabel, Input } from '../ui/Field';
 import { Sheet } from '../ui/Sheet';
@@ -22,6 +22,7 @@ const COPY = {
   en: {
     change: 'Change time zone',
     detected: 'Detected',
+    fieldLabel: 'Time zone',
     search: 'Search city or time zone',
     title: 'Time zone',
     noResults: 'Try a city, country, or abbreviation: San Francisco, USA, PST',
@@ -31,6 +32,7 @@ const COPY = {
   ru: {
     change: 'Изменить часовой пояс',
     detected: 'Определён',
+    fieldLabel: 'Часовой пояс',
     search: 'Поиск города или часового пояса',
     title: 'Часовой пояс',
     noResults: 'Попробуй город, страну или сокращение: San Francisco, USA, PST',
@@ -74,30 +76,25 @@ export function TimezonePicker({ value, onChange, locale }: TimezonePickerProps)
         type="button"
         aria-label={copy.change}
         onClick={() => setOpen(true)}
-        className="flex min-h-[62px] w-full items-center justify-between gap-3 rounded-[18px] border border-hairline bg-[linear-gradient(180deg,var(--surface-strong),var(--surface))] px-3.5 py-3 text-left text-[15px] text-ink shadow-[0_10px_28px_rgba(20,18,14,0.06)] outline-none transition-shadow focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+        className="flex min-h-[68px] w-full items-center justify-between gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-[var(--surface)] focus:bg-[var(--surface)]"
       >
-        <span className="flex min-w-0 items-center gap-3">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--accent-soft)] text-accent-text">
-            <Globe2 size={18} />
+        <span className="min-w-0">
+          <span className="block text-[13.5px] font-medium text-ink">{copy.fieldLabel}</span>
+          <span className="mt-1 block break-words text-[14px] font-semibold leading-snug text-ink">
+            {selectedDisplay?.primaryLabel ?? value.replace(/_/g, ' ')}
           </span>
-          <span className="min-w-0">
-            <span className="block truncate font-medium">{selectedDisplay?.primaryLabel ?? value}</span>
-            {selectedDisplay?.secondaryLabel && (
-              <span className="mt-0.5 block truncate text-[12px] text-hint">
-                {selectedDisplay.secondaryLabel}
-              </span>
-            )}
-            {deviceTimezone && deviceTimezone !== value && (
-              <span className="mt-0.5 block truncate text-[12px] text-hint">
-                {copy.detected}: {deviceTimezone.replace(/_/g, ' ')}
-              </span>
-            )}
-          </span>
+          {selectedDisplay?.secondaryLabel && (
+            <span className="mt-0.5 block break-words text-[12.5px] leading-snug text-hint">
+              {selectedDisplay.secondaryLabel}
+            </span>
+          )}
+          {deviceTimezone && deviceTimezone !== value && (
+            <span className="mt-0.5 block break-words text-[12px] leading-snug text-hint">
+              {copy.detected}: {deviceTimezone.replace(/_/g, ' ')}
+            </span>
+          )}
         </span>
-        <span className="flex shrink-0 items-center gap-1 text-[13px] font-semibold text-accent-text">
-          {copy.change}
-          <ChevronRight size={15} />
-        </span>
+        <ChevronRight size={17} className="shrink-0 text-hint" />
       </button>
       <Sheet open={open} onClose={() => setOpen(false)} title={copy.title}>
         <div className="space-y-3">

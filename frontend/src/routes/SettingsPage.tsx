@@ -57,6 +57,7 @@ const COPY = {
     loadError: 'Could not load settings.',
     timezone: 'Time zone',
     timeFormat: 'Time format',
+    regionalSettings: 'Regional settings',
     appLanguage: 'App language',
     botReplies: 'Bot replies',
     replyAuto: 'Auto: match each message',
@@ -106,6 +107,7 @@ const COPY = {
     loadError: 'Не удалось загрузить настройки.',
     timezone: 'Часовой пояс',
     timeFormat: 'Формат времени',
+    regionalSettings: 'Региональные настройки',
     appLanguage: 'Язык приложения',
     botReplies: 'Ответы бота',
     replyAuto: 'Авто: язык каждого сообщения',
@@ -318,15 +320,30 @@ export default function SettingsPage() {
             </div>
           </div>
           <label className="mt-4 block">
-            <FieldLabel>{copy.timezone}</FieldLabel>
-            <TimezonePicker
-              value={user.timezone}
-              onChange={handleTimezone}
-              locale={locale}
+            <FieldLabel>{copy.botReplies}</FieldLabel>
+            <Select
+              value={replyLanguageMode}
+              ariaLabel={copy.botReplies}
+              onChange={handleReplyLanguageMode}
+              options={[
+                { value: 'auto', label: copy.replyAuto },
+                { value: 'app_locale', label: copy.replyAppLocale },
+              ]}
             />
           </label>
-          <div className="mt-3">
-            <FieldLabel>{copy.timeFormat}</FieldLabel>
+        </Card>
+      </Rise>
+
+      {/* Regional settings */}
+      <Rise>
+        <SectionHeader title={copy.regionalSettings} />
+        <Card className="card-strong !p-0 overflow-hidden">
+          <TimezonePicker
+            value={user.timezone}
+            onChange={handleTimezone}
+            locale={locale}
+          />
+          <div className="border-t border-hairline">
             <TimeFormatControl
               value={timeFormat}
               onChange={handleTimeFormat}
@@ -334,23 +351,17 @@ export default function SettingsPage() {
               timezone={user.timezone}
             />
           </div>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <label className="block">
-              <FieldLabel>{copy.appLanguage}</FieldLabel>
-              <Select value={user.locale || 'en'} onChange={handleLocale} options={LANGUAGE_OPTIONS} />
-            </label>
-            <label className="block">
-              <FieldLabel>{copy.botReplies}</FieldLabel>
+          <label className="flex min-h-[68px] items-center justify-between gap-3 border-t border-hairline px-4 py-3">
+            <span className="min-w-0 text-[13.5px] font-medium text-ink">{copy.appLanguage}</span>
+            <span className="w-[132px] shrink-0">
               <Select
-                value={replyLanguageMode}
-                onChange={handleReplyLanguageMode}
-                options={[
-                  { value: 'auto', label: copy.replyAuto },
-                  { value: 'app_locale', label: copy.replyAppLocale },
-                ]}
+                value={user.locale || 'en'}
+                ariaLabel={copy.appLanguage}
+                onChange={handleLocale}
+                options={LANGUAGE_OPTIONS}
               />
-            </label>
-          </div>
+            </span>
+          </label>
         </Card>
       </Rise>
 

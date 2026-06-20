@@ -56,12 +56,14 @@ interface SelectProps {
   value: string;
   onChange: (value: string) => void;
   options: { value: string; label: string }[];
+  ariaLabel?: string;
 }
 
-export function Select({ value, onChange, options }: SelectProps) {
+export function Select({ value, onChange, options, ariaLabel }: SelectProps) {
   return (
     <select
       value={value}
+      aria-label={ariaLabel}
       onChange={(e: ChangeEvent<HTMLSelectElement>) => onChange(e.target.value)}
       className={`${CONTROL} h-11 appearance-none bg-no-repeat pr-9`}
       style={{

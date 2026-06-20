@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
@@ -174,7 +174,23 @@ describe('SettingsPage language settings', () => {
     expect(await screen.findByText(/Try a city, country, or abbreviation/i)).toBeInTheDocument();
   });
 
-  it('lets the user switch to a 12-hour time format', async () => {
+  it('renders regional settings as a list and resolves legacy auto time format', async () => {
+    vi.spyOn(api, 'health').mockResolvedValue({ status: 'ok', app: 'Lumi', env: 'local', version: '0.1.0' });
+    vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettingsResponse());
+    vi.spyOn(api, 'getTimezones').mockResolvedValue(TIMEZONES_RESPONSE);
+
+    renderSettingsPage();
+
+    expect(await screen.findByText('Regional settings')).toBeInTheDocument();
+    const timeFormatSelect = screen.getByLabelText('Time format');
+    expect(timeFormatSelect).toHaveDisplayValue('12-hour');
+    expect(within(timeFormatSelect).queryByRole('option', { name: 'Automatic' })).not.toBeInTheDocument();
+    expect(within(timeFormatSelect).getByRole('option', { name: '12-hour' })).toBeInTheDocument();
+    expect(within(timeFormatSelect).getByRole('option', { name: '24-hour' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /change time zone/i })).toBeInTheDocument();
+  });
+
+  it('lets the user switch to a 24-hour time format', async () => {
     const user = userEvent.setup();
     vi.spyOn(api, 'health').mockResolvedValue({ status: 'ok', app: 'Lumi', env: 'local', version: '0.1.0' });
     vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettingsResponse());
@@ -191,11 +207,12 @@ describe('SettingsPage language settings', () => {
     renderSettingsPage();
 
     expect(await screen.findByText('Time format')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Automatic' })).toHaveAttribute('aria-pressed', 'true');
-    await user.click(screen.getByRole('button', { name: '12-hour' }));
+    const timeFormatSelect = screen.getByLabelText('Time format');
+    expect(timeFormatSelect).toHaveDisplayValue('12-hour');
+    await user.selectOptions(timeFormatSelect, '24h');
 
     await waitFor(() => {
-      expect(patchSpy).toHaveBeenCalledWith({ time_format: '12h' });
+      expect(patchSpy).toHaveBeenCalledWith({ time_format: '24h' });
     });
   });
 });
