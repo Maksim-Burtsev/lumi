@@ -154,9 +154,12 @@ describe('SettingsPage language settings', () => {
     await user.click(await screen.findByRole('button', { name: /change time zone/i }));
     fireEvent.change(screen.getByPlaceholderText('Search city or time zone'), { target: { value: 'USA' } });
     expect(await screen.findByRole('button', { name: /Pacific Time/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /America\/New_York/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /America\/New York/i })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Africa\/Lusaka/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Asia\/Jerusalem/i })).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText('Search city or time zone'), { target: { value: 'US San' } });
+    expect(await screen.findByRole('button', { name: /San Francisco.*America\/Los Angeles/i })).toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText('Search city or time zone'), { target: { value: 'Germany' } });
     expect(await screen.findByRole('button', { name: /Central European Time.*Europe\/Berlin/i })).toBeInTheDocument();
@@ -166,6 +169,9 @@ describe('SettingsPage language settings', () => {
 
     fireEvent.change(screen.getByPlaceholderText('Search city or time zone'), { target: { value: 'Bali' } });
     expect(await screen.findByRole('button', { name: /Asia\/Makassar/i })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText('Search city or time zone'), { target: { value: 'zzzz impossible' } });
+    expect(await screen.findByText(/Try a city, country, or abbreviation/i)).toBeInTheDocument();
   });
 
   it('lets the user switch to a 12-hour time format', async () => {

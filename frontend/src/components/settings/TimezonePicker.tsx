@@ -1,13 +1,13 @@
 import { useMemo, useState } from 'react';
-import { Check, Search } from 'lucide-react';
+import { Check, ChevronRight, Globe2, MapPin, Search } from 'lucide-react';
 import { useTimezones } from '../../api/hooks';
-import { Button } from '../ui/Button';
 import { FieldLabel, Input } from '../ui/Field';
 import { Sheet } from '../ui/Sheet';
 import {
   buildTimezoneOptions,
   getBrowserTimezones,
   getDeviceTimezone,
+  getTimezoneDisplay,
   sortTimezoneOptions,
   timezoneOptionMatches,
 } from '../../lib/timezones';
@@ -24,14 +24,18 @@ const COPY = {
     detected: 'Detected',
     search: 'Search city or time zone',
     title: 'Time zone',
-    noResults: 'Nothing found',
+    noResults: 'Try a city, country, or abbreviation: San Francisco, USA, PST',
+    topMatches: 'Top matches',
+    fallback: 'Using browser time zones.',
   },
   ru: {
     change: 'Изменить часовой пояс',
     detected: 'Определён',
     search: 'Поиск города или часового пояса',
     title: 'Часовой пояс',
-    noResults: 'Ничего не найдено',
+    noResults: 'Попробуй город, страну или сокращение: San Francisco, USA, PST',
+    topMatches: 'Лучшие совпадения',
+    fallback: 'Использую часовые пояса браузера.',
   },
 };
 
@@ -49,6 +53,7 @@ export function TimezonePicker({ value, onChange, locale }: TimezonePickerProps)
     deviceTimezone,
   }), [deviceTimezone, timezones.data?.items, value]);
   const selected = options.find((option) => option.value === value);
+  const selectedDisplay = selected ? getTimezoneDisplay(selected, '') : null;
   const normalizedQuery = query.trim().toLowerCase();
   const filtered = (normalizedQuery
     ? options
@@ -69,60 +74,107 @@ export function TimezonePicker({ value, onChange, locale }: TimezonePickerProps)
         type="button"
         aria-label={copy.change}
         onClick={() => setOpen(true)}
-        className="flex min-h-[44px] w-full items-center justify-between gap-3 rounded-xl border border-hairline bg-[var(--surface-strong)] px-3.5 py-2 text-left text-[15px] text-ink outline-none transition-shadow focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+        className="flex min-h-[62px] w-full items-center justify-between gap-3 rounded-[18px] border border-hairline bg-[linear-gradient(180deg,var(--surface-strong),var(--surface))] px-3.5 py-3 text-left text-[15px] text-ink shadow-[0_10px_28px_rgba(20,18,14,0.06)] outline-none transition-shadow focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
       >
-        <span className="min-w-0">
-          <span className="block truncate">{selected?.primaryLabel ?? value}</span>
-          {selected?.secondaryLabel && (
-            <span className="mt-0.5 block truncate text-[12px] text-hint">
-              {selected.secondaryLabel}
-            </span>
-          )}
-          {deviceTimezone && deviceTimezone !== value && (
-            <span className="mt-0.5 block truncate text-[12px] text-hint">
-              {copy.detected}: {deviceTimezone}
-            </span>
-          )}
+        <span className="flex min-w-0 items-center gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--accent-soft)] text-accent-text">
+            <Globe2 size={18} />
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate font-medium">{selectedDisplay?.primaryLabel ?? value}</span>
+            {selectedDisplay?.secondaryLabel && (
+              <span className="mt-0.5 block truncate text-[12px] text-hint">
+                {selectedDisplay.secondaryLabel}
+              </span>
+            )}
+            {deviceTimezone && deviceTimezone !== value && (
+              <span className="mt-0.5 block truncate text-[12px] text-hint">
+                {copy.detected}: {deviceTimezone.replace(/_/g, ' ')}
+              </span>
+            )}
+          </span>
         </span>
-        <span className="shrink-0 text-[13px] font-medium text-accent-text">{copy.change}</span>
+        <span className="flex shrink-0 items-center gap-1 text-[13px] font-semibold text-accent-text">
+          {copy.change}
+          <ChevronRight size={15} />
+        </span>
       </button>
       <Sheet open={open} onClose={() => setOpen(false)} title={copy.title}>
-        <label className="block">
-          <FieldLabel>
-            <span className="inline-flex items-center gap-1.5">
-              <Search size={13} />
-              {copy.search}
-            </span>
-          </FieldLabel>
-          <Input value={query} onChange={setQuery} placeholder={copy.search} autoFocus />
-        </label>
-        <div className="mt-3 flex flex-col gap-1.5">
-          {filtered.length === 0 && <p className="px-1 py-3 text-[13px] text-hint">{copy.noResults}</p>}
-          {filtered.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              onClick={() => handleSelect(option.value)}
-              className={`flex min-h-[44px] items-center justify-between gap-3 rounded-xl px-3 py-2 text-left text-[13.5px] transition-colors ${
-                option.value === value
-                  ? 'bg-[var(--accent-soft)] text-ink'
-                  : 'bg-transparent text-ink hover:bg-[var(--secondary-bg)]'
-              }`}
-            >
-              <span className="min-w-0">
-                <span className="block truncate">{option.primaryLabel}</span>
-                <span className="mt-0.5 block truncate text-[12px] text-hint">{option.secondaryLabel}</span>
+        <div className="space-y-3">
+          <label className="block">
+            <FieldLabel>
+              <span className="inline-flex items-center gap-1.5">
+                <Search size={13} />
+                {copy.search}
               </span>
-              {option.value === value && <Check size={16} className="shrink-0 text-accent-text" />}
-            </button>
-          ))}
+            </FieldLabel>
+            <Input value={query} onChange={setQuery} placeholder={copy.search} autoFocus />
+          </label>
+
+          {filtered.length > 0 && (
+            <span className="mt-0.5 block truncate text-[12px] text-hint">
+              {normalizedQuery
+                ? copy.topMatches
+                : locale === 'en'
+                  ? `${filtered.length} time zones`
+                  : `${filtered.length} зон`}
+            </span>
+          )}
+
+          <div className="flex flex-col gap-1.5">
+            {filtered.length === 0 && (
+              <div className="rounded-[18px] border border-dashed border-hairline bg-[var(--surface)] px-4 py-5 text-center">
+                <p className="text-[13px] font-medium text-ink">{copy.noResults}</p>
+              </div>
+            )}
+            {filtered.map((option) => {
+              const display = getTimezoneDisplay(option, query);
+              const active = option.value === value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => handleSelect(option.value)}
+                  className={`group flex min-h-[64px] items-center justify-between gap-3 rounded-[18px] border px-3 py-2.5 text-left text-[13.5px] transition-colors ${
+                    active
+                      ? 'border-[var(--accent-border)] bg-[var(--accent-soft)] text-ink'
+                      : 'border-transparent bg-transparent text-ink hover:border-hairline hover:bg-[var(--surface)]'
+                  }`}
+                >
+                  <span className="flex min-w-0 items-center gap-3">
+                    <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
+                      active ? 'bg-[var(--surface-strong)] text-accent-text' : 'bg-[var(--secondary-bg)] text-hint'
+                    }`}
+                    >
+                      <MapPin size={17} />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block break-words text-[14px] font-semibold leading-snug">{display.primaryLabel}</span>
+                      <span className="mt-0.5 block break-words text-[12px] leading-snug text-hint">{display.secondaryLabel}</span>
+                      {display.chips.length > 0 && (
+                        <span className="mt-1.5 flex flex-wrap gap-1">
+                          {display.chips.slice(0, 3).map((chip) => (
+                            <span
+                              key={chip}
+                              className="rounded-full bg-[var(--secondary-bg)] px-2 py-0.5 text-[11px] font-medium text-hint"
+                            >
+                              {chip}
+                            </span>
+                          ))}
+                        </span>
+                      )}
+                    </span>
+                  </span>
+                  {active && <Check size={17} className="shrink-0 text-accent-text" />}
+                </button>
+              );
+            })}
+          </div>
+
+          {timezones.isError && (
+            <p className="text-[12px] text-hint">{copy.fallback}</p>
+          )}
         </div>
-        {timezones.isError && (
-          <p className="mt-3 text-[12px] text-hint">Using browser time zones.</p>
-        )}
-        <Button className="mt-4" fullWidth variant="secondary" onClick={() => setOpen(false)}>
-          {locale === 'en' ? 'Close' : 'Закрыть'}
-        </Button>
       </Sheet>
     </>
   );
