@@ -27,7 +27,7 @@ TOOL_NAMES = {
 }
 
 TOOL_CATALOG = """Available backend tools:
-- create_task(title, description?, priority?, project?, tags?, due_at_local?, reminder_at_local?)
+- create_task(title, description?, priority?, project?, project_ref?, tags?, due_at_local?, reminder_at_local?)
 - read_tasks(filter?: all|today|upcoming|inbox|done, limit?)
 - update_task(task_id? | task_query? | recency_hint?: last_created_task|last_touched_task, updates={project?, title?, description?, tags?, priority?, status?})
 - bulk_update_tasks(task_query?, from_project?, from_tags?, status?: open|all, limit?, updates={project?, description?, tags?, tags_add?, tags_remove?, priority?, status?})
@@ -55,6 +55,8 @@ Rules:
 - Delete/remove task requests should set updates.status="cancelled"; never physically delete tasks.
 - Calendar questions about meetings/events on today, tomorrow, a future date, or a recurring date must use read_calendar_events with the requested local time window.
 - For short follow-ups to recent backend task actions, use recency_hint=last_created_task or last_touched_task from Planner context.
+- For create_task follow-ups that refer to a recent project, use project_ref=last_task_project,
+  last_created_task_project, last_proposed_task_project, or last_touched_task_project.
 - Do not resolve ambiguous task matches yourself. If the user intent is a task update and Planner context has multiple plausible candidates, still call update_task with task_query; backend will ask with confirmation buttons.
 - Choose tools semantically across languages, typos, punctuation, quotes, emotional phrasing, and short follow-ups.
 - For action-only commands set should_answer_normally=false.
@@ -71,6 +73,7 @@ Rules:
 
 Examples:
 - User asks to create a task with title "Webhook для Lumi на проде" -> mode=tool_calls, create_task(title="Webhook для Lumi на проде"), should_answer_normally=false.
+- User asks "И в тот же проект добавь проработать задачи с маркетингом" -> mode=tool_calls, create_task(title="проработать задачи с маркетингом", project_ref="last_task_project"), should_answer_normally=false.
 - User asks to attach the recently created task to project "Lumi" -> mode=tool_calls, update_task(recency_hint="last_created_task", updates={"project":"Lumi"}), should_answer_normally=false.
 - User asks "Move the notes task to project Lumi" and several active notes tasks exist -> mode=tool_calls, update_task(task_query="notes", updates={"project":"Lumi"}), should_answer_normally=false. Do not ask_user with your own candidate list.
 - User asks "все задачи про Lumi из Работа перенеси в Lumi" -> mode=tool_calls, bulk_update_tasks(task_query="Lumi", from_project="Работа", updates={"project":"Lumi"}), should_answer_normally=false.

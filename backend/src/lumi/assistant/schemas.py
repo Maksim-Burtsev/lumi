@@ -16,6 +16,12 @@ class ExtractedTask(BaseModel):
     reminder_at_local: datetime | None = None
     priority: Literal["low", "medium", "high", "urgent"] = "medium"
     project: str | None = None
+    project_ref: Literal[
+        "last_task_project",
+        "last_created_task_project",
+        "last_proposed_task_project",
+        "last_touched_task_project",
+    ] | None = None
     tags: list[str] = Field(default_factory=list)
     confidence: float = 0.0
     requires_confirmation: bool = True

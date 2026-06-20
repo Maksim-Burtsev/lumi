@@ -23,6 +23,7 @@ from lumi.llm.gateway import LLMGateway
 from lumi.llm.mock import MockLLMProvider
 from lumi.services.calendar import CalendarService
 from lumi.services.confirmation_executor import ConfirmationExecutor
+from lumi.services.runs import RunService
 from lumi.services.tasks import TaskService
 from lumi.services.users import UserService
 from lumi.utils.time import local_to_utc
@@ -1136,13 +1137,76 @@ async def test_agent_planner_create_task_tool_call_creates_task_without_final_ll
     assert provider.final_chat_calls == 0
     assert len(tasks) == 1
     assert tasks[0].title == "Webhook для Lumi на проде"
-    assert result.reply_text == "Создана задача: «Webhook для Lumi на проде»"
+    assert result.reply_text == "Создана задача: «Webhook для Lumi на проде» в проекте Lumi"
     assert any(c.tool_name == "create_task" and c.status == "completed" for c in tool_calls)
     trace = run.metadata_["planner_trace"]
     assert trace["validation_status"] == "validated"
     assert trace["mode"] == "tool_calls"
     assert trace["tool_names"] == ["create_task"]
     assert trace["tool_count"] == 1
+
+
+async def test_agent_planner_create_task_resolves_project_ref_from_recent_task_action():
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "tool_calls": [
+            {
+                "name": "create_task",
+                "args": {
+                    "title": "проработать задачи с маркетингом",
+                    "project_ref": "last_task_project",
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                },
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+        "language": "ru",
+    })
+
+    async with session_scope() as session:
+        users = UserService(session)
+        user = await users.ensure_user(TEST_TELEGRAM_ID)
+        conversation = await users.ensure_main_conversation(user)
+        seed = await TaskService(session).create_task(
+            user,
+            title="Разобраться с лимитами",
+            project="Lumi",
+        )
+        runs = RunService(session)
+        run = await runs.create(
+            user_id=user.id,
+            type_=AgentRunType.CHAT,
+            trigger="telegram_message",
+            conversation_id=conversation.id,
+            input_summary="seed",
+        )
+        await runs.log_tool_call(
+            run=run,
+            tool_name="create_task",
+            status="completed",
+            args={"title": seed.title, "project": "Lumi"},
+            result={"task_id": str(seed.id)},
+        )
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=45,
+            text="И в тот же проект добавь что надо проработать задачи с маркетингом",
+        )
+
+        tasks = (await session.execute(
+            select(Task).where(Task.title == "проработать задачи с маркетингом")
+        )).scalars().all()
+
+    assert provider.final_chat_calls == 0
+    assert len(tasks) == 1
+    assert tasks[0].project == "Lumi"
+    assert result.reply_text == "Создана задача: «проработать задачи с маркетингом» в проекте Lumi"
 
 
 async def test_agent_planner_ignores_empty_focused_vision_for_tool_plan():

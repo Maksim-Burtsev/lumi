@@ -6,6 +6,7 @@ from lumi.assistant.schemas import MemoryCandidate
 from lumi.db.models import AgentRunType, Message, MessageRole
 from lumi.db.session import session_scope
 from lumi.services.calendar import CalendarService
+from lumi.services.confirmations import ConfirmationService
 from lumi.services.runs import RunService
 from lumi.services.tasks import TaskService
 from lumi.services.users import UserService
@@ -167,3 +168,89 @@ async def test_planner_context_is_compact_state_with_counts_not_full_prompt(user
     assert trace["active_task_count"] == 2
     assert trace["known_project_count"] == 1
     assert "Webhook для Lumi на проде" not in str(trace)
+
+
+async def test_planner_context_exposes_recent_and_pending_project_refs(user):
+    async with session_scope() as session:
+        users = UserService(session)
+        u = await users.ensure_user(TEST_TELEGRAM_ID, first_name="Макс", username="tester")
+        conversation = await users.ensure_main_conversation(u)
+        task_service = TaskService(session)
+        task = await task_service.create_task(
+            u,
+            title="Разобраться с лимитами",
+            project="Lumi",
+        )
+        runs = RunService(session)
+        run = await runs.create(
+            user_id=u.id,
+            type_=AgentRunType.CHAT,
+            trigger="telegram_message",
+            conversation_id=conversation.id,
+            input_summary="create",
+        )
+        await runs.log_tool_call(
+            run=run,
+            tool_name="create_task",
+            status="completed",
+            args={"title": task.title, "project": "Lumi"},
+            result={"task_id": str(task.id)},
+        )
+        pending = await ConfirmationService(session).create(
+            u,
+            action_type="create_task",
+            action_payload={
+                "title": "проработать задачи с маркетингом",
+                "project": "Lumi",
+                "confidence": 0.7,
+                "requires_confirmation": True,
+            },
+            prompt="Создать задачу «проработать задачи с маркетингом»?",
+        )
+
+        context = await PlannerContextBuilder(session).build(user=u, conversation=conversation)
+
+    prompt = context.to_prompt_text()
+    trace = context.to_trace_summary()
+    assert "project_refs:" in prompt
+    assert 'last_task_project="Lumi"' in prompt
+    assert 'last_proposed_task_project="Lumi"' in prompt
+    assert "pending_task_refs:" in prompt
+    assert str(pending.id) in prompt
+    assert "проработать задачи с маркетингом" in prompt
+    assert trace["pending_task_ref_count"] == 1
+
+
+async def test_final_context_includes_task_projects_and_pending_confirmations(user):
+    async with session_scope() as session:
+        users = UserService(session)
+        u = await users.ensure_user(TEST_TELEGRAM_ID, first_name="Макс", username="tester")
+        conversation = await users.ensure_main_conversation(u)
+        await TaskService(session).create_task(
+            u,
+            title="Разобраться с лимитами",
+            project="Lumi",
+        )
+        await ConfirmationService(session).create(
+            u,
+            action_type="create_task",
+            action_payload={
+                "title": "проработать задачи с маркетингом",
+                "project": "Lumi",
+                "confidence": 0.7,
+                "requires_confirmation": True,
+            },
+            prompt="Создать задачу «проработать задачи с маркетингом»?",
+        )
+
+        context = await ContextBuilder(session).build(
+            user=u,
+            conversation=conversation,
+            current_text="В какой проект она пойдет?",
+        )
+
+    joined = "\n".join(s for s in context.debug_snapshot["sections"])
+    assert "project=Lumi" in joined
+    assert "Pending confirmations" in joined
+    assert "проработать задачи с маркетингом" in joined
+    assert "Lumi" in joined

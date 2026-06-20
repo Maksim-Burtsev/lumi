@@ -1107,6 +1107,7 @@ class AssistantOrchestrator:
                     call=call,
                     task_signal=task_signal,
                     source_message_id=source_message_id,
+                    planner_context=planner_context,
                     language=plan.language,
                     results=results,
                     buttons=buttons,
@@ -1298,10 +1299,29 @@ class AssistantOrchestrator:
         call: PlannedToolCall,
         task_signal: ExtractedTask,
         source_message_id: uuid.UUID,
+        planner_context: PlannerContext,
         language: str,
         results: list[str],
         buttons: list[list[Button]],
     ) -> None:
+        if task_signal.project_ref and not task_signal.project:
+            project = planner_context.project_for_ref(task_signal.project_ref)
+            if not project:
+                args = task_signal.model_dump(mode="json")
+                await self.runs.log_tool_call(
+                    run=run,
+                    tool_name="create_task",
+                    status="skipped",
+                    args=args,
+                    result={"reason": "project_ref_not_found"},
+                )
+                if _language_is_english(language):
+                    results.append("I did not understand which project to use. Please clarify the project.")
+                else:
+                    results.append("Не понял, какой проект взять. Уточни проект.")
+                return
+            task_signal = task_signal.model_copy(update={"project": project})
+
         if task_signal.confidence >= TASK_AUTO_CREATE_CONFIDENCE and not task_signal.requires_confirmation:
             task = await self.tasks.create_task_from_signal(
                 user, task_signal, source_message_id=source_message_id, agent_run_id=run.id
@@ -1315,6 +1335,11 @@ class AssistantOrchestrator:
                 desc = f"Created task: “{task.title}”"
             else:
                 desc = f"Создана задача: «{task.title}»"
+            if task.project:
+                if _language_is_english(language):
+                    desc += f" in project {task.project}"
+                else:
+                    desc += f" в проекте {task.project}"
             if task.reminder_at:
                 if _language_is_english(language):
                     desc += f", reminder {fmt_local(task.reminder_at, user.timezone)}"
@@ -1349,11 +1374,13 @@ class AssistantOrchestrator:
                 requires_confirmation=True, confirmation_id=confirmation.id,
             )
             if _language_is_english(language):
-                results.append(f"Proposed task “{task_signal.title}” — waiting for confirmation")
+                suffix = f" in project {task_signal.project}" if task_signal.project else ""
+                results.append(f"Proposed task “{task_signal.title}”{suffix} — waiting for confirmation")
                 confirm_text = f"✓ Create: {task_signal.title[:28]}"
                 reject_text = "✗ No"
             else:
-                results.append(f"Предложена задача «{task_signal.title}» — ждет подтверждения")
+                suffix = f" в проекте {task_signal.project}" if task_signal.project else ""
+                results.append(f"Предложена задача «{task_signal.title}»{suffix} — ждет подтверждения")
                 confirm_text = f"✓ Создать: {task_signal.title[:28]}"
                 reject_text = "✗ Не надо"
             buttons.append([

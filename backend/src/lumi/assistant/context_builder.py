@@ -19,12 +19,14 @@ from lumi.assistant.schemas import MediaUnderstanding
 from lumi.config import get_settings
 from lumi.db.models import (
     AgentRun,
+    ConfirmationStatus,
     Conversation,
     ConversationSummary,
     EmailCategory,
     EmailThread,
     Message,
     MessageRole,
+    PendingConfirmation,
     ScheduledTask,
     Task,
     ToolCall,
@@ -96,8 +98,47 @@ class PlannerTaskRef:
 
 
 @dataclass(slots=True)
+class PlannerPendingTaskRef:
+    confirmation_id: uuid.UUID
+    title: str
+    project: str | None = None
+    action_type: str = "create_task"
+    timestamp: str | None = None
+
+    @classmethod
+    def from_confirmation(cls, confirmation: PendingConfirmation) -> PlannerPendingTaskRef | None:
+        payload = confirmation.action_payload or {}
+        if confirmation.action_type != "create_task" or not isinstance(payload, dict):
+            return None
+        raw_title = payload.get("title")
+        if not raw_title:
+            return None
+        raw_project = payload.get("project")
+        project = str(raw_project).strip() if raw_project else None
+        return cls(
+            confirmation_id=confirmation.id,
+            title=str(raw_title).strip()[:180],
+            project=project or None,
+            action_type=confirmation.action_type,
+            timestamp=confirmation.created_at.isoformat() if confirmation.created_at else None,
+        )
+
+    def to_prompt_line(self) -> str:
+        parts = [
+            f"confirmation_id={self.confirmation_id}",
+            f"action={self.action_type}",
+            f'title="{self.title[:180]}"',
+            f'project="{self.project}"' if self.project else "project=null",
+        ]
+        if self.timestamp:
+            parts.append(f"timestamp={self.timestamp}")
+        return "- " + " ".join(parts)
+
+
+@dataclass(slots=True)
 class PlannerContext:
     recent_task_refs: list[PlannerTaskRef] = field(default_factory=list)
+    pending_task_refs: list[PlannerPendingTaskRef] = field(default_factory=list)
     active_task_candidates: list[PlannerTaskRef] = field(default_factory=list)
     known_projects: list[str] = field(default_factory=list)
 
@@ -106,12 +147,27 @@ class PlannerContext:
             "Planner context (backend state for intent resolution; not actions performed now):",
             "Use task_id or recency_hint for short follow-ups that refer to a recent "
             "backend task action.",
+            "Use project_ref for create_task follow-ups that refer to a recent task project.",
             "For project/metadata changes to tasks use update_task, not rename_task.",
             "For multi-task/filter/all matching task changes use bulk_update_tasks.",
         ]
+        lines.append("project_refs:")
+        for ref_name in (
+            "last_task_project",
+            "last_created_task_project",
+            "last_proposed_task_project",
+            "last_touched_task_project",
+        ):
+            project = self.project_for_ref(ref_name)
+            lines.append(f'- {ref_name}="{project}"' if project else f"- {ref_name}=null")
         lines.append("recent_task_refs:")
         if self.recent_task_refs:
             lines.extend(ref.to_prompt_line() for ref in self.recent_task_refs)
+        else:
+            lines.append("- none")
+        lines.append("pending_task_refs:")
+        if self.pending_task_refs:
+            lines.extend(ref.to_prompt_line() for ref in self.pending_task_refs)
         else:
             lines.append("- none")
         lines.append("active_task_candidates:")
@@ -126,6 +182,7 @@ class PlannerContext:
     def to_trace_summary(self) -> dict[str, int]:
         return {
             "recent_task_ref_count": len(self.recent_task_refs),
+            "pending_task_ref_count": len(self.pending_task_refs),
             "active_task_count": len(self.active_task_candidates),
             "known_project_count": len(self.known_projects),
         }
@@ -138,6 +195,26 @@ class PlannerContext:
             )
         if hint == "last_touched_task":
             return self.recent_task_refs[0] if self.recent_task_refs else None
+        return None
+
+    def project_for_ref(self, ref: str | None) -> str | None:
+        if ref == "last_proposed_task_project":
+            return next((task.project for task in self.pending_task_refs if task.project), None)
+        if ref == "last_created_task_project":
+            return next(
+                (
+                    task.project for task in self.recent_task_refs
+                    if task.source_tool == "create_task" and task.project
+                ),
+                None,
+            )
+        if ref == "last_touched_task_project":
+            return next((task.project for task in self.recent_task_refs if task.project), None)
+        if ref == "last_task_project":
+            return (
+                self.project_for_ref("last_proposed_task_project")
+                or self.project_for_ref("last_touched_task_project")
+            )
         return None
 
 
@@ -153,8 +230,10 @@ class PlannerContextBuilder:
         project_rows = await self.tasks.list_active(user, limit=200)
         known_projects = sorted({task.project for task in project_rows if task.project})
         recent_refs = await self._recent_task_refs(user=user, conversation=conversation)
+        pending_refs = await self._pending_task_refs(user=user)
         return PlannerContext(
             recent_task_refs=recent_refs,
+            pending_task_refs=pending_refs,
             active_task_candidates=[
                 PlannerTaskRef.from_task(task) for task in active_tasks
             ],
@@ -208,6 +287,29 @@ class PlannerContextBuilder:
                 source_tool=call.tool_name,
                 timestamp=call.created_at.isoformat() if call.created_at else None,
             ))
+        return refs
+
+    async def _pending_task_refs(
+        self,
+        *,
+        user: User,
+        limit: int = 8,
+    ) -> list[PlannerPendingTaskRef]:
+        result = await self.session.execute(
+            select(PendingConfirmation)
+            .where(
+                PendingConfirmation.user_id == user.id,
+                PendingConfirmation.status == ConfirmationStatus.PENDING,
+                PendingConfirmation.action_type == "create_task",
+            )
+            .order_by(PendingConfirmation.created_at.desc())
+            .limit(limit)
+        )
+        refs: list[PlannerPendingTaskRef] = []
+        for confirmation in result.scalars():
+            ref = PlannerPendingTaskRef.from_confirmation(confirmation)
+            if ref is not None:
+                refs.append(ref)
         return refs
 
 
@@ -288,6 +390,8 @@ class ContextBuilder:
             now = utc_now()
             for t in active_tasks:
                 line = f"- [{t.priority.value}] {t.title}"
+                if t.project:
+                    line += f" project={t.project}"
                 if t.due_at:
                     overdue = " (ПРОСРОЧЕНО)" if t.due_at < now else ""
                     line += f" — срок {fmt_local(t.due_at, user.timezone)}{overdue}"
@@ -354,6 +458,12 @@ class ContextBuilder:
             lines = ["Active automations:"]
             for a in automation_rows[:8]:
                 lines.append(f"- {a.title} ({a.cron_expression}, {a.timezone})")
+            sections.append("\n".join(lines))
+
+        pending_task_refs = await PlannerContextBuilder(self.session)._pending_task_refs(user=user, limit=5)
+        if pending_task_refs:
+            lines = ["Pending confirmations (state, not actions performed now):"]
+            lines.extend(ref.to_prompt_line() for ref in pending_task_refs)
             sections.append("\n".join(lines))
 
         # 8. Relevant memories

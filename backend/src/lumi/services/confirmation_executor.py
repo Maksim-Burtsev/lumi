@@ -39,6 +39,12 @@ class ConfirmationExecutor:
                 signal = ExtractedTask.model_validate(payload)
                 task = await self.tasks.create_task_from_signal(user, signal)
                 text = _text(locale, f"Created task: \"{task.title}\".", f"Создал задачу: «{task.title}».")
+                if task.project:
+                    text = _text(
+                        locale,
+                        f"Created task: \"{task.title}\" in project {task.project}.",
+                        f"Создал задачу: «{task.title}» в проекте {task.project}.",
+                    )
                 if task.reminder_at:
                     text += _text(
                         locale,
