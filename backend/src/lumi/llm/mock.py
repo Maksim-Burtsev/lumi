@@ -150,6 +150,14 @@ class MockLLMProvider:
             if language_plan is not None:
                 return json.dumps(language_plan, ensure_ascii=False)
             return json.dumps(self._extract_signals(joined), ensure_ascii=False)
+        if request_kind == "action_reply_renderer":
+            return json.dumps(
+                {
+                    "message": self._render_action_reply(joined),
+                    "button_labels": {},
+                },
+                ensure_ascii=False,
+            )
         if request_kind == "signal_extraction":
             return json.dumps(self._extract_signals(joined), ensure_ascii=False)
         if request_kind == "chat_turn":
@@ -194,7 +202,16 @@ class MockLLMProvider:
             return None
 
         args: dict[str, str] = {}
-        if "russian" in lowered or "русск" in lowered or "по-русски" in lowered:
+        if "italian" in lowered or "итальян" in lowered:
+            args["reply_language_mode"] = "fixed"
+            args["reply_language"] = "it"
+        elif "spanish" in lowered or "испан" in lowered:
+            args["reply_language_mode"] = "fixed"
+            args["reply_language"] = "es"
+        elif "german" in lowered or "немец" in lowered:
+            args["reply_language_mode"] = "fixed"
+            args["reply_language"] = "de"
+        elif "russian" in lowered or "русск" in lowered or "по-русски" in lowered:
             args["app_locale"] = "ru"
             if "reply" in lowered or "отвечай" in lowered or "ответы" in lowered:
                 args["reply_language_mode"] = "app_locale"
@@ -221,6 +238,28 @@ class MockLLMProvider:
             ],
             "should_answer_normally": False,
         }
+
+    @staticmethod
+    def _render_action_reply(joined: str) -> str:
+        marker = "payload_json:"
+        payload_text = joined.split(marker, 1)[-1].strip() if marker in joined else "{}"
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError:
+            return "Done."
+        outcomes = payload.get("action_outcomes") if isinstance(payload, dict) else None
+        if not isinstance(outcomes, list) or not outcomes:
+            return "Done."
+        fallbacks = [
+            str(outcome.get("fallback_text"))
+            for outcome in outcomes
+            if isinstance(outcome, dict) and outcome.get("fallback_text")
+        ]
+        if not fallbacks:
+            return "Done."
+        if len(fallbacks) == 1:
+            return fallbacks[0]
+        return "Done:\n" + "\n".join(f"• {item}" for item in fallbacks)
 
     def _extract_signals(self, joined: str) -> dict[str, Any]:
         message = _extract_user_message(joined)

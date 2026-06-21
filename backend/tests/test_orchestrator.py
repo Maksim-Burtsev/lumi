@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 
 from sqlalchemy import select
@@ -18,7 +19,7 @@ from lumi.db.models import (
     ToolCall,
 )
 from lumi.db.session import session_scope
-from lumi.llm.base import LLMResponse, content_to_text
+from lumi.llm.base import LLMError, LLMResponse, content_to_text
 from lumi.llm.gateway import LLMGateway
 from lumi.llm.mock import MockLLMProvider
 from lumi.services.calendar import CalendarService
@@ -39,6 +40,11 @@ class PendingTaskProvider:
         self.final_chat_calls = 0
 
     async def complete_json(self, **kwargs) -> dict:
+        request_kind = kwargs.get("request_kind")
+        messages = kwargs.get("messages") or []
+        if request_kind == "action_reply_renderer":
+            prompt = (kwargs.get("system") or "") + "\n" + content_to_text(messages[-1].content)
+            return _test_rendered_action_reply(prompt)
         return {
             "language": "ru",
             "intents": ["create_task"],
@@ -104,6 +110,11 @@ class RenameTaskProvider:
         self.final_chat_calls = 0
 
     async def complete_json(self, **kwargs) -> dict:
+        request_kind = kwargs.get("request_kind")
+        messages = kwargs.get("messages") or []
+        if request_kind == "action_reply_renderer":
+            prompt = (kwargs.get("system") or "") + "\n" + content_to_text(messages[-1].content)
+            return _test_rendered_action_reply(prompt)
         return {
             "language": "ru",
             "intents": ["update_task"],
@@ -150,10 +161,197 @@ class AgentPlannerProvider:
         self.final_chat_calls = 0
 
     async def complete_json(self, **kwargs) -> dict:
-        assert kwargs["request_kind"] == "agent_planner"
+        request_kind = kwargs["request_kind"]
         messages = kwargs.get("messages") or []
-        self.planner_prompts.append((kwargs.get("system") or "") + "\n" + messages[-1].content)
-        return self.plans.pop(0)
+        prompt = (kwargs.get("system") or "") + "\n" + content_to_text(messages[-1].content)
+        if request_kind == "agent_planner":
+            self.planner_prompts.append(prompt)
+            plan = self.plans.pop(0)
+            if "language" not in plan:
+                plan = {**plan, "language": _test_language_from_prompt(prompt)}
+            return plan
+        if request_kind == "action_reply_renderer":
+            return _test_rendered_action_reply(prompt)
+        raise AssertionError(f"unexpected JSON request_kind: {request_kind}")
+
+    async def complete(self, **kwargs) -> LLMResponse:
+        self.final_chat_calls += 1
+        return LLMResponse(
+            text=self.final_text,
+            provider=self.name,
+            model=self.model,
+            latency_ms=1,
+            input_chars=1,
+            output_chars=len(self.final_text),
+        )
+
+
+def _test_language_from_prompt(prompt: str) -> str:
+    text = prompt
+    if "Message:" in prompt:
+        text = prompt.split("Message:", 1)[1].split("\n", 1)[0]
+    cyrillic = sum(1 for char in text if "\u0400" <= char <= "\u04ff")
+    latin = sum(1 for char in text if ("a" <= char.lower() <= "z"))
+    return "ru" if cyrillic >= 2 and cyrillic >= latin else "en"
+
+
+def _test_renderer_payload(prompt: str) -> dict:
+    marker = "payload_json:"
+    payload_text = prompt.split(marker, 1)[-1].strip() if marker in prompt else "{}"
+    return json.loads(payload_text)
+
+
+def _test_rendered_action_reply(prompt: str) -> dict:
+    payload = _test_renderer_payload(prompt)
+    target_language = str(payload.get("target_language") or "en")
+    outcomes = payload.get("action_outcomes") or []
+    labels: dict[str, str] = {}
+    if target_language == "ru":
+        labels = {
+            "task_done": "✓ Выполнено",
+            "task_snooze": "⏰ Отложить",
+            "confirm": "✓ Подтвердить",
+            "reject": "✗ Не надо",
+        }
+    messages: list[str] = []
+    for outcome in outcomes:
+        if not isinstance(outcome, dict):
+            continue
+        if target_language == "ru" and outcome.get("action_type") == "create_task":
+            title = outcome.get("title")
+            project = outcome.get("project")
+            if outcome.get("status") == "completed" and title:
+                text = f"Создана задача: «{title}»"
+                if project:
+                    text += f" в проекте {project}"
+                messages.append(text)
+                continue
+            if outcome.get("status") == "requires_confirmation" and title:
+                text = f"Предложена задача «{title}»"
+                if project:
+                    text += f" в проекте {project}"
+                messages.append(text + " — ждет подтверждения")
+                continue
+            if outcome.get("error_code") == "low_confidence":
+                messages.append("Не выполнил действие: planner не дал достаточную уверенность.")
+                continue
+        fallback = outcome.get("fallback_text")
+        if fallback:
+            text = str(fallback)
+            if target_language == "ru":
+                if text.startswith("Found ") and text.endswith(" tasks for bulk update. Confirm the action."):
+                    raw_count = text.split("Found ", 1)[1].split(" tasks", 1)[0]
+                    labels["confirm"] = f"✓ Обновить {raw_count}"
+                    labels["reject"] = "✗ Не надо"
+                text = _test_localize_ru_fallback(text)
+            messages.append(text)
+    if not messages:
+        message = "Готово." if target_language == "ru" else "Done."
+    elif len(messages) == 1:
+        message = messages[0]
+    else:
+        prefix = "Сделал:" if target_language == "ru" else "Done:"
+        message = prefix + "\n" + "\n".join(f"• {item}" for item in messages)
+    return {"message": message, "button_labels": labels}
+
+
+def _test_ru_task_plural(count: int) -> str:
+    if 10 < count % 100 < 20:
+        return "задач"
+    if count % 10 == 1:
+        return "задачу"
+    if count % 10 in {2, 3, 4}:
+        return "задачи"
+    return "задач"
+
+
+def _test_localize_ru_fallback(text: str) -> str:
+    if text == "Did not perform the action: planner confidence was too low.":
+        return "Не выполнил действие: planner не дал достаточную уверенность."
+    if text == "Found several matching tasks. Which one should I update?":
+        return "Нашёл несколько похожих задач. Какую обновить?"
+    if text == "Found several matching tasks. Which one should I rename?":
+        return "Нашёл несколько похожих задач. Какую переименовать?"
+    if text == "Found several matching tasks. Which one should I snooze?":
+        return "Нашёл несколько похожих задач. Какую отложить?"
+    if text == "I could not find matching tasks. Please clarify the filter.":
+        return "Не нашёл подходящих задач. Уточни фильтр."
+    if text == "Started digest collection — I will send the result in a separate message.":
+        return "Запустил сбор дайджеста — пришлю результат отдельным сообщением."
+    if text.startswith("I could not find an active task “") and text.endswith("”. Please clarify the title."):
+        title = text.split("I could not find an active task “", 1)[1].rsplit("”. Please clarify the title.", 1)[0]
+        return f"Не нашёл активную задачу «{title}». Уточни название."
+    if text.startswith("I could not find an open task."):
+        return "Не нашёл открытую задачу. Уточни название."
+    if text.startswith("Moved task “") and "” to project " in text:
+        rest = text.split("Moved task “", 1)[1]
+        title, project = rest.split("” to project ", 1)
+        return f"Привязал задачу «{title}» к проекту {project.rstrip('.') }."
+    if text.startswith("Updated task “") and "”: status " in text:
+        rest = text.split("Updated task “", 1)[1]
+        title, status = rest.split("”: status ", 1)
+        return f"Обновил задачу «{title}»: статус — {status.rstrip('.')}."
+    if text.startswith("Renamed task “") and "” to “" in text:
+        rest = text.split("Renamed task “", 1)[1]
+        old_title, new_title = rest.split("” to “", 1)
+        return f"Готово: переименовал «{old_title}» → «{new_title.rstrip('”.')}»."
+    if text.startswith("Snoozed task “") and "” until " in text:
+        rest = text.split("Snoozed task “", 1)[1]
+        title, when = rest.split("” until ", 1)
+        return f"Готово: отложил «{title}» до {when.rstrip('.') }."
+    if text.startswith("Marked task “") and text.endswith("” done."):
+        title = text.split("Marked task “", 1)[1].rsplit("” done.", 1)[0]
+        return f"Готово: отметил «{title}» выполненной."
+    if text.startswith("Found ") and text.endswith(" tasks for bulk update. Confirm the action."):
+        raw_count = text.split("Found ", 1)[1].split(" tasks", 1)[0]
+        try:
+            count = int(raw_count)
+        except ValueError:
+            return text
+        return f"Нашёл {count} {_test_ru_task_plural(count)} для массового обновления. Подтверди действие."
+    return text
+
+
+class PlanningAndRenderProvider:
+    name = "planning-and-render"
+    model = "planning-and-render-1"
+
+    def __init__(
+        self,
+        plan: dict | list[dict],
+        *,
+        rendered: dict | list[dict] | None = None,
+        renderer_error: bool = False,
+        final_text: str = "final answer",
+    ) -> None:
+        self.plans = list(plan) if isinstance(plan, list) else [plan]
+        if rendered is None:
+            self.rendered = []
+        elif isinstance(rendered, list):
+            self.rendered = list(rendered)
+        else:
+            self.rendered = [rendered]
+        self.renderer_error = renderer_error
+        self.final_text = final_text
+        self.planner_prompts: list[str] = []
+        self.renderer_prompts: list[str] = []
+        self.renderer_calls = 0
+        self.final_chat_calls = 0
+
+    async def complete_json(self, **kwargs) -> dict:
+        request_kind = kwargs["request_kind"]
+        messages = kwargs.get("messages") or []
+        prompt = (kwargs.get("system") or "") + "\n" + content_to_text(messages[-1].content)
+        if request_kind == "agent_planner":
+            self.planner_prompts.append(prompt)
+            return self.plans.pop(0)
+        if request_kind == "action_reply_renderer":
+            self.renderer_calls += 1
+            self.renderer_prompts.append(prompt)
+            if self.renderer_error:
+                raise LLMError("renderer down")
+            return self.rendered.pop(0)
+        raise AssertionError(f"unexpected JSON request_kind: {request_kind}")
 
     async def complete(self, **kwargs) -> LLMResponse:
         self.final_chat_calls += 1
@@ -1009,7 +1207,7 @@ async def test_focused_vision_mode_with_tool_calls_is_rejected():
         confirmations = (await session.execute(select(PendingConfirmation))).scalars().all()
 
     assert provider.calls == ["media_understanding", "agent_planner"]
-    assert "не выполняю действия" in result.reply_text.lower()
+    assert "will not perform image-based actions" in result.reply_text.lower()
     assert tasks == []
     assert confirmations == []
 
@@ -1209,6 +1407,323 @@ async def test_agent_planner_create_task_resolves_project_ref_from_recent_task_a
     assert result.reply_text == "Создана задача: «проработать задачи с маркетингом» в проекте Lumi"
 
 
+async def test_action_reply_renderer_localizes_create_task_in_italian():
+    provider = PlanningAndRenderProvider(
+        {
+            "mode": "tool_calls",
+            "language": "it",
+            "tool_calls": [
+                {
+                    "name": "create_task",
+                    "args": {
+                        "title": "scrivere proposta",
+                        "project": "Lumi",
+                        "confidence": 0.96,
+                        "requires_confirmation": False,
+                    },
+                    "confidence": 0.96,
+                    "requires_confirmation": False,
+                }
+            ],
+            "should_answer_normally": False,
+        },
+        rendered={
+            "message": "Ho creato la task «scrivere proposta» nel progetto Lumi.",
+            "button_labels": {
+                "task_done": "✓ Fatto",
+                "task_snooze": "⏰ Rimanda",
+            },
+        },
+    )
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=4501,
+            text="Aggiungi a Lumi la task scrivere proposta",
+        )
+        tasks = (await session.execute(select(Task))).scalars().all()
+
+    assert provider.final_chat_calls == 0
+    assert provider.renderer_calls == 1
+    assert len(tasks) == 1
+    assert tasks[0].project == "Lumi"
+    assert result.reply_text == "Ho creato la task «scrivere proposta» nel progetto Lumi."
+    assert result.buttons[0][0].text == "✓ Fatto"
+    assert result.buttons[0][1].text == "⏰ Rimanda"
+    renderer_prompt = provider.renderer_prompts[0]
+    assert "target_language: it" in renderer_prompt
+    assert "scrivere proposta" in renderer_prompt
+    assert "Lumi" in renderer_prompt
+
+
+async def test_action_reply_renderer_resolves_same_project_followup_in_italian():
+    provider = PlanningAndRenderProvider(
+        {
+            "mode": "tool_calls",
+            "language": "it",
+            "tool_calls": [
+                {
+                    "name": "create_task",
+                    "args": {
+                        "title": "preparare materiali marketing",
+                        "project_ref": "last_task_project",
+                        "confidence": 0.95,
+                        "requires_confirmation": False,
+                    },
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                }
+            ],
+            "should_answer_normally": False,
+        },
+        rendered={
+            "message": "Ho aggiunto «preparare materiali marketing» allo stesso progetto, Lumi.",
+            "button_labels": {
+                "task_done": "✓ Fatto",
+                "task_snooze": "⏰ Rimanda",
+            },
+        },
+    )
+    async with session_scope() as session:
+        users = UserService(session)
+        user = await users.ensure_user(TEST_TELEGRAM_ID)
+        conversation = await users.ensure_main_conversation(user)
+        seed = await TaskService(session).create_task(
+            user,
+            title="Controllare limiti",
+            project="Lumi",
+        )
+        runs = RunService(session)
+        run = await runs.create(
+            user_id=user.id,
+            type_=AgentRunType.CHAT,
+            trigger="telegram_message",
+            conversation_id=conversation.id,
+            input_summary="seed",
+        )
+        await runs.log_tool_call(
+            run=run,
+            tool_name="create_task",
+            status="completed",
+            args={"title": seed.title, "project": "Lumi"},
+            result={"task_id": str(seed.id)},
+        )
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=4502,
+            text="E nello stesso progetto aggiungi preparare materiali marketing",
+        )
+        tasks = (await session.execute(
+            select(Task).where(Task.title == "preparare materiali marketing")
+        )).scalars().all()
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+
+    assert provider.final_chat_calls == 0
+    assert provider.renderer_calls == 1
+    assert len(tasks) == 1
+    assert tasks[0].project == "Lumi"
+    assert result.reply_text == "Ho aggiunto «preparare materiali marketing» allo stesso progetto, Lumi."
+    assert any(
+        call.tool_name == "create_task"
+        and call.args_json.get("project_ref") == "last_task_project"
+        and call.status == "completed"
+        for call in tool_calls
+    )
+
+
+async def test_fixed_reply_language_uses_saved_language_over_latest_message():
+    provider = PlanningAndRenderProvider(
+        {
+            "mode": "tool_calls",
+            "language": "ru",
+            "tool_calls": [
+                {
+                    "name": "create_task",
+                    "args": {
+                        "title": "проверить биллинг",
+                        "project": "Lumi",
+                        "confidence": 0.96,
+                        "requires_confirmation": False,
+                    },
+                    "confidence": 0.96,
+                    "requires_confirmation": False,
+                }
+            ],
+            "should_answer_normally": False,
+        },
+        rendered={
+            "message": "Ho creato la task «проверить биллинг» nel progetto Lumi.",
+            "button_labels": {
+                "task_done": "✓ Fatto",
+                "task_snooze": "⏰ Rimanda",
+            },
+        },
+    )
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        user.settings = {
+            **user.settings,
+            "reply_language_mode": "fixed",
+            "reply_language": "it",
+        }
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=4503,
+            text="Добавь в Lumi задачу проверить биллинг",
+        )
+
+    assert provider.final_chat_calls == 0
+    assert provider.renderer_calls == 1
+    assert result.reply_text == "Ho creato la task «проверить биллинг» nel progetto Lumi."
+    assert "reply_language_mode: fixed" in provider.renderer_prompts[0]
+    assert "target_language: it" in provider.renderer_prompts[0]
+
+
+async def test_renderer_failure_keeps_completed_action_and_uses_english_fallback():
+    provider = PlanningAndRenderProvider(
+        {
+            "mode": "tool_calls",
+            "language": "it",
+            "tool_calls": [
+                {
+                    "name": "create_task",
+                    "args": {
+                        "title": "controllare backup",
+                        "project": "Lumi",
+                        "confidence": 0.96,
+                        "requires_confirmation": False,
+                    },
+                    "confidence": 0.96,
+                    "requires_confirmation": False,
+                }
+            ],
+            "should_answer_normally": False,
+        },
+        renderer_error=True,
+    )
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=4504,
+            text="Aggiungi a Lumi controllare backup",
+        )
+        tasks = (await session.execute(select(Task))).scalars().all()
+
+    assert provider.final_chat_calls == 0
+    assert provider.renderer_calls == 1
+    assert len(tasks) == 1
+    assert tasks[0].title == "controllare backup"
+    assert result.reply_text == "Created task: “controllare backup” in project Lumi"
+    assert result.buttons[0][0].text == "✓ Done"
+    assert result.buttons[0][1].text == "⏰ Snooze"
+
+
+async def test_set_language_tool_accepts_fixed_reply_language_and_renders_reply():
+    provider = PlanningAndRenderProvider(
+        {
+            "mode": "tool_calls",
+            "language": "en",
+            "tool_calls": [
+                {
+                    "name": "set_language",
+                    "args": {
+                        "reply_language_mode": "fixed",
+                        "reply_language": "it",
+                    },
+                    "confidence": 0.98,
+                    "requires_confirmation": False,
+                }
+            ],
+            "should_answer_normally": False,
+        },
+        rendered={
+            "message": "Fatto. D'ora in poi rispondero in italiano.",
+            "button_labels": {},
+        },
+    )
+    async with session_scope() as session:
+        await UserService(session).ensure_user(TEST_TELEGRAM_ID, language_code="en-US")
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=4505,
+            text="Always answer in Italian",
+        )
+
+    async with session_scope() as session:
+        updated = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+
+    assert provider.final_chat_calls == 0
+    assert provider.renderer_calls == 1
+    assert updated.settings["reply_language_mode"] == "fixed"
+    assert updated.settings["reply_language"] == "it"
+    assert result.reply_text == "Fatto. D'ora in poi rispondero in italiano."
+    assert "reply_language_mode: fixed" in provider.renderer_prompts[0]
+    assert "target_language: it" in provider.renderer_prompts[0]
+
+
+async def test_confirmation_buttons_are_localized_by_renderer_without_callback_changes():
+    provider = PlanningAndRenderProvider(
+        {
+            "mode": "tool_calls",
+            "language": "it",
+            "tool_calls": [
+                {
+                    "name": "create_task",
+                    "args": {
+                        "title": "verificare antispam",
+                        "project": "Lumi",
+                        "confidence": 0.7,
+                        "requires_confirmation": True,
+                    },
+                    "confidence": 0.7,
+                    "requires_confirmation": True,
+                }
+            ],
+            "should_answer_normally": False,
+        },
+        rendered={
+            "message": "Propongo di creare «verificare antispam» nel progetto Lumi. Confermi?",
+            "button_labels": {
+                "confirm": "✓ Crea",
+                "reject": "✗ No",
+            },
+        },
+    )
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=4506,
+            text="Forse aggiungi a Lumi verificare antispam",
+        )
+        confirmations = (await session.execute(select(PendingConfirmation))).scalars().all()
+        tasks = (await session.execute(select(Task))).scalars().all()
+
+    assert provider.final_chat_calls == 0
+    assert provider.renderer_calls == 1
+    assert len(confirmations) == 1
+    assert tasks == []
+    assert result.reply_text == "Propongo di creare «verificare antispam» nel progetto Lumi. Confermi?"
+    assert result.buttons[0][0].text == "✓ Crea"
+    assert result.buttons[0][0].callback_data.startswith("confirm:")
+    assert result.buttons[0][1].text == "✗ No"
+    assert result.buttons[0][1].callback_data.startswith("reject:")
+
+
 async def test_agent_planner_ignores_empty_focused_vision_for_tool_plan():
     provider = AgentPlannerProvider({
         "mode": "tool_calls",
@@ -1299,7 +1814,7 @@ async def test_agent_planner_empty_tool_call_plan_does_not_call_final_llm_and_re
     assert provider.final_chat_calls == 0
     assert tasks == []
     assert tool_calls == []
-    assert result.reply_text == "Не выполнил действие: planner не вернул backend tool."
+    assert result.reply_text == "Did not perform the action: planner did not return a backend tool."
     trace = run.metadata_["planner_trace"]
     assert trace["validation_status"] == "validated"
     assert trace["mode"] == "tool_calls"
@@ -1366,7 +1881,7 @@ async def test_agent_planner_malformed_new_style_plan_records_validation_error()
 
     assert provider.final_chat_calls == 0
     assert tool_calls == []
-    assert result.reply_text == "Не смог безопасно выбрать ответ. Переформулируй запрос."
+    assert result.reply_text == "I could not choose a safe response. Please rephrase."
     trace = run.metadata_["planner_trace"]
     assert trace["validation_status"] == "validation_error"
     assert trace["validation_error"]
@@ -1520,7 +2035,7 @@ async def test_agent_planner_read_calendar_events_syncs_requested_range_without_
     assert "Lumi weekly planning" in result.reply_text
     assert "10:00" in result.reply_text
     assert result.reply_rich_html is not None
-    assert "<b>📅 Встречи" in result.reply_rich_html
+    assert "<b>📅 Calendar" in result.reply_rich_html
     assert "Lumi weekly planning" in result.reply_rich_html
     assert 'href="https://meet.example/lumi"' in result.reply_rich_html
     assert "https://meet.example/lumi" not in result.reply_rich_html.replace(
@@ -2164,7 +2679,7 @@ async def test_agent_planner_rename_tool_call_updates_db_without_final_llm():
 
     assert provider.final_chat_calls == 0
     assert updated.title == "Свой аналог session в Lumi интегрировать"
-    assert result.reply_text.startswith("Готово: переименовал")
+    assert result.reply_text.startswith("Renamed task")
 
 
 async def test_low_confidence_explicit_rename_uses_backend_result_not_final_llm():

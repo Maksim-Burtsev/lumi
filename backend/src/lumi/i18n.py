@@ -7,9 +7,10 @@ from typing import Literal
 DEFAULT_APP_LOCALE = "en"
 SUPPORTED_APP_LOCALES = ("en", "ru")
 DEFAULT_REPLY_LANGUAGE_MODE = "auto"
+DEFAULT_REPLY_LANGUAGE = "en"
 DEFAULT_TIME_FORMAT = "auto"
 SUPPORTED_TIME_FORMATS = ("auto", "24h", "12h")
-ReplyLanguageMode = Literal["auto", "app_locale"]
+ReplyLanguageMode = Literal["auto", "fixed", "app_locale"]
 TimeFormat = Literal["auto", "24h", "12h"]
 
 
@@ -44,6 +45,8 @@ def normalize_reply_language(value: str | None) -> str:
 
 
 def normalize_reply_language_mode(value: str | None) -> ReplyLanguageMode:
+    if value == "fixed":
+        return "fixed"
     if value == "app_locale":
         return "app_locale"
     return DEFAULT_REPLY_LANGUAGE_MODE
@@ -70,35 +73,39 @@ def ensure_language_settings(settings: dict | None) -> dict:
     merged = dict(settings or {})
     merged.setdefault("locale_source", "telegram")
     merged.setdefault("reply_language_mode", DEFAULT_REPLY_LANGUAGE_MODE)
+    merged.setdefault("reply_language", DEFAULT_REPLY_LANGUAGE)
     merged.setdefault("time_format", DEFAULT_TIME_FORMAT)
     merged["reply_language_mode"] = normalize_reply_language_mode(
         str(merged.get("reply_language_mode") or "")
+    )
+    merged["reply_language"] = normalize_reply_language(
+        str(merged.get("reply_language") or DEFAULT_REPLY_LANGUAGE)
     )
     merged["time_format"] = normalize_time_format(str(merged.get("time_format") or ""))
     return merged
 
 
-def app_locale_name(locale: str, *, language: str | None = None) -> str:
+def app_locale_name(locale: str) -> str:
     locale = normalize_app_locale(locale)
-    english = normalize_reply_language(language).startswith("en")
     if locale == "ru":
-        return "Russian" if english else "русский"
-    return "English" if english else "английский"
+        return "Russian"
+    return "English"
 
 
 def format_language_settings_reply(
     *,
     app_locale: str,
     reply_language_mode: str,
+    reply_language: str | None = None,
     language: str | None,
 ) -> str:
-    english = normalize_reply_language(language).startswith("en")
     mode = normalize_reply_language_mode(reply_language_mode)
-    name = app_locale_name(app_locale, language=language)
-    if english:
-        if mode == "app_locale":
-            return f"Language updated: {name}. Replies now use the app language."
-        return f"Language updated: {name}. Replies now match each message."
+    name = app_locale_name(app_locale)
     if mode == "app_locale":
-        return f"Язык обновлен: {name}. Ответы теперь на языке приложения."
-    return f"Язык обновлен: {name}. Ответы теперь на языке каждого сообщения."
+        return f"Language updated: {name}. Replies now use the app language."
+    if mode == "fixed":
+        return (
+            f"Language updated: {name}. "
+            f"Replies now use {normalize_reply_language(reply_language or language)}."
+        )
+    return f"Language updated: {name}. Replies now match each message."

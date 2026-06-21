@@ -353,7 +353,9 @@ class ContextBuilder:
             f"Timezone: {user.timezone}\n"
             f"App locale: {user.locale}\n"
             f"Reply language mode: {language_settings['reply_language_mode']}\n"
+            f"Fixed reply language: {language_settings.get('reply_language') or 'en'}\n"
             "Reply policy: if mode=auto, answer in the latest user message language; "
+            "if mode=fixed, answer in fixed reply language; "
             "if mode=app_locale, answer in the app locale.\n"
             "Channel: telegram_private_chat"
         )

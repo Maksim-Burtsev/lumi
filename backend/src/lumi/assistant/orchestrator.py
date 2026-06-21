@@ -17,6 +17,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from lumi.assistant.action_reply_renderer import ActionOutcome, ActionReplyRenderer
 from lumi.assistant.context_builder import ContextBuilder, PlannerContext, PlannerContextBuilder
 from lumi.assistant.media import ImageInput, MediaCandidate, media_candidate_id
 from lumi.assistant.media_understanding import (
@@ -87,12 +88,12 @@ TASK_CONFIRM_CONFIDENCE = 0.5
 MEMORY_EXPLICIT_CONFIDENCE = 0.85
 MEMORY_IMPLICIT_CONFIDENCE = 0.92
 FALLBACK_REPLY = (
-    "Я не смог сейчас достучаться до модели. Сообщение сохранил, можно повторить через минуту."
+    "The model is unavailable right now. I saved your message. Please try again in a minute."
 )
 FOCUSED_VISION_UNSAFE_REPLY = (
-    "Не могу безопасно выполнить это через изображение. Уточни, что именно нужно рассмотреть."
+    "I cannot safely do that from the image. Please clarify exactly what to inspect."
 )
-MEDIA_REQUIRED_REPLY = "Пришли картинку или ответь на сообщение с картинкой, которую нужно разобрать."
+MEDIA_REQUIRED_REPLY = "Send an image or reply to the image you want me to inspect."
 IMAGE_SOURCED_CONFIRM_TOOLS = {
     "create_task",
     "update_task",
@@ -112,6 +113,7 @@ ImageLoader = Callable[[dict], Awaitable[ImageInput | None]]
 class Button:
     text: str
     callback_data: str
+    key: str | None = None
 
 
 @dataclass(slots=True)
@@ -130,16 +132,6 @@ def _rename_choice_button_text(task: Task) -> str:
         parts.append(task.project)
     parts.extend(f"#{tag.lstrip('#')}" for tag in (task.tags or []) if tag)
     return " · ".join(parts)
-
-
-def _ru_task_plural(count: int) -> str:
-    if 10 < count % 100 < 20:
-        return "задач"
-    if count % 10 == 1:
-        return "задачу"
-    if count % 10 in {2, 3, 4}:
-        return "задачи"
-    return "задач"
 
 
 def _rename_choice_callback(confirmation_id: uuid.UUID, index: int) -> str:
@@ -185,7 +177,7 @@ def _prompt_with_evidence(prompt: str, call: PlannedToolCall) -> str:
     if call.source == "text" or not call.evidence:
         return prompt
     facts = "\n".join(f"- {fact}" for fact in call.evidence[:6])
-    return f"{prompt}\nИзвлечено из изображения:\n{facts}"
+    return f"{prompt}\nExtracted from image:\n{facts}"
 
 
 def _calendar_request_from_tool_call(call: PlannedToolCall) -> CalendarRequest:
@@ -294,21 +286,14 @@ def _reply_result(reply_text: str, *, run_id: uuid.UUID, needs_compaction: bool)
     )
 
 
-def _infer_message_language(text: str) -> str | None:
-    cyrillic = sum(1 for char in text if "\u0400" <= char <= "\u04ff")
-    latin = sum(1 for char in text if ("a" <= char.lower() <= "z"))
-    if cyrillic >= 2 and cyrillic >= latin:
-        return "ru"
-    if latin >= 2:
-        return "en"
-    return None
-
-
 def _reply_language_for_turn(user: User, text: str, planner_language: str | None) -> str:
     language_settings = ensure_language_settings(user.settings)
-    if language_settings.get("reply_language_mode") == "app_locale":
+    mode = language_settings.get("reply_language_mode")
+    if mode == "fixed":
+        return normalize_reply_language(str(language_settings.get("reply_language") or "en"))
+    if mode == "app_locale":
         return normalize_reply_language(user.locale)
-    return _infer_message_language(text) or normalize_reply_language(planner_language)
+    return normalize_reply_language(planner_language)
 
 
 def _with_reply_language(user: User, text: str, plan: AgentPlan) -> AgentPlan:
@@ -317,61 +302,13 @@ def _with_reply_language(user: User, text: str, plan: AgentPlan) -> AgentPlan:
 
 
 def _safe_action_failure_reply(language: str | None, reason: str) -> str:
-    english = _language_is_english(language)
     if reason == "low_confidence":
-        return (
-            "Did not perform the action: planner confidence was too low."
-            if english else
-            "Не выполнил действие: planner не дал достаточную уверенность."
-        )
-    return (
-        "Did not perform the action: planner did not return a backend tool."
-        if english else
-        "Не выполнил действие: planner не вернул backend tool."
-    )
+        return "Did not perform the action: planner confidence was too low."
+    return "Did not perform the action: planner did not return a backend tool."
 
 
 def _safe_no_answer_reply(language: str | None) -> str:
-    if _language_is_english(language):
-        return "I could not choose a safe response. Please rephrase."
-    return "Не смог безопасно выбрать ответ. Переформулируй запрос."
-
-
-def _language_is_english(language: str | None) -> bool:
-    return (language or "").lower().startswith("en")
-
-
-_RU_MONTHS_SHORT = {
-    1: "янв",
-    2: "фев",
-    3: "мар",
-    4: "апр",
-    5: "мая",
-    6: "июн",
-    7: "июл",
-    8: "авг",
-    9: "сен",
-    10: "окт",
-    11: "ноя",
-    12: "дек",
-}
-_RU_WEEKDAYS_SHORT = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
-
-
-def _calendar_window_label(start_local, end_local) -> str:
-    if start_local.date() == end_local.date():
-        return f"{start_local.day} {_RU_MONTHS_SHORT[start_local.month]}, {_RU_WEEKDAYS_SHORT[start_local.weekday()]}"
-    if end_local.time().hour == 0 and end_local.time().minute == 0:
-        inclusive_end = end_local - timedelta(days=1)
-        if start_local.date() == inclusive_end.date():
-            return (
-                f"{start_local.day} {_RU_MONTHS_SHORT[start_local.month]}, "
-                f"{_RU_WEEKDAYS_SHORT[start_local.weekday()]}"
-            )
-    return (
-        f"{start_local.day} {_RU_MONTHS_SHORT[start_local.month]} – "
-        f"{end_local.day} {_RU_MONTHS_SHORT[end_local.month]}"
-    )
+    return "I could not choose a safe response. Please rephrase."
 
 
 def _store_planner_trace(
@@ -409,6 +346,7 @@ class AssistantOrchestrator:
         self.media_understanding = MediaUnderstandingService(self.llm)
         self.media_reference = MediaReferenceService(self.llm)
         self.focused_vision = FocusedVisionService(self.llm)
+        self.action_reply_renderer = ActionReplyRenderer(self.llm)
         self.context_builder = ContextBuilder(session)
         self.planner_context_builder = PlannerContextBuilder(session)
         self.planning = PlanningService(session, llm=self.llm)
@@ -450,7 +388,7 @@ class AssistantOrchestrator:
         image_metadata = [image.to_metadata()] if image else []
         ignored_attachment_metadata = list(ignored_attachments or [])
         stored_text = text.strip() or ("[image]" if image else "")
-        final_text = text.strip() or ("Опиши изображение и ответь на вопрос пользователя." if image else "")
+        final_text = text.strip() or ("Describe the image and answer the user question." if image else "")
 
         content_json = None
         metadata: dict = {}
@@ -495,7 +433,7 @@ class AssistantOrchestrator:
         current_media: MediaCandidate | None = None
         selected_image = image
         if image:
-            await progress("👁️ Разбираю изображение…")
+            await progress("👁️ Inspecting image…")
             media_context = await self.media_understanding.analyze(
                 user_id=user.id,
                 timezone=user.timezone,
@@ -535,7 +473,7 @@ class AssistantOrchestrator:
 
         # 5. Planner call (separate small call — reliable and predictable;
         # a combined signals+reply call made M3 reason for minutes, parked for now)
-        await progress("🧠 Разбираю сообщение…")
+        await progress("🧠 Reading message…")
         planner_context = await self.planner_context_builder.build(
             user=user,
             conversation=conversation,
@@ -612,7 +550,7 @@ class AssistantOrchestrator:
                 needs_compaction = await self._needs_compaction(conversation)
                 return _reply_result(reply_text, run_id=run.id, needs_compaction=needs_compaction)
 
-            await progress("👁️ Разбираю изображение…")
+            await progress("👁️ Inspecting image…")
             media_context = await self.media_understanding.analyze(
                 user_id=user.id,
                 timezone=user.timezone,
@@ -679,7 +617,7 @@ class AssistantOrchestrator:
                 if plan.tool_calls:
                     plan = plan.model_copy(update={"tool_calls": []})
                 reply_text = plan.final_answer or (
-                    "Не выполняю действия по изображению без явной команды пользователя."
+                    "I will not perform image-based actions without an explicit user command."
                 )
                 outbound = Message(
                     conversation_id=conversation.id,
@@ -724,7 +662,7 @@ class AssistantOrchestrator:
             and not text.strip()
             and not plan.tool_calls
         ):
-            reply_text = media_context.summary or plan.final_answer or "Не смог уверенно описать изображение."
+            reply_text = media_context.summary or plan.final_answer or "I could not confidently describe the image."
             outbound = Message(
                 conversation_id=conversation.id,
                 user_id=user.id,
@@ -746,7 +684,7 @@ class AssistantOrchestrator:
             if selected_media is not None and selected_image is None:
                 selected_image = await self._ensure_candidate_image(selected_media, image_loader)
             if selected_media is not None and media_context is None and selected_image is not None:
-                await progress("👁️ Разбираю изображение…")
+                await progress("👁️ Inspecting image…")
                 media_context = await self.media_understanding.analyze(
                     user_id=user.id,
                     timezone=user.timezone,
@@ -777,7 +715,7 @@ class AssistantOrchestrator:
                     needs_compaction=needs_compaction,
                 )
 
-            await progress("🔎 Уточняю деталь на изображении…")
+            await progress("🔎 Checking image detail…")
             focused_result = await self.focused_vision.analyze(
                 user_id=user.id,
                 timezone=user.timezone,
@@ -801,7 +739,7 @@ class AssistantOrchestrator:
                 "focused_vision": focused_json,
             }
             reply_text = focused_result.answer or (
-                "Не смог уверенно рассмотреть эту деталь на изображении."
+                "I could not confidently inspect that image detail."
             )
             outbound = Message(
                 conversation_id=conversation.id,
@@ -822,8 +760,8 @@ class AssistantOrchestrator:
 
         # 6. Apply safe actions
         if plan.tool_calls:
-            await progress("⚙️ Выполняю: задачи, память, календарь…")
-        action_results, buttons, reply_rich_html = await self._apply_tool_calls(
+            await progress("⚙️ Running tools: tasks, memory, calendar…")
+        action_results, action_outcomes, buttons, reply_rich_html = await self._apply_tool_calls(
             user=user,
             run=run,
             plan=plan,
@@ -852,7 +790,22 @@ class AssistantOrchestrator:
             )
 
         if action_results and not plan.should_answer_normally:
-            reply_text = self._format_action_results_reply(action_results)
+            rendered_reply = await self.action_reply_renderer.render(
+                user=user,
+                latest_user_message=text,
+                planner_language=plan.language,
+                outcomes=action_outcomes,
+                run_id=run.id,
+                session=self.session,
+            )
+            if rendered_reply is not None:
+                reply_text = rendered_reply.message
+                buttons = self._with_rendered_button_labels(
+                    buttons,
+                    rendered_reply.button_labels,
+                )
+            else:
+                reply_text = self._format_action_results_reply(action_results)
             outbound = Message(
                 conversation_id=conversation.id,
                 user_id=user.id,
@@ -914,8 +867,8 @@ class AssistantOrchestrator:
 
         # 6-7. Final reply
         await progress(
-            "✍️ Формулирую ответ…" if not action_results
-            else "✍️ Сделал: " + "; ".join(r.split(":")[0] for r in action_results[:2]) + ". Пишу ответ…"
+            "✍️ Writing reply…" if not action_results
+            else "✍️ Action done. Writing reply…"
         )
         try:
             context = await self.context_builder.build(
@@ -956,7 +909,7 @@ class AssistantOrchestrator:
             await self.runs.mark_failed(run, f"final_chat: {exc}")
             if action_results:
                 done = "\n".join(f"• {r}" for r in action_results)
-                reply_text = f"Сделал:\n{done}\n\nА вот ответить умно не вышло — модель недоступна."
+                reply_text = f"Done:\n{done}\n\nThe model is unavailable, so I could not write a richer reply."
             else:
                 reply_text = FALLBACK_REPLY
             outbound = Message(
@@ -1076,7 +1029,23 @@ class AssistantOrchestrator:
     def _format_action_results_reply(action_results: list[str]) -> str:
         if len(action_results) == 1:
             return action_results[0]
-        return "Сделал:\n" + "\n".join(f"• {result}" for result in action_results)
+        return "Done:\n" + "\n".join(f"• {result}" for result in action_results)
+
+    @staticmethod
+    def _with_rendered_button_labels(
+        buttons: list[list[Button]],
+        labels: dict[str, str],
+    ) -> list[list[Button]]:
+        if not labels:
+            return buttons
+        rendered: list[list[Button]] = []
+        for row in buttons:
+            rendered_row: list[Button] = []
+            for button in row:
+                text = labels.get(button.key or "", button.text)
+                rendered_row.append(Button(text=text, callback_data=button.callback_data, key=button.key))
+            rendered.append(rendered_row)
+        return rendered
 
     async def _needs_compaction(self, conversation) -> bool:
         from lumi.assistant.compaction import CompactionService
@@ -1093,8 +1062,9 @@ class AssistantOrchestrator:
         plan: AgentPlan,
         source_message_id: uuid.UUID,
         planner_context: PlannerContext,
-    ) -> tuple[list[str], list[list[Button]], str | None]:
+    ) -> tuple[list[str], list[ActionOutcome], list[list[Button]], str | None]:
         results: list[str] = []
+        outcomes: list[ActionOutcome] = []
         buttons: list[list[Button]] = []
         rich_html: str | None = None
 
@@ -1110,6 +1080,7 @@ class AssistantOrchestrator:
                     planner_context=planner_context,
                     language=plan.language,
                     results=results,
+                    outcomes=outcomes,
                     buttons=buttons,
                 )
             elif call.name == "read_tasks":
@@ -1196,7 +1167,7 @@ class AssistantOrchestrator:
             elif call.name == "email_triage":
                 request = EmailRequest.model_validate({"kind": "triage", **call.args})
                 if request.confidence >= 0.0:
-                    buttons.append([Button(text="📬 Разобрать почту", callback_data="run:email_triage")])
+                    buttons.append([Button(text="📬 Triage email", callback_data="run:email_triage")])
             elif call.name == "news_digest":
                 request = NewsRequest.model_validate({
                     "kind": "digest",
@@ -1216,9 +1187,26 @@ class AssistantOrchestrator:
                     call=call,
                     language=plan.language,
                     results=results,
+                    outcomes=outcomes,
                 )
 
-        return results, buttons, rich_html
+        if results and not outcomes:
+            button_keys = [
+                button.key
+                for row in buttons
+                for button in row
+                if button.key
+            ]
+            outcomes = [
+                ActionOutcome(
+                    action_type="backend_action",
+                    status="completed",
+                    fallback_text=result,
+                    button_keys=button_keys,
+                )
+                for result in results
+            ]
+        return results, outcomes, buttons, rich_html
 
     async def _apply_set_language_tool(
         self,
@@ -1228,6 +1216,7 @@ class AssistantOrchestrator:
         call: PlannedToolCall,
         language: str,
         results: list[str],
+        outcomes: list[ActionOutcome],
     ) -> None:
         args = dict(call.args)
         updates: dict[str, str] = {}
@@ -1244,10 +1233,14 @@ class AssistantOrchestrator:
                     args=args,
                     result={"reason": "unsupported_locale"},
                 )
-                if _language_is_english(language):
-                    results.append("Unsupported app language. Use English or Russian.")
-                else:
-                    results.append("Неподдерживаемый язык приложения. Доступны английский и русский.")
+                fallback = "Unsupported app language. Use English or Russian."
+                results.append(fallback)
+                outcomes.append(ActionOutcome(
+                    action_type="set_language",
+                    status="skipped",
+                    fallback_text=fallback,
+                    error_code="unsupported_locale",
+                ))
                 return
             user.locale = app_locale
             current_settings["locale_source"] = "manual"
@@ -1257,6 +1250,11 @@ class AssistantOrchestrator:
             mode = normalize_reply_language_mode(str(mode_raw))
             current_settings["reply_language_mode"] = mode
             updates["reply_language_mode"] = mode
+        reply_language_raw = args.get("reply_language")
+        if reply_language_raw is not None:
+            reply_language = normalize_reply_language(str(reply_language_raw))
+            current_settings["reply_language"] = reply_language
+            updates["reply_language"] = reply_language
         if not updates:
             await self.runs.log_tool_call(
                 run=run,
@@ -1265,10 +1263,14 @@ class AssistantOrchestrator:
                 args=args,
                 result={"reason": "no_language_updates"},
             )
-            if _language_is_english(language):
-                results.append("I did not understand which language setting to change.")
-            else:
-                results.append("Не понял, какую языковую настройку изменить.")
+            fallback = "I did not understand which language setting to change."
+            results.append(fallback)
+            outcomes.append(ActionOutcome(
+                action_type="set_language",
+                status="skipped",
+                fallback_text=fallback,
+                error_code="no_language_updates",
+            ))
             return
 
         user.settings = current_settings
@@ -1277,7 +1279,11 @@ class AssistantOrchestrator:
             tool_name="set_language",
             status="completed",
             args=args,
-            result={"locale": user.locale, "reply_language_mode": user.settings["reply_language_mode"]},
+            result={
+                "locale": user.locale,
+                "reply_language_mode": user.settings["reply_language_mode"],
+                "reply_language": user.settings.get("reply_language"),
+            },
         )
         await RealtimeEventService(self.session).emit(
             user_id=user.id,
@@ -1285,10 +1291,23 @@ class AssistantOrchestrator:
             event_type="settings.updated",
             payload={},
         )
-        results.append(format_language_settings_reply(
+        fallback = format_language_settings_reply(
             app_locale=user.locale,
             reply_language_mode=str(user.settings.get("reply_language_mode") or "auto"),
+            reply_language=str(user.settings.get("reply_language") or "en"),
             language=language,
+        )
+        results.append(fallback)
+        outcomes.append(ActionOutcome(
+            action_type="set_language",
+            status="completed",
+            fallback_text=fallback,
+            details={
+                "updates": updates,
+                "app_locale": user.locale,
+                "reply_language_mode": user.settings.get("reply_language_mode"),
+                "reply_language": user.settings.get("reply_language"),
+            },
         ))
 
     async def _apply_create_task_tool(
@@ -1302,6 +1321,7 @@ class AssistantOrchestrator:
         planner_context: PlannerContext,
         language: str,
         results: list[str],
+        outcomes: list[ActionOutcome],
         buttons: list[list[Button]],
     ) -> None:
         if task_signal.project_ref and not task_signal.project:
@@ -1315,10 +1335,15 @@ class AssistantOrchestrator:
                     args=args,
                     result={"reason": "project_ref_not_found"},
                 )
-                if _language_is_english(language):
-                    results.append("I did not understand which project to use. Please clarify the project.")
-                else:
-                    results.append("Не понял, какой проект взять. Уточни проект.")
+                fallback = "I did not understand which project to use. Please clarify the project."
+                results.append(fallback)
+                outcomes.append(ActionOutcome(
+                    action_type="create_task",
+                    status="skipped",
+                    fallback_text=fallback,
+                    error_code="project_ref_not_found",
+                    title=task_signal.title,
+                ))
                 return
             task_signal = task_signal.model_copy(update={"project": project})
 
@@ -1331,31 +1356,31 @@ class AssistantOrchestrator:
                 args=task_signal.model_dump(mode="json"),
                 result={"task_id": str(task.id)},
             )
-            if _language_is_english(language):
-                desc = f"Created task: “{task.title}”"
-            else:
-                desc = f"Создана задача: «{task.title}»"
+            desc = f"Created task: “{task.title}”"
             if task.project:
-                if _language_is_english(language):
-                    desc += f" in project {task.project}"
-                else:
-                    desc += f" в проекте {task.project}"
+                desc += f" in project {task.project}"
             if task.reminder_at:
-                if _language_is_english(language):
-                    desc += f", reminder {fmt_local(task.reminder_at, user.timezone)}"
-                else:
-                    desc += f", напоминание {fmt_local(task.reminder_at, user.timezone)}"
+                desc += f", reminder {fmt_local(task.reminder_at, user.timezone)}"
             elif task.due_at:
-                if _language_is_english(language):
-                    desc += f", due {fmt_local(task.due_at, user.timezone)}"
-                else:
-                    desc += f", срок {fmt_local(task.due_at, user.timezone)}"
+                desc += f", due {fmt_local(task.due_at, user.timezone)}"
             results.append(desc)
-            done_text = "✓ Done" if _language_is_english(language) else "✓ Выполнено"
-            snooze_text = "⏰ Snooze" if _language_is_english(language) else "⏰ Отложить"
+            outcomes.append(ActionOutcome(
+                action_type="create_task",
+                status="completed",
+                fallback_text=desc,
+                title=task.title,
+                project=task.project,
+                due_at_local=fmt_local(task.due_at, user.timezone) if task.due_at else None,
+                reminder_at_local=(
+                    fmt_local(task.reminder_at, user.timezone) if task.reminder_at else None
+                ),
+                button_keys=["task_done", "task_snooze"],
+                details={"task_id": str(task.id)},
+            ))
             buttons.append([
-                Button(text=done_text, callback_data=f"task_done:{task.id}"),
-                Button(text=snooze_text, callback_data=f"task_snooze:{task.id}:tomorrow"),
+                Button(text="✓ Done", callback_data=f"task_done:{task.id}", key="task_done"),
+                Button(text="⏰ Snooze", callback_data=f"task_snooze:{task.id}:tomorrow",
+                       key="task_snooze"),
             ])
         elif task_signal.confidence >= TASK_CONFIRM_CONFIDENCE:
             payload = {
@@ -1366,26 +1391,35 @@ class AssistantOrchestrator:
                 user,
                 action_type="create_task",
                 action_payload=payload,
-                prompt=_prompt_with_evidence(f"Создать задачу «{task_signal.title}»?", call),
+                prompt=_prompt_with_evidence(f"Create task “{task_signal.title}”?", call),
             )
             await self.runs.log_tool_call(
                 run=run, tool_name="create_task", status="requires_confirmation",
                 args=payload,
                 requires_confirmation=True, confirmation_id=confirmation.id,
             )
-            if _language_is_english(language):
-                suffix = f" in project {task_signal.project}" if task_signal.project else ""
-                results.append(f"Proposed task “{task_signal.title}”{suffix} — waiting for confirmation")
-                confirm_text = f"✓ Create: {task_signal.title[:28]}"
-                reject_text = "✗ No"
-            else:
-                suffix = f" в проекте {task_signal.project}" if task_signal.project else ""
-                results.append(f"Предложена задача «{task_signal.title}»{suffix} — ждет подтверждения")
-                confirm_text = f"✓ Создать: {task_signal.title[:28]}"
-                reject_text = "✗ Не надо"
+            suffix = f" in project {task_signal.project}" if task_signal.project else ""
+            fallback = f"Proposed task “{task_signal.title}”{suffix} — waiting for confirmation"
+            results.append(fallback)
+            outcomes.append(ActionOutcome(
+                action_type="create_task",
+                status="requires_confirmation",
+                fallback_text=fallback,
+                title=task_signal.title,
+                project=task_signal.project,
+                due_at_local=task_signal.due_at_local.isoformat()
+                if task_signal.due_at_local else None,
+                reminder_at_local=(
+                    task_signal.reminder_at_local.isoformat()
+                    if task_signal.reminder_at_local else None
+                ),
+                button_keys=["confirm", "reject"],
+                details={"confirmation_id": str(confirmation.id)},
+            ))
             buttons.append([
-                Button(text=confirm_text, callback_data=f"confirm:{confirmation.id}"),
-                Button(text=reject_text, callback_data=f"reject:{confirmation.id}"),
+                Button(text=f"✓ Create: {task_signal.title[:28]}",
+                       callback_data=f"confirm:{confirmation.id}", key="confirm"),
+                Button(text="✗ No", callback_data=f"reject:{confirmation.id}", key="reject"),
             ])
         else:
             args = task_signal.model_dump(mode="json")
@@ -1396,7 +1430,15 @@ class AssistantOrchestrator:
                 args=args,
                 result={"reason": "low_confidence"},
             )
-            results.append(_safe_action_failure_reply(language, "low_confidence"))
+            fallback = _safe_action_failure_reply(language, "low_confidence")
+            results.append(fallback)
+            outcomes.append(ActionOutcome(
+                action_type="create_task",
+                status="skipped",
+                fallback_text=fallback,
+                error_code="low_confidence",
+                title=task_signal.title,
+            ))
 
     async def _apply_read_tasks_tool(
         self,
@@ -1420,9 +1462,9 @@ class AssistantOrchestrator:
             result={"count": len(tasks)},
         )
         if not tasks:
-            results.append("Открытых задач нет." if filter_ != "done" else "Готовых задач нет.")
+            results.append("No open tasks." if filter_ != "done" else "No completed tasks.")
             return
-        lines = ["Открытые задачи:" if filter_ != "done" else "Готовые задачи:"]
+        lines = ["Open tasks:" if filter_ != "done" else "Completed tasks:"]
         for index, task in enumerate(tasks, start=1):
             meta: list[str] = [task.priority.value]
             if task.project:
@@ -1457,7 +1499,7 @@ class AssistantOrchestrator:
                 args=args,
                 result={"reason": "no_updates"},
             )
-            results.append(format_task_update_no_updates_reply(language=language))
+            results.append(format_task_update_no_updates_reply(language="en"))
             return
 
         candidates = await self._resolve_update_task_candidates(
@@ -1476,7 +1518,7 @@ class AssistantOrchestrator:
             results.append(format_task_update_not_found_reply(
                 task_query=patch.task_query,
                 recency_hint=patch.recency_hint,
-                language=language,
+                language="en",
             ))
             return
 
@@ -1508,7 +1550,7 @@ class AssistantOrchestrator:
                 requires_confirmation=True,
                 confirmation_id=confirmation.id,
             )
-            results.append(format_task_update_ambiguous_reply(language=language))
+            results.append(format_task_update_ambiguous_reply(language="en"))
             for index, task in enumerate(candidates[:5]):
                 buttons.append([
                     Button(
@@ -1545,10 +1587,10 @@ class AssistantOrchestrator:
                 requires_confirmation=True,
                 confirmation_id=confirmation.id,
             )
-            results.append(f"Предлагаю обновить «{task.title}» — подтверди кнопкой.")
+            results.append(f"Proposed update for “{task.title}” — confirm with the button.")
             buttons.append([
-                Button(text="✓ Обновить", callback_data=f"confirm:{confirmation.id}"),
-                Button(text="✗ Не надо", callback_data=f"reject:{confirmation.id}"),
+                Button(text="✓ Update", callback_data=f"confirm:{confirmation.id}", key="confirm"),
+                Button(text="✗ No", callback_data=f"reject:{confirmation.id}", key="reject"),
             ])
             return
 
@@ -1566,7 +1608,7 @@ class AssistantOrchestrator:
             args=args,
             result={"task_id": str(task.id), "updated_fields": sorted(updates)},
         )
-        results.append(format_task_update_reply(task, updates, language=language))
+        results.append(format_task_update_reply(task, updates, language="en"))
 
     async def _apply_bulk_update_tasks_tool(
         self,
@@ -1593,7 +1635,7 @@ class AssistantOrchestrator:
                 args=args,
                 result={"reason": "no_updates"},
             )
-            results.append(format_task_update_no_updates_reply(language=language))
+            results.append(format_task_update_no_updates_reply(language="en"))
             return
 
         candidates = await self.tasks.find_bulk_update_candidates(
@@ -1612,10 +1654,7 @@ class AssistantOrchestrator:
                 args=args,
                 result={"candidate_task_ids": []},
             )
-            if _language_is_english(language):
-                results.append("I could not find matching tasks. Please clarify the filter.")
-            else:
-                results.append("Не нашёл подходящих задач. Уточни фильтр.")
+            results.append("I could not find matching tasks. Please clarify the filter.")
             return
 
         if len(candidates) == 1 and not _image_sourced_write(call):
@@ -1641,10 +1680,10 @@ class AssistantOrchestrator:
                     updates,
                     tags_add=patch.tags_add,
                     tags_remove=patch.tags_remove,
-                    language=language,
+                    language="en",
                 ))
             else:
-                results.append(format_task_update_reply(task, updates, language=language))
+                results.append(format_task_update_reply(task, updates, language="en"))
             return
 
         payload = {
@@ -1665,7 +1704,7 @@ class AssistantOrchestrator:
             action_type="bulk_update_tasks",
             action_payload=payload,
             prompt=_prompt_with_evidence(
-                f"Обновить {len(candidates)} задач?",
+                f"Update {len(candidates)} tasks?",
                 call,
             ),
         )
@@ -1678,22 +1717,14 @@ class AssistantOrchestrator:
             requires_confirmation=True,
             confirmation_id=confirmation.id,
         )
-        if _language_is_english(language):
-            results.append(
-                f"Found {len(candidates)} tasks for bulk update. Confirm the action."
-            )
-            confirm_text = f"✓ Update {len(candidates)}"
-            reject_text = "✗ No"
-        else:
-            results.append(
-                f"Нашёл {len(candidates)} {_ru_task_plural(len(candidates))} "
-                "для массового обновления. Подтверди действие."
-            )
-            confirm_text = f"✓ Обновить {len(candidates)}"
-            reject_text = "✗ Не надо"
+        results.append(
+            f"Found {len(candidates)} tasks for bulk update. Confirm the action."
+        )
+        confirm_text = f"✓ Update {len(candidates)}"
+        reject_text = "✗ No"
         buttons.append([
-            Button(text=confirm_text, callback_data=f"confirm:{confirmation.id}"),
-            Button(text=reject_text, callback_data=f"reject:{confirmation.id}"),
+            Button(text=confirm_text, callback_data=f"confirm:{confirmation.id}", key="confirm"),
+            Button(text=reject_text, callback_data=f"reject:{confirmation.id}", key="reject"),
         ])
 
     async def _resolve_update_task_candidates(
@@ -1753,7 +1784,7 @@ class AssistantOrchestrator:
                         },
                         result={"candidate_task_ids": []},
                     )
-                    results.append(f"Не нашёл активную задачу «{update.current_title}». Уточни название.")
+                    results.append(f"I could not find an active task “{update.current_title}”. Please clarify the title.")
                     return
                 payload = {
                     "current_title": update.current_title,
@@ -1768,7 +1799,7 @@ class AssistantOrchestrator:
                     user,
                     action_type="rename_task_choice",
                     action_payload=payload,
-                    prompt=_prompt_with_evidence("Подтверди задачу для переименования.", call),
+                    prompt=_prompt_with_evidence("Confirm the task to rename.", call),
                 )
                 await self.runs.log_tool_call(
                     run=run,
@@ -1779,7 +1810,7 @@ class AssistantOrchestrator:
                     requires_confirmation=True,
                     confirmation_id=confirmation.id,
                 )
-                results.append("Нужно подтверждение: какую задачу переименовать?")
+                results.append("Confirmation needed: which task should I rename?")
                 for index, task in enumerate(candidates[:5]):
                     buttons.append([
                         Button(
@@ -1811,7 +1842,7 @@ class AssistantOrchestrator:
                     args=update.model_dump(mode="json"),
                     result=result_payload,
                 )
-                results.append(f"Готово: переименовал «{renamed.old_title}» → «{renamed.new_title}».")
+                results.append(f"Renamed task “{renamed.old_title}” to “{renamed.new_title}”.")
             elif renamed.status == "not_found":
                 await self.runs.log_tool_call(
                     run=run,
@@ -1820,7 +1851,7 @@ class AssistantOrchestrator:
                     args=update.model_dump(mode="json"),
                     result=result_payload,
                 )
-                results.append(f"Не нашёл активную задачу «{update.current_title}». Уточни название.")
+                results.append(f"I could not find an active task “{update.current_title}”. Please clarify the title.")
             else:
                 confirmation = await self.confirmations.create(
                     user,
@@ -1833,7 +1864,7 @@ class AssistantOrchestrator:
                         "candidate_task_ids": [str(task.id) for task in renamed.candidates],
                         "agent_run_id": str(run.id),
                     },
-                    prompt="Выбери задачу для переименования.",
+                    prompt="Choose the task to rename.",
                 )
                 await self.runs.log_tool_call(
                     run=run,
@@ -1844,7 +1875,7 @@ class AssistantOrchestrator:
                     requires_confirmation=True,
                     confirmation_id=confirmation.id,
                 )
-                results.append("Нашёл несколько похожих задач. Какую переименовать?")
+                results.append("Found several matching tasks. Which one should I rename?")
                 for index, task in enumerate(renamed.candidates[:5]):
                     buttons.append([
                         Button(
@@ -1889,9 +1920,9 @@ class AssistantOrchestrator:
                     result={"task_id": str(task.id)},
                     requires_confirmation=True,
                 )
-                results.append(f"Предлагаю отметить «{task.title}» выполненной — подтверди кнопкой.")
+                results.append(f"Proposed marking “{task.title}” done — confirm with the button.")
                 buttons.append([
-                    Button(text="✓ Отметить выполненной", callback_data=f"task_done:{task.id}"),
+                    Button(text="✓ Mark done", callback_data=f"task_done:{task.id}", key="task_done"),
                 ])
                 return
             task = await self.tasks.complete_task(user, candidates[0], actor="agent")
@@ -1902,7 +1933,7 @@ class AssistantOrchestrator:
                 args=call.args,
                 result={"task_id": str(task.id)},
             )
-            results.append(f"Готово: отметил «{task.title}» выполненной.")
+            results.append(f"Marked task “{task.title}” done.")
             return
         await self.runs.log_tool_call(
             run=run,
@@ -1912,9 +1943,9 @@ class AssistantOrchestrator:
             result={"candidate_task_ids": [str(task.id) for task in candidates]},
         )
         results.append(
-            "Не нашёл открытую задачу. Уточни название."
+            "I could not find an open task. Please clarify the title."
             if not candidates else
-            "Нашёл несколько похожих задач. Уточни, какую отметить выполненной."
+            "Found several matching tasks. Please clarify which one to mark done."
         )
 
     async def _apply_snooze_task_tool(
@@ -1955,9 +1986,10 @@ class AssistantOrchestrator:
                     result={"task_id": str(task.id)},
                     requires_confirmation=True,
                 )
-                results.append(f"Предлагаю отложить «{task.title}» — подтверди кнопкой.")
+                results.append(f"Proposed snoozing “{task.title}” — confirm with the button.")
                 buttons.append([
-                    Button(text="⏰ Отложить", callback_data=f"task_snooze:{task.id}:{preset}"),
+                    Button(text="⏰ Snooze", callback_data=f"task_snooze:{task.id}:{preset}",
+                           key="task_snooze"),
                 ])
                 return
             task = await self.tasks.snooze_task(user, candidates[0], preset=preset, actor="agent")
@@ -1971,8 +2003,8 @@ class AssistantOrchestrator:
                     "snoozed_until": task.snoozed_until.isoformat() if task.snoozed_until else None,
                 },
             )
-            when = fmt_local(task.snoozed_until, user.timezone) if task.snoozed_until else "позже"
-            results.append(f"Готово: отложил «{task.title}» до {when}.")
+            when = fmt_local(task.snoozed_until, user.timezone) if task.snoozed_until else "later"
+            results.append(f"Snoozed task “{task.title}” until {when}.")
             return
         if len(candidates) > 1:
             confirmation = await self.confirmations.create(
@@ -1987,7 +2019,7 @@ class AssistantOrchestrator:
                     "agent_run_id": str(run.id),
                     **_call_source_payload(call),
                 },
-                prompt=_prompt_with_evidence("Выбери задачу для откладывания.", call),
+                prompt=_prompt_with_evidence("Choose the task to snooze.", call),
             )
             await self.runs.log_tool_call(
                 run=run,
@@ -1998,7 +2030,7 @@ class AssistantOrchestrator:
                 requires_confirmation=True,
                 confirmation_id=confirmation.id,
             )
-            results.append("Нашёл несколько похожих задач. Какую отложить?")
+            results.append("Found several matching tasks. Which one should I snooze?")
             for index, task in enumerate(candidates[:5]):
                 buttons.append([
                     Button(
@@ -2015,9 +2047,9 @@ class AssistantOrchestrator:
             result={"candidate_task_ids": [str(task.id) for task in candidates]},
         )
         results.append(
-            "Не нашёл открытую задачу. Уточни название."
+            "I could not find an open task. Please clarify the title."
             if not candidates else
-            "Нашёл несколько похожих задач. Уточни, какую отложить."
+            "Found several matching tasks. Please clarify which one to snooze."
         )
 
     async def _apply_news_digest_tool(
@@ -2040,7 +2072,7 @@ class AssistantOrchestrator:
                 args=request.model_dump(mode="json"),
                 result={"reason": "no_topics"},
             )
-            results.append("Новостных тем пока нет — добавь тему или RSS-источник в Mini App.")
+            results.append("No news topics yet — add a topic or RSS source in the Mini App.")
             return
 
         digest_run = await self.runs.create(
@@ -2069,9 +2101,9 @@ class AssistantOrchestrator:
             result={"run_id": digest_run_id, "job_id": job_id},
         )
         if job_id:
-            results.append("Запустил сбор дайджеста — пришлю результат отдельным сообщением.")
+            results.append("Started digest collection — I will send the result in a separate message.")
         else:
-            results.append("Очередь задач недоступна — дайджест сейчас не запустился.")
+            results.append("The job queue is unavailable — digest collection did not start.")
 
     async def _apply_store_memory_tool(
         self,
@@ -2106,8 +2138,8 @@ class AssistantOrchestrator:
                 result={"memory_id": str(memory.id), "created": created},
             )
             results.append(
-                "Запомнил: " + candidate.text if created
-                else "Обновил существующую заметку в памяти"
+                "Remembered: " + candidate.text if created
+                else "Updated the existing memory note"
             )
         elif candidate.requires_confirmation and candidate.confidence >= 0.6:
             payload = {
@@ -2118,7 +2150,7 @@ class AssistantOrchestrator:
                 user,
                 action_type="store_memory",
                 action_payload=payload,
-                prompt=_prompt_with_evidence(f"Запомнить: «{candidate.text}»?", call),
+                prompt=_prompt_with_evidence(f"Remember “{candidate.text}”?", call),
             )
             await self.runs.log_tool_call(
                 run=run,
@@ -2128,7 +2160,7 @@ class AssistantOrchestrator:
                 requires_confirmation=True,
                 confirmation_id=confirmation.id,
             )
-            results.append("Предлагаю сохранить это в память — нужно подтверждение.")
+            results.append("Proposed saving this to memory — confirmation required.")
         elif candidate.confidence >= 0.6:
             await self.runs.log_tool_call(
                 run=run, tool_name="store_memory", status="skipped",
@@ -2157,7 +2189,7 @@ class AssistantOrchestrator:
             action_type="create_automation",
             action_payload=payload,
             prompt=_prompt_with_evidence(
-                f"Включить автоматизацию «{automation.title}» ({automation.cron_expression})?",
+                f"Enable automation “{automation.title}” ({automation.cron_expression})?",
                 call,
             ),
         )
@@ -2166,10 +2198,10 @@ class AssistantOrchestrator:
             args=payload,
             requires_confirmation=True, confirmation_id=confirmation.id,
         )
-        results.append(f"Автоматизация «{automation.title}» подготовлена — нужно подтверждение")
+        results.append(f"Automation “{automation.title}” is prepared — confirmation required")
         buttons.append([
-            Button(text="✓ Включить", callback_data=f"confirm:{confirmation.id}"),
-            Button(text="✗ Не надо", callback_data=f"reject:{confirmation.id}"),
+            Button(text="✓ Enable", callback_data=f"confirm:{confirmation.id}", key="confirm"),
+            Button(text="✗ No", callback_data=f"reject:{confirmation.id}", key="reject"),
         ])
 
     async def _apply_read_calendar_events_tool(
@@ -2217,23 +2249,24 @@ class AssistantOrchestrator:
         if not events:
             if sync_error:
                 results.append(
-                    "В календаре за это окно событий не нашёл. "
-                    "Внешний sync сейчас недоступен."
+                    "I did not find calendar events in that window. "
+                    "External sync is unavailable right now."
                 )
             else:
-                results.append("В календаре за это окно событий не нашёл.")
+                results.append("I did not find calendar events in that window.")
             return None
 
-        lines = ["Встречи в календаре:"]
-        rich_lines = [
-            f"<b>📅 Встречи · {_calendar_window_label(utc_to_local(start, user.timezone), utc_to_local(end, user.timezone))}</b>"
-        ]
+        lines = ["Calendar events:"]
+        start_label = utc_to_local(start, user.timezone).strftime("%Y-%m-%d")
+        end_label = utc_to_local(end, user.timezone).strftime("%Y-%m-%d")
+        rich_window = start_label if start_label == end_label else f"{start_label} - {end_label}"
+        rich_lines = [f"<b>📅 Calendar · {rich_window}</b>"]
         rich_limit = 8
         for index, event in enumerate(events[:20]):
             start_local = utc_to_local(event.start_at, user.timezone)
             end_local = utc_to_local(event.end_at, user.timezone)
             when = (
-                "весь день"
+                "all day"
                 if event.all_day
                 else f"{start_local.strftime('%H:%M')}–{end_local.strftime('%H:%M')}"
             )
@@ -2253,13 +2286,13 @@ class AssistantOrchestrator:
                 if request.include_details and meeting_url:
                     rich_item += (
                         f'\n<a href="{escape(str(meeting_url), quote=True)}">'
-                        "↗ открыть звонок</a>"
+                        "↗ open call</a>"
                     )
                 rich_lines.append(rich_item)
         if len(events) > 20:
-            lines.append(f"Еще {len(events) - 20} событий не показал.")
+            lines.append(f"{len(events) - 20} more events not shown.")
         if len(events) > rich_limit:
-            rich_lines.append(f"<i>… и ещё {len(events) - rich_limit} встреч</i>")
+            rich_lines.append(f"<i>... and {len(events) - rich_limit} more events</i>")
         results.append("\n".join(lines))
         return "\n\n".join(rich_lines)
 
@@ -2283,11 +2316,11 @@ class AssistantOrchestrator:
                 args=request.model_dump(mode="json"),
                 result={"blocks": len(created)},
             )
-            results.append("Собран план дня: " + summary.split("\n")[0])
+            results.append("Prepared day plan: " + summary.split("\n")[0])
             for event in created:
                 buttons.append([
                     Button(
-                        text=f"✓ Принять {utc_to_local(event.start_at, tz).strftime('%H:%M')} {event.title[:20]}",
+                        text=f"✓ Accept {utc_to_local(event.start_at, tz).strftime('%H:%M')} {event.title[:20]}",
                         callback_data=f"block_confirm:{event.id}",
                     )
                 ])
@@ -2306,11 +2339,11 @@ class AssistantOrchestrator:
                 user, day=day or utc_now(), duration_minutes=duration
             )
             if not slots:
-                results.append("Свободных окон под фокус-блок сегодня не нашлось")
+                results.append("No free window for a focus block was found today.")
                 return
             start, _ = slots[0]
             end = start + timedelta(minutes=duration)
-            title = request.title or "Фокус-блок"
+            title = request.title or "Focus block"
             event = await self.calendar.create_internal_block(
                 user,
                 title=title,
@@ -2326,11 +2359,11 @@ class AssistantOrchestrator:
                 result={"event_id": str(event.id), "status": "proposed"},
             )
             results.append(
-                f"Нашел окно {utc_to_local(start, tz).strftime('%H:%M')}–"
-                f"{utc_to_local(end, tz).strftime('%H:%M')} под «{title}» (предложено)"
+                f"Found a {utc_to_local(start, tz).strftime('%H:%M')}–"
+                f"{utc_to_local(end, tz).strftime('%H:%M')} window for “{title}” (proposed)"
             )
             buttons.append([
-                Button(text="✓ Принять блок", callback_data=f"block_confirm:{event.id}"),
+                Button(text="✓ Accept block", callback_data=f"block_confirm:{event.id}"),
             ])
             return
 
@@ -2340,7 +2373,7 @@ class AssistantOrchestrator:
             requires_confirmation = request.requires_confirmation
             event = await self.calendar.create_internal_block(
                 user,
-                title=request.title or "Блок",
+                title=request.title or "Block",
                 start_at=local_to_utc(request.start_at_local, tz),
                 end_at=local_to_utc(request.end_at_local, tz),
                 status=(
@@ -2360,15 +2393,15 @@ class AssistantOrchestrator:
             )
             if requires_confirmation:
                 results.append(
-                    f"Предложил блок «{request.title or 'блок'}» "
-                    f"{fmt_local(event.start_at, tz, '%d.%m %H:%M')} — нужно подтверждение"
+                    f"Proposed block “{request.title or 'block'}” "
+                    f"{fmt_local(event.start_at, tz, '%d.%m %H:%M')} — confirmation required"
                 )
                 buttons.append([
-                    Button(text="✓ Принять блок", callback_data=f"block_confirm:{event.id}"),
+                    Button(text="✓ Accept block", callback_data=f"block_confirm:{event.id}"),
                 ])
             else:
                 results.append(
-                    f"Поставил в календарь: {request.title or 'блок'} "
+                    f"Added to calendar: {request.title or 'block'} "
                     f"{fmt_local(event.start_at, tz, '%d.%m %H:%M')}"
                 )
             return
@@ -2384,7 +2417,7 @@ class AssistantOrchestrator:
                 action_type="create_google_calendar_event",
                 action_payload=payload,
                 prompt=_prompt_with_evidence(
-                    f"Добавить «{request.title or 'событие'}» в Google Calendar?",
+                    f"Add “{request.title or 'event'}” to Google Calendar?",
                     call,
                 ),
             )
@@ -2394,9 +2427,9 @@ class AssistantOrchestrator:
                 args=payload,
                 requires_confirmation=True, confirmation_id=confirmation.id,
             )
-            results.append("Запись во внешний календарь ждет подтверждения")
+            results.append("External calendar write is waiting for confirmation.")
             buttons.append([
-                Button(text="📅 Добавить в Google Calendar",
-                       callback_data=f"confirm:{confirmation.id}"),
-                Button(text="✗ Не надо", callback_data=f"reject:{confirmation.id}"),
+                Button(text="📅 Add to Google Calendar",
+                       callback_data=f"confirm:{confirmation.id}", key="confirm"),
+                Button(text="✗ No", callback_data=f"reject:{confirmation.id}", key="reject"),
             ])
