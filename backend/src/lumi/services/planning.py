@@ -49,18 +49,18 @@ class PlanningService:
         active_tasks = await self.tasks.list_active(user, limit=25)
 
         if not free_slots:
-            return ("Сегодня свободных окон не осталось — календарь плотный. "
-                    "Могу поискать слоты на завтра."), []
+            return ("No free windows remain today; the calendar is packed. "
+                    "I can look for slots tomorrow."), []
         if not active_tasks:
-            return ("Активных задач нет, так что план простой: можно спокойно работать "
-                    "по календарю или добавить новые задачи."), []
+            return ("There are no active tasks, so the plan is simple: follow the calendar "
+                    "or add new tasks."), []
 
         tz = user.timezone
         task_lines = []
         for t in active_tasks:
             line = f"- id={t.id} [{t.priority}] {t.title}"
             if t.due_at:
-                line += f" (срок {fmt_local(t.due_at, tz)})"
+                line += f" (due {fmt_local(t.due_at, tz)})"
             task_lines.append(line)
         slot_lines = [
             f"- {utc_to_local(s, tz).strftime('%H:%M')}–{utc_to_local(e, tz).strftime('%H:%M')}"
@@ -68,9 +68,10 @@ class PlanningService:
         ]
         local_day = utc_to_local(day, tz)
         user_content = (
-            f"Дата: {local_day.strftime('%Y-%m-%d')} ({tz})\n\n"
-            f"Активные задачи:\n" + "\n".join(task_lines) +
-            "\n\nСвободные окна сегодня:\n" + "\n".join(slot_lines)
+            f"Target language: {user.locale or 'en'}\n"
+            f"Date: {local_day.strftime('%Y-%m-%d')} ({tz})\n\n"
+            f"Active tasks:\n" + "\n".join(task_lines) +
+            "\n\nFree windows today:\n" + "\n".join(slot_lines)
         )
 
         raw = await self.llm.complete_json(
@@ -85,7 +86,7 @@ class PlanningService:
             plan = PlanResult.model_validate(raw)
         except Exception:  # noqa: BLE001
             log.warning("plan result failed validation")
-            plan = PlanResult(summary="Не удалось собрать план автоматически.")
+            plan = PlanResult(summary="Could not build the plan automatically.")
 
         created = []
         for block in plan.blocks[:3]:
@@ -115,14 +116,14 @@ class PlanningService:
             )
             created.append(event)
 
-        summary = plan.summary or "План готов."
+        summary = plan.summary or "Plan ready."
         if created:
             lines = [
                 f"• {utc_to_local(e.start_at, tz).strftime('%H:%M')}–"
                 f"{utc_to_local(e.end_at, tz).strftime('%H:%M')} {e.title}"
                 for e in created
             ]
-            summary += "\n\nПредложенные блоки (ждут подтверждения):\n" + "\n".join(lines)
+            summary += "\n\nProposed blocks (waiting for confirmation):\n" + "\n".join(lines)
         return summary, created
 
 

@@ -317,7 +317,8 @@ class MiniMaxProvider:
         max_tokens: int = 4096,
     ) -> dict[str, Any]:
         json_system = (system or "") + (
-            "\n\nОтветь строго одним валидным JSON-объектом. Без markdown, без комментариев, без текста до или после."
+            "\n\nReply strictly with one valid JSON object. No Markdown, no comments, "
+            "and no text before or after the JSON."
         )
         if json_schema_hint:
             json_system += "\nJSON schema hint:\n" + json.dumps(json_schema_hint, ensure_ascii=False)

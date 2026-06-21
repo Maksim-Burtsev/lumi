@@ -657,18 +657,23 @@ async def run_task_review(*, session, user: User, run: AgentRun, notify: bool) -
     tasks = await TaskService(session).list_active(user, limit=50)
     if not tasks:
         if notify:
-            await send_telegram_message(user, "Активных задач нет — обзор не нужен. Чистый горизонт.")
+            await send_telegram_message(user, "No active tasks; no review needed. Clear horizon.")
         return "no tasks"
     now = utc_now()
     lines = []
     for t in tasks:
         line = f"- [{t.priority.value}] {t.title}"
         if t.due_at:
-            line += f" (срок {fmt_local(t.due_at, user.timezone)}"
-            line += ", ПРОСРОЧЕНО)" if t.due_at < now else ")"
+            line += f" (due {fmt_local(t.due_at, user.timezone)}"
+            line += ", OVERDUE)" if t.due_at < now else ")"
         lines.append(line)
     response = await LLMGateway().complete(
-        messages=[LLMMessage(role="user", content="Задачи:\n" + "\n".join(lines))],
+        messages=[
+            LLMMessage(
+                role="user",
+                content=f"Target language: {user.locale or 'en'}\nTasks:\n" + "\n".join(lines),
+            )
+        ],
         system=TASK_REVIEW_SYSTEM,
         request_kind="task_review",
         user_id=user.id,
@@ -707,11 +712,11 @@ async def run_custom_prompt(*, session, user: User, run: AgentRun, notify: bool,
 
     format_hint = ""
     if output_format == "md":
-        format_hint = "\n\nОформи результат как структурированный Markdown-документ с заголовками."
+        format_hint = "\n\nFormat the result as a structured Markdown document with headings."
     elif output_format == "html":
         format_hint = (
-            "\n\nОформи результат как полный самодостаточный HTML-документ "
-            "(один файл, аккуратная типографика, без внешних зависимостей)."
+            "\n\nFormat the result as a complete self-contained HTML document "
+            "(one file, polished typography, no external dependencies)."
         )
     response = await LLMGateway().complete(
         messages=[LLMMessage(role="user", content=prompt + format_hint)],
