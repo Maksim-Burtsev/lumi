@@ -501,7 +501,7 @@ async def on_chat_message(message: TgMessage, bot: Bot, telegram_update_id: int 
 
     if result.created_turn:
         try:
-            status_msg = await message.answer("🧠 Думаю…")
+            status_msg = await message.answer("⏳")
         except Exception:  # noqa: BLE001
             status_msg = None
         status_message_id = getattr(status_msg, "message_id", None)

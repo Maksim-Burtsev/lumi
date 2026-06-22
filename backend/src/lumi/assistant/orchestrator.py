@@ -106,6 +106,30 @@ IMAGE_SOURCED_CONFIRM_TOOLS = {
     "create_external_calendar_event",
     "create_automation",
 }
+AGENT_LOOP_MAX_MODEL_STEPS = 4
+AGENT_LOOP_MAX_TOOL_CALLS = 8
+NEUTRAL_PROGRESS_STATUS = "⏳"
+READ_ONLY_LOOP_TOOLS = {"read_tasks", "read_calendar_events"}
+MULTI_STEP_INTENT_MARKERS = (
+    "add",
+    "after",
+    "block",
+    "create",
+    "schedule",
+    "until",
+    "добав",
+    "созд",
+    "заплан",
+    "блок",
+    "после",
+    "aggiungi",
+    "crea",
+    "blocco",
+    "dopo",
+    "riunione",
+    "finché",
+    "finche",
+)
 ImageLoader = Callable[[dict], Awaitable[ImageInput | None]]
 
 
@@ -124,6 +148,17 @@ class AssistantResult:
     needs_compaction: bool = False
     open_app_button: bool = False
     reply_rich_html: str | None = None
+
+
+@dataclass(slots=True)
+class ToolLoopResult:
+    plan: AgentPlan
+    action_results: list[str]
+    action_outcomes: list[ActionOutcome]
+    buttons: list[list[Button]]
+    reply_rich_html: str | None
+    stop_reason: str
+    observations: list[dict[str, Any]]
 
 
 def _rename_choice_button_text(task: Task) -> str:
@@ -304,11 +339,86 @@ def _with_reply_language(user: User, text: str, plan: AgentPlan) -> AgentPlan:
 def _safe_action_failure_reply(language: str | None, reason: str) -> str:
     if reason == "low_confidence":
         return "Did not perform the action: planner confidence was too low."
+    if reason == "tool_call_limit":
+        return "I stopped because the planning budget was reached. Please rephrase or narrow the request."
     return "Did not perform the action: planner did not return a backend tool."
 
 
 def _safe_no_answer_reply(language: str | None) -> str:
     return "I could not choose a safe response. Please rephrase."
+
+
+def _safe_user_visible_status(status: str | None, *, language: str | None = None) -> str:
+    if status is None:
+        return NEUTRAL_PROGRESS_STATUS
+    text = " ".join(str(status).split()).strip()
+    if not text or len(text) > 80:
+        return NEUTRAL_PROGRESS_STATUS
+    lower = text.lower()
+    if any(marker in lower for marker in ("http://", "https://", "www.")):
+        return NEUTRAL_PROGRESS_STATUS
+    if any(marker in text for marker in ("[", "](", "<", ">")):
+        return NEUTRAL_PROGRESS_STATUS
+    if (language or "").split("-", 1)[0].lower() in {"en", "it", "es", "de", "fr", "pt"}:
+        if any("а" <= char.lower() <= "я" or char.lower() == "ё" for char in text):
+            return NEUTRAL_PROGRESS_STATUS
+    done_claims = (
+        "done",
+        "created",
+        "added",
+        "completed",
+        "готов",
+        "создал",
+        "создала",
+        "создан",
+        "добавил",
+        "добавила",
+        "aggiunto",
+        "creato",
+        "fatto",
+        "completato",
+    )
+    if any(marker in lower for marker in done_claims):
+        return NEUTRAL_PROGRESS_STATUS
+    return text
+
+
+def _looks_like_multi_step_request(text: str) -> bool:
+    lower = text.lower()
+    return any(marker in lower for marker in MULTI_STEP_INTENT_MARKERS)
+
+
+def _tool_observation(
+    call: PlannedToolCall,
+    *,
+    status: str,
+    summaries: list[str],
+) -> dict[str, Any]:
+    summary = " ".join(" ".join(item.split()) for item in summaries if item).strip()
+    next_valid_actions = ["final_answer"]
+    if call.name == "read_calendar_events":
+        next_valid_actions = [
+            "create_internal_calendar_block",
+            "create_external_calendar_event",
+            "read_calendar_events",
+            "final_answer",
+            "ask_user",
+        ]
+    elif call.name == "read_tasks":
+        next_valid_actions = [
+            "update_task",
+            "bulk_update_tasks",
+            "create_task",
+            "read_tasks",
+            "final_answer",
+            "ask_user",
+        ]
+    return {
+        "tool": call.name,
+        "status": status,
+        "summary": truncate(summary, 1200),
+        "next_valid_actions": next_valid_actions,
+    }
 
 
 def _store_planner_trace(
@@ -473,7 +583,6 @@ class AssistantOrchestrator:
 
         # 5. Planner call (separate small call — reliable and predictable;
         # a combined signals+reply call made M3 reason for minutes, parked for now)
-        await progress("🧠 Reading message…")
         planner_context = await self.planner_context_builder.build(
             user=user,
             conversation=conversation,
@@ -758,19 +867,31 @@ class AssistantOrchestrator:
                 needs_compaction=needs_compaction,
             )
 
-        # 6. Apply safe actions
-        if plan.tool_calls:
-            await progress("⚙️ Running tools: tasks, memory, calendar…")
-        action_results, action_outcomes, buttons, reply_rich_html = await self._apply_tool_calls(
+        # 6. Apply safe actions through the bounded planner loop.
+        loop_result = await self._run_tool_loop(
             user=user,
             run=run,
             plan=plan,
+            text=text,
             source_message_id=inbound.id,
             planner_context=planner_context,
+            media_context=media_context,
+            available_media=available_media,
+            progress=progress,
         )
+        plan = loop_result.plan
+        action_results = loop_result.action_results
+        action_outcomes = loop_result.action_outcomes
+        buttons = loop_result.buttons
+        reply_rich_html = loop_result.reply_rich_html
 
         if not action_results and plan.mode == "tool_calls":
-            reply_text = _safe_action_failure_reply(plan.language, "missing_tool")
+            reason = (
+                "tool_call_limit"
+                if loop_result.stop_reason in {"step_limit_reached", "tool_call_limit_reached"}
+                else "missing_tool"
+            )
+            reply_text = _safe_action_failure_reply(plan.language, reason)
             outbound = Message(
                 conversation_id=conversation.id,
                 user_id=user.id,
@@ -781,6 +902,29 @@ class AssistantOrchestrator:
             )
             self.session.add(outbound)
             await self.runs.mark_completed(run, result_summary="planner_no_backend_tool")
+            needs_compaction = await self._needs_compaction(conversation)
+            return AssistantResult(
+                reply_text=reply_text,
+                buttons=buttons,
+                agent_run_id=run.id,
+                needs_compaction=needs_compaction,
+            )
+
+        if action_results and loop_result.stop_reason in {"step_limit_reached", "tool_call_limit_reached"}:
+            reply_text = (
+                "I stopped because the planning budget was reached.\n\n"
+                + "\n".join(f"• {result}" for result in action_results[-3:])
+            )
+            outbound = Message(
+                conversation_id=conversation.id,
+                user_id=user.id,
+                role=MessageRole.ASSISTANT,
+                content=reply_text,
+                char_count=len(reply_text),
+                telegram_chat_id=telegram_chat_id,
+            )
+            self.session.add(outbound)
+            await self.runs.mark_completed(run, result_summary=loop_result.stop_reason)
             needs_compaction = await self._needs_compaction(conversation)
             return AssistantResult(
                 reply_text=reply_text,
@@ -1054,6 +1198,133 @@ class AssistantOrchestrator:
 
     # ------------------------------------------------------------------
 
+    async def _run_tool_loop(
+        self,
+        *,
+        user: User,
+        run,
+        plan: AgentPlan,
+        text: str,
+        source_message_id: uuid.UUID,
+        planner_context: PlannerContext,
+        media_context: MediaUnderstanding | None,
+        available_media: list[MediaCandidate],
+        progress: Callable[[str], Awaitable[None]],
+    ) -> ToolLoopResult:
+        all_results: list[str] = []
+        all_outcomes: list[ActionOutcome] = []
+        all_buttons: list[list[Button]] = []
+        observations: list[dict[str, Any]] = []
+        loop_steps: list[dict[str, Any]] = []
+        reply_rich_html: str | None = None
+        tool_call_count = 0
+        stop_reason = "no_tool_calls"
+
+        for step_index in range(AGENT_LOOP_MAX_MODEL_STEPS):
+            if not plan.tool_calls:
+                stop_reason = "planner_final" if plan.mode in {"final_answer", "ask_user"} else "no_tool_calls"
+                break
+
+            if tool_call_count + len(plan.tool_calls) > AGENT_LOOP_MAX_TOOL_CALLS:
+                stop_reason = "tool_call_limit_reached"
+                break
+
+            await progress(_safe_user_visible_status(plan.user_visible_status, language=plan.language))
+            step_results, step_outcomes, step_buttons, step_rich_html, step_observations = (
+                await self._apply_tool_calls(
+                    user=user,
+                    run=run,
+                    plan=plan,
+                    source_message_id=source_message_id,
+                    planner_context=planner_context,
+                )
+            )
+            tool_call_count += len(plan.tool_calls)
+            all_results.extend(step_results)
+            all_outcomes.extend(step_outcomes)
+            all_buttons.extend(step_buttons)
+            observations.extend(step_observations)
+            if step_rich_html is not None:
+                reply_rich_html = step_rich_html
+
+            has_confirmation = bool(step_buttons) or any(
+                outcome.status == "requires_confirmation" for outcome in step_outcomes
+            )
+            loop_steps.append({
+                "step": step_index + 1,
+                "tool_names": [call.name for call in plan.tool_calls],
+                "tool_count": len(plan.tool_calls),
+                "progress_kind": plan.progress_kind,
+                "status": _safe_user_visible_status(plan.user_visible_status, language=plan.language),
+                "observation_count": len(step_observations),
+                "requires_confirmation": has_confirmation,
+            })
+
+            if has_confirmation:
+                stop_reason = "approval_required"
+                break
+
+            should_continue = (
+                plan.mode == "tool_calls"
+                and all(call.name in READ_ONLY_LOOP_TOOLS for call in plan.tool_calls)
+                and _looks_like_multi_step_request(text)
+            )
+            if not should_continue:
+                stop_reason = "completed"
+                break
+
+            if step_index + 1 >= AGENT_LOOP_MAX_MODEL_STEPS:
+                stop_reason = "step_limit_reached"
+                break
+            if tool_call_count >= AGENT_LOOP_MAX_TOOL_CALLS:
+                stop_reason = "tool_call_limit_reached"
+                break
+
+            plan = await self.planner.plan(
+                user=user,
+                text=text,
+                known_context=planner_context.to_prompt_text(),
+                media_context=media_context,
+                available_media=available_media,
+                tool_observations=observations,
+                loop_step=step_index + 2,
+                remaining_steps=AGENT_LOOP_MAX_MODEL_STEPS - (step_index + 1),
+                agent_run_id=run.id,
+                session=self.session,
+            )
+            _store_planner_trace(
+                run,
+                self.planner.last_trace,
+                stage=f"loop_step_{step_index + 2}",
+                planner_context=planner_context,
+            )
+            plan = _with_reply_language(user, text, plan)
+        else:
+            stop_reason = "step_limit_reached"
+
+        run.metadata_ = {
+            **(run.metadata_ or {}),
+            "loop_trace": {
+                "max_model_steps": AGENT_LOOP_MAX_MODEL_STEPS,
+                "max_tool_calls": AGENT_LOOP_MAX_TOOL_CALLS,
+                "tool_call_count": tool_call_count,
+                "stop_reason": stop_reason,
+                "steps": loop_steps,
+                "observations": observations[-AGENT_LOOP_MAX_TOOL_CALLS:],
+            },
+        }
+        return ToolLoopResult(
+            plan=plan,
+            action_results=all_results,
+            action_outcomes=all_outcomes,
+            buttons=all_buttons,
+            reply_rich_html=reply_rich_html,
+            stop_reason=stop_reason,
+            observations=observations,
+        )
+
+    # ------------------------------------------------------------------
+
     async def _apply_tool_calls(
         self,
         *,
@@ -1062,13 +1333,17 @@ class AssistantOrchestrator:
         plan: AgentPlan,
         source_message_id: uuid.UUID,
         planner_context: PlannerContext,
-    ) -> tuple[list[str], list[ActionOutcome], list[list[Button]], str | None]:
+    ) -> tuple[list[str], list[ActionOutcome], list[list[Button]], str | None, list[dict[str, Any]]]:
         results: list[str] = []
         outcomes: list[ActionOutcome] = []
         buttons: list[list[Button]] = []
+        observations: list[dict[str, Any]] = []
         rich_html: str | None = None
 
         for call in plan.tool_calls:
+            before_result_count = len(results)
+            before_outcome_count = len(outcomes)
+            before_button_count = len(buttons)
             if call.name == "create_task":
                 task_signal = ExtractedTask.model_validate(_args_with_call_defaults(call))
                 await self._apply_create_task_tool(
@@ -1189,6 +1464,17 @@ class AssistantOrchestrator:
                     results=results,
                     outcomes=outcomes,
                 )
+            new_results = results[before_result_count:]
+            new_outcomes = outcomes[before_outcome_count:]
+            new_buttons = buttons[before_button_count:]
+            status = "skipped"
+            if new_outcomes:
+                status = new_outcomes[-1].status
+            elif new_buttons:
+                status = "requires_confirmation"
+            elif new_results:
+                status = "completed"
+            observations.append(_tool_observation(call, status=status, summaries=new_results))
 
         if results and not outcomes:
             button_keys = [
@@ -1206,7 +1492,7 @@ class AssistantOrchestrator:
                 )
                 for result in results
             ]
-        return results, outcomes, buttons, rich_html
+        return results, outcomes, buttons, rich_html, observations
 
     async def _apply_set_language_tool(
         self,
@@ -2347,6 +2633,7 @@ class AssistantOrchestrator:
             event = await self.calendar.create_internal_block(
                 user,
                 title=title,
+                description=request.description,
                 start_at=start,
                 end_at=end,
                 status=CalendarEventStatus.PROPOSED,
@@ -2374,6 +2661,7 @@ class AssistantOrchestrator:
             event = await self.calendar.create_internal_block(
                 user,
                 title=request.title or "Block",
+                description=request.description,
                 start_at=local_to_utc(request.start_at_local, tz),
                 end_at=local_to_utc(request.end_at_local, tz),
                 status=(

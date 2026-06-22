@@ -38,7 +38,7 @@ TOOL_CATALOG = """Available backend tools:
 - plan_day()
 - find_focus_slot(title?, duration_minutes?, time_window_local?)
 - read_calendar_events(start_at_local, end_at_local, include_details?, sync_if_needed?)
-- create_internal_calendar_block(title, start_at_local, end_at_local)
+- create_internal_calendar_block(title, start_at_local, end_at_local, description?)
 - create_external_calendar_event(title, start_at_local, end_at_local)
 - create_automation(type, title, cron_expression, timezone?, config?)
 - email_triage(time_window?)
@@ -47,6 +47,10 @@ TOOL_CATALOG = """Available backend tools:
 
 Rules:
 - Return tool calls as JSON only. Do not claim that a tool was executed.
+- Set user_visible_status on every non-final step: one short line in the user's language,
+  max 80 chars, no links, no markdown, no success/completion claims before tools succeed.
+- user_visible_status must use the same language as the language field; ignore older chat history language.
+- progress_kind is for logs only: understanding, reading_calendar, resolving, writing, or answering.
 - Do not request domain lists up front. The backend loads relevant data after a tool call.
 - Any user request to create, read, update, complete, or snooze Lumi-managed state must use mode=tool_calls.
 - For task project/tags/priority/description changes, use update_task. Do not use rename_task to set a project.
@@ -112,6 +116,8 @@ AGENT_PLANNER_SCHEMA_HINT = {
     ],
     "focused_vision": "null unless mode=needs_focused_vision; then object with non-empty question, reason, confidence",
     "final_answer": "string|null",
+    "user_visible_status": "short user-language progress line, max 80 chars, no links/markdown/success claims",
+    "progress_kind": "understanding|reading_calendar|resolving|writing|answering|null",
     "should_answer_normally": "boolean",
     "language": "latest user message language tag, e.g. en|ru|it|es|de",
 }

@@ -207,7 +207,7 @@ async def test_chat_message_enqueues_turn_without_inline_orchestrator(monkeypatc
 
     await handlers.on_chat_message(message, FakeBot())
 
-    assert message.answers == ["🧠 Думаю…"]
+    assert message.answers == ["⏳"]
     assert len(enqueued) == 1
     assert enqueued[0][0] == "process_assistant_turn"
 
@@ -234,4 +234,4 @@ async def test_duplicate_enqueue_does_not_show_queue_unavailable(monkeypatch):
 
     await handlers.on_chat_message(message, FakeBot())
 
-    assert message.answers == ["🧠 Думаю…"]
+    assert message.answers == ["⏳"]

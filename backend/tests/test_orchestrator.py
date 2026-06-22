@@ -8,6 +8,8 @@ from lumi.assistant.orchestrator import AssistantOrchestrator
 from lumi.db.models import (
     AgentRun,
     AgentRunType,
+    CalendarEvent,
+    CalendarEventStatus,
     CalendarSource,
     Message,
     MessageRole,
@@ -2042,6 +2044,246 @@ async def test_agent_planner_read_calendar_events_syncs_requested_range_without_
         'href="https://meet.example/lumi"', ""
     )
     assert any(c.tool_name == "read_calendar_events" and c.status == "completed" for c in tool_calls)
+
+
+async def test_agent_loop_reads_calendar_then_creates_block_with_localized_progress():
+    progress_updates: list[str] = []
+    provider = AgentPlannerProvider([
+        {
+            "mode": "tool_calls",
+            "user_visible_status": "Checking your calendar...",
+            "tool_calls": [
+                {
+                    "name": "read_calendar_events",
+                    "args": {
+                        "start_at_local": "2026-06-22T00:00:00",
+                        "end_at_local": "2026-06-23T00:00:00",
+                        "sync_if_needed": False,
+                        "include_details": True,
+                    },
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                }
+            ],
+            "should_answer_normally": False,
+        },
+        {
+            "mode": "tool_calls",
+            "user_visible_status": "Creating the block...",
+            "tool_calls": [
+                {
+                    "name": "create_internal_calendar_block",
+                    "args": {
+                        "title": "chat task and migration test",
+                        "description": "- chat task\n- migration test",
+                        "start_at_local": "2026-06-22T17:00:00",
+                        "end_at_local": "2026-06-22T17:45:00",
+                        "confidence": 0.95,
+                        "requires_confirmation": False,
+                    },
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                }
+            ],
+            "should_answer_normally": False,
+        },
+    ])
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        await CalendarService(session).create_internal_block(
+            user,
+            title="Grooming",
+            start_at=local_to_utc(datetime(2026, 6, 22, 16, 0), user.timezone),
+            end_at=local_to_utc(datetime(2026, 6, 22, 17, 0), user.timezone),
+            created_by="test",
+        )
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=44,
+            text="Add a 45-minute block after my next meeting: chat task and migration test.",
+            on_progress=progress_updates.append,
+        )
+
+        events = (await session.execute(
+            select(CalendarEvent).where(CalendarEvent.user_id == user.id).order_by(CalendarEvent.start_at)
+        )).scalars().all()
+        tool_calls = (await session.execute(select(ToolCall).order_by(ToolCall.created_at))).scalars().all()
+        run = (await session.execute(select(AgentRun).order_by(AgentRun.created_at.desc()))).scalars().first()
+
+    created = [event for event in events if event.title == "chat task and migration test"]
+    assert len(created) == 1
+    assert created[0].description == "- chat task\n- migration test"
+    assert created[0].status == CalendarEventStatus.CONFIRMED
+    assert "17:00" in result.reply_text or "chat task and migration test" in result.reply_text
+    assert [call.tool_name for call in tool_calls[-2:]] == [
+        "read_calendar_events",
+        "create_internal_calendar_block",
+    ]
+    assert "Checking your calendar..." in progress_updates
+    assert "Creating the block..." in progress_updates
+    assert len(provider.planner_prompts) == 2
+    assert "tool_observations:" in provider.planner_prompts[1]
+    assert "Grooming" in provider.planner_prompts[1]
+    assert (run.metadata_ or {}).get("loop_trace", {}).get("stop_reason") == "completed"
+
+
+async def test_agent_loop_status_falls_back_when_model_status_is_unsafe():
+    progress_updates: list[str] = []
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "user_visible_status": "Done, I created it: https://bad.example",
+        "tool_calls": [
+            {
+                "name": "create_task",
+                "args": {
+                    "title": "Check unsafe status fallback",
+                    "priority": "medium",
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                },
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=45,
+            text="Create a task: Check unsafe status fallback",
+            on_progress=progress_updates.append,
+        )
+
+    assert "Done, I created it: https://bad.example" not in progress_updates
+    assert "⏳" in progress_updates
+
+
+async def test_agent_loop_uses_model_status_language_for_ru_en_it():
+    progress_updates: list[str] = []
+    statuses = [
+        ("ru", "Смотрю календарь...", "Созвониться с Иваном"),
+        ("en", "Checking your calendar...", "Call Ivan"),
+        ("it", "Controllo il calendario...", "Chiamare Ivan"),
+    ]
+    provider = AgentPlannerProvider([
+        {
+            "mode": "tool_calls",
+            "language": language,
+            "user_visible_status": status,
+            "tool_calls": [
+                {
+                    "name": "create_task",
+                    "args": {
+                        "title": title,
+                        "priority": "medium",
+                        "confidence": 0.95,
+                        "requires_confirmation": False,
+                    },
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                }
+            ],
+            "should_answer_normally": False,
+        }
+        for language, status, title in statuses
+    ])
+
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        for language, _, title in statuses:
+            await orchestrator.handle_user_message(
+                telegram_user_id=TEST_TELEGRAM_ID,
+                telegram_chat_id=TEST_TELEGRAM_ID,
+                telegram_message_id=50,
+                text=f"[{language}] create task: {title}",
+                on_progress=progress_updates.append,
+            )
+
+    for _, status, _ in statuses:
+        assert status in progress_updates
+    assert "Reading message" not in "\n".join(progress_updates)
+
+
+async def test_agent_loop_status_falls_back_when_language_mismatches():
+    progress_updates: list[str] = []
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "language": "en",
+        "user_visible_status": "Ищу следующую встречу...",
+        "tool_calls": [
+            {
+                "name": "create_task",
+                "args": {
+                    "title": "Check progress language fallback",
+                    "priority": "medium",
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                },
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=51,
+            text="Create a task: Check progress language fallback",
+            on_progress=progress_updates.append,
+        )
+
+    assert "Ищу следующую встречу..." not in progress_updates
+    assert "⏳" in progress_updates
+
+
+async def test_agent_loop_stops_at_step_budget_without_fake_success():
+    provider = AgentPlannerProvider([
+        {
+            "mode": "tool_calls",
+            "user_visible_status": f"Checking tasks step {index}...",
+            "tool_calls": [
+                {
+                    "name": "read_tasks",
+                    "args": {"filter": "all", "limit": 1},
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                }
+            ],
+            "should_answer_normally": False,
+        }
+        for index in range(5)
+    ])
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        await TaskService(session).create_task(user, title="Existing task")
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=46,
+            text="Keep checking my tasks until you know what to do.",
+        )
+        run = (await session.execute(select(AgentRun).order_by(AgentRun.created_at.desc()))).scalars().first()
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+
+    assert len(provider.planner_prompts) == 4
+    assert len([call for call in tool_calls if call.tool_name == "read_tasks"]) == 4
+    assert (run.metadata_ or {}).get("loop_trace", {}).get("stop_reason") == "step_limit_reached"
+    assert "done" not in result.reply_text.lower()
+    assert "created" not in result.reply_text.lower()
 
 
 async def test_update_task_followup_uses_recent_created_task_context_without_final_llm():

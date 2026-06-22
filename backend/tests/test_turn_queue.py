@@ -572,6 +572,46 @@ async def test_process_assistant_turn_runs_orchestrator_and_completes(monkeypatc
         assert turn.status == "completed"
 
 
+async def test_process_assistant_turn_edits_progress_status(monkeypatch):
+    started = utc_now() - timedelta(seconds=10)
+    edits: list[tuple[int, str]] = []
+
+    async with session_scope() as session:
+        result = await TelegramIntakeService(session, now=lambda: started).ingest_chat_message(
+            update_id=1451,
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=911,
+            text="add a calendar block",
+            status_message_id=9101,
+        )
+        turn_id = result.turn.id
+
+    class FakeOrchestrator:
+        def __init__(self, session) -> None:
+            self.session = session
+
+        async def handle_user_message(self, **kwargs):
+            await kwargs["on_progress"]("Checking your calendar...")
+            return AssistantResult(reply_text="done", buttons=[], needs_compaction=False)
+
+    async def fake_edit_turn_status_message(*, user, turn, status_text):
+        edits.append((turn.status_message_id, status_text))
+        return True
+
+    async def fake_send_turn_reply(*, user, turn, reply_text, buttons):
+        return True
+
+    monkeypatch.setattr(jobs, "AssistantOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(jobs, "edit_turn_status_message", fake_edit_turn_status_message)
+    monkeypatch.setattr(jobs, "send_turn_reply", fake_send_turn_reply)
+
+    summary = await jobs.process_assistant_turn({}, str(turn_id))
+
+    assert summary == "turn completed"
+    assert edits == [(9101, "Checking your calendar...")]
+
+
 async def test_delivery_failure_retries_and_does_not_complete(monkeypatch):
     started = utc_now() - timedelta(seconds=10)
     requeued: list[tuple[str, tuple, dict]] = []
