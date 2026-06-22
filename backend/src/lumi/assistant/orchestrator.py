@@ -108,6 +108,7 @@ IMAGE_SOURCED_CONFIRM_TOOLS = {
 }
 AGENT_LOOP_MAX_MODEL_STEPS = 4
 AGENT_LOOP_MAX_TOOL_CALLS = 8
+CALENDAR_TELEGRAM_EVENT_LIMIT = 5
 NEUTRAL_PROGRESS_STATUS = "⏳"
 READ_ONLY_LOOP_TOOLS = {"read_tasks", "read_calendar_events"}
 MULTI_STEP_INTENT_MARKERS = (
@@ -160,6 +161,7 @@ class AssistantResult:
     agent_run_id: uuid.UUID | None = None
     needs_compaction: bool = False
     open_app_button: bool = False
+    open_app_button_label: str | None = None
     reply_rich_html: str | None = None
 
 
@@ -170,8 +172,17 @@ class ToolLoopResult:
     action_outcomes: list[ActionOutcome]
     buttons: list[list[Button]]
     reply_rich_html: str | None
+    open_app_button: bool
+    use_action_reply_renderer: bool
     stop_reason: str
     observations: list[dict[str, Any]]
+
+
+@dataclass(slots=True)
+class CalendarReadResult:
+    observation_summary: str
+    reply_rich_html: str | None = None
+    open_app_button: bool = False
 
 
 def _rename_choice_button_text(task: Task) -> str:
@@ -476,6 +487,68 @@ def _calendar_proposed_text(language: str | None, *, title: str, start_label: st
         en=f"Proposed block “{title}” {start_label} — confirmation required",
         ru=f"Предложил блок «{title}» {start_label} — нужно подтверждение",
         it=f"Ho proposto il blocco “{title}” {start_label} — serve conferma",
+    )
+
+
+def _calendar_more_text(language: str | None, count: int) -> str:
+    return _text_for_language(
+        language,
+        en=f"+ {count} more in calendar",
+        ru=f"+ ещё {count} в календаре",
+        it=f"+ altri {count} nel calendario",
+    )
+
+
+def _calendar_empty_text(language: str | None, *, sync_error: bool) -> str:
+    if sync_error:
+        return _text_for_language(
+            language,
+            en="I did not find calendar events in that window. External sync is unavailable right now.",
+            ru="Не нашёл событий в календаре за этот период. Внешняя синхронизация сейчас недоступна.",
+            it="Non ho trovato eventi in quel periodo. La sincronizzazione esterna ora non e disponibile.",
+        )
+    return _text_for_language(
+        language,
+        en="I did not find calendar events in that window.",
+        ru="Не нашёл событий в календаре за этот период.",
+        it="Non ho trovato eventi in quel periodo.",
+    )
+
+
+def _calendar_window_title(language: str | None, *, start: datetime, end: datetime, tz: str) -> str:
+    start_local = utc_to_local(start, tz)
+    end_local = utc_to_local(end - timedelta(seconds=1), tz) if end > start else start_local
+    same_day = start_local.date() == end_local.date()
+    if same_day:
+        label = start_local.strftime("%b %d") if normalize_reply_language(language) == "en" else start_local.strftime("%d.%m")
+        today = utc_to_local(utc_now(), tz).date() == start_local.date()
+        if today:
+            return _text_for_language(
+                language,
+                en=f"📅 Today, {label}",
+                ru=f"📅 Сегодня, {label}",
+                it=f"📅 Oggi, {label}",
+            )
+        return f"📅 {label}"
+    if normalize_reply_language(language) == "en":
+        return f"📅 {start_local.strftime('%b %d')} - {end_local.strftime('%b %d')}"
+    return f"📅 {start_local.strftime('%d.%m')} - {end_local.strftime('%d.%m')}"
+
+
+def _calendar_event_when(event, tz: str) -> str:
+    if event.all_day:
+        return "all day"
+    start_local = utc_to_local(event.start_at, tz)
+    end_local = utc_to_local(event.end_at, tz)
+    return f"{start_local.strftime('%H:%M')}–{end_local.strftime('%H:%M')}"
+
+
+def _mini_app_button_text(language: str | None) -> str:
+    return _text_for_language(
+        language,
+        en="✨ Open Lumi",
+        ru="✨ Открыть Lumi",
+        it="✨ Apri Lumi",
     )
 
 
@@ -975,6 +1048,8 @@ class AssistantOrchestrator:
         action_outcomes = loop_result.action_outcomes
         buttons = loop_result.buttons
         reply_rich_html = loop_result.reply_rich_html
+        open_app_button = loop_result.open_app_button
+        open_app_button_label = _mini_app_button_text(plan.language) if open_app_button else None
 
         if not action_results and plan.mode == "tool_calls":
             reason = (
@@ -999,6 +1074,8 @@ class AssistantOrchestrator:
                 buttons=buttons,
                 agent_run_id=run.id,
                 needs_compaction=needs_compaction,
+                open_app_button=open_app_button,
+                open_app_button_label=open_app_button_label,
             )
 
         if action_results and loop_result.stop_reason in {"step_limit_reached", "tool_call_limit_reached"}:
@@ -1025,14 +1102,16 @@ class AssistantOrchestrator:
             )
 
         if action_results and not plan.should_answer_normally:
-            rendered_reply = await self.action_reply_renderer.render(
-                user=user,
-                latest_user_message=text,
-                planner_language=plan.language,
-                outcomes=action_outcomes,
-                run_id=run.id,
-                session=self.session,
-            )
+            rendered_reply = None
+            if loop_result.use_action_reply_renderer:
+                rendered_reply = await self.action_reply_renderer.render(
+                    user=user,
+                    latest_user_message=text,
+                    planner_language=plan.language,
+                    outcomes=action_outcomes,
+                    run_id=run.id,
+                    session=self.session,
+                )
             if rendered_reply is not None:
                 reply_text = rendered_reply.message
                 buttons = self._with_rendered_button_labels(
@@ -1057,6 +1136,8 @@ class AssistantOrchestrator:
                 buttons=buttons,
                 agent_run_id=run.id,
                 needs_compaction=needs_compaction,
+                open_app_button=open_app_button,
+                open_app_button_label=open_app_button_label,
                 reply_rich_html=reply_rich_html if len(action_results) == 1 else None,
             )
 
@@ -1078,6 +1159,8 @@ class AssistantOrchestrator:
                 buttons=buttons,
                 agent_run_id=run.id,
                 needs_compaction=needs_compaction,
+                open_app_button=open_app_button,
+                open_app_button_label=open_app_button_label,
             )
 
         if not action_results and not plan.final_answer:
@@ -1308,6 +1391,8 @@ class AssistantOrchestrator:
         observations: list[dict[str, Any]] = []
         loop_steps: list[dict[str, Any]] = []
         reply_rich_html: str | None = None
+        open_app_button = False
+        use_action_reply_renderer = True
         tool_call_count = 0
         stop_reason = "no_tool_calls"
 
@@ -1321,15 +1406,21 @@ class AssistantOrchestrator:
                 break
 
             await progress(_safe_user_visible_status(plan.user_visible_status, language=plan.language))
-            step_results, step_outcomes, step_buttons, step_rich_html, step_observations = (
-                await self._apply_tool_calls(
-                    user=user,
-                    run=run,
-                    plan=plan,
-                    text=text,
-                    source_message_id=source_message_id,
-                    planner_context=planner_context,
-                )
+            (
+                step_results,
+                step_outcomes,
+                step_buttons,
+                step_rich_html,
+                step_observations,
+                step_open_app_button,
+                step_use_action_reply_renderer,
+            ) = await self._apply_tool_calls(
+                user=user,
+                run=run,
+                plan=plan,
+                text=text,
+                source_message_id=source_message_id,
+                planner_context=planner_context,
             )
             tool_call_count += len(plan.tool_calls)
             all_results.extend(step_results)
@@ -1338,6 +1429,8 @@ class AssistantOrchestrator:
             observations.extend(step_observations)
             if step_rich_html is not None:
                 reply_rich_html = step_rich_html
+            open_app_button = open_app_button or step_open_app_button
+            use_action_reply_renderer = use_action_reply_renderer and step_use_action_reply_renderer
 
             has_confirmation = bool(step_buttons) or any(
                 outcome.status == "requires_confirmation" for outcome in step_outcomes
@@ -1411,6 +1504,8 @@ class AssistantOrchestrator:
             action_outcomes=all_outcomes,
             buttons=all_buttons,
             reply_rich_html=reply_rich_html,
+            open_app_button=open_app_button,
+            use_action_reply_renderer=use_action_reply_renderer,
             stop_reason=stop_reason,
             observations=observations,
         )
@@ -1426,17 +1521,26 @@ class AssistantOrchestrator:
         text: str,
         source_message_id: uuid.UUID,
         planner_context: PlannerContext,
-    ) -> tuple[list[str], list[ActionOutcome], list[list[Button]], str | None, list[dict[str, Any]]]:
+    ) -> tuple[list[str], list[ActionOutcome], list[list[Button]], str | None, list[dict[str, Any]], bool, bool]:
         results: list[str] = []
         outcomes: list[ActionOutcome] = []
         buttons: list[list[Button]] = []
         observations: list[dict[str, Any]] = []
+        observation_summaries: list[str] = []
         rich_html: str | None = None
+        open_app_button = False
+        use_action_reply_renderer = True
+        read_only_context = (
+            plan.mode == "tool_calls"
+            and all(call.name in READ_ONLY_LOOP_TOOLS for call in plan.tool_calls)
+            and _looks_like_multi_step_request(text)
+        )
 
         for call in plan.tool_calls:
             before_result_count = len(results)
             before_outcome_count = len(outcomes)
             before_button_count = len(buttons)
+            before_observation_summary_count = len(observation_summaries)
             if call.name == "create_task":
                 task_signal = ExtractedTask.model_validate(_args_with_call_defaults(call))
                 await self._apply_create_task_tool(
@@ -1519,13 +1623,21 @@ class AssistantOrchestrator:
                 )
             elif call.name == "read_calendar_events":
                 request = CalendarEventsRequest.model_validate(_args_with_call_defaults(call))
-                rich_html = await self._apply_read_calendar_events_tool(
+                calendar_read = await self._apply_read_calendar_events_tool(
                     user=user,
                     run=run,
                     call=call,
                     request=request,
                     results=results,
+                    language=plan.language,
+                    user_visible=not read_only_context,
                 )
+                observation_summaries.append(calendar_read.observation_summary)
+                if calendar_read.reply_rich_html is not None:
+                    rich_html = calendar_read.reply_rich_html
+                open_app_button = open_app_button or calendar_read.open_app_button
+                if calendar_read.open_app_button:
+                    use_action_reply_renderer = False
             elif call.name == "create_automation":
                 automation = AutomationRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_create_automation_tool(user=user, run=run,
@@ -1560,6 +1672,7 @@ class AssistantOrchestrator:
             new_results = results[before_result_count:]
             new_outcomes = outcomes[before_outcome_count:]
             new_buttons = buttons[before_button_count:]
+            new_observation_summaries = observation_summaries[before_observation_summary_count:]
             status = "skipped"
             if new_outcomes:
                 status = new_outcomes[-1].status
@@ -1567,7 +1680,13 @@ class AssistantOrchestrator:
                 status = "requires_confirmation"
             elif new_results:
                 status = "completed"
-            observations.append(_tool_observation(call, status=status, summaries=new_results))
+            elif new_observation_summaries:
+                status = "completed"
+            observations.append(_tool_observation(
+                call,
+                status=status,
+                summaries=new_observation_summaries or new_results,
+            ))
 
         if results and not outcomes:
             button_keys = [
@@ -1585,7 +1704,7 @@ class AssistantOrchestrator:
                 )
                 for result in results
             ]
-        return results, outcomes, buttons, rich_html, observations
+        return results, outcomes, buttons, rich_html, observations, open_app_button, use_action_reply_renderer
 
     async def _apply_set_language_tool(
         self,
@@ -2591,7 +2710,9 @@ class AssistantOrchestrator:
         call: PlannedToolCall,
         request: CalendarEventsRequest,
         results: list[str],
-    ) -> str | None:
+        language: str | None,
+        user_visible: bool,
+    ) -> CalendarReadResult:
         start = local_to_utc(request.start_at_local, user.timezone)
         end = local_to_utc(request.end_at_local, user.timezone)
         sync_result: dict[str, int | str] | None = None
@@ -2626,29 +2747,20 @@ class AssistantOrchestrator:
             },
         )
         if not events:
-            if sync_error:
-                results.append(
-                    "I did not find calendar events in that window. "
-                    "External sync is unavailable right now."
-                )
-            else:
-                results.append("I did not find calendar events in that window.")
-            return None
+            empty_text = _calendar_empty_text(language, sync_error=bool(sync_error))
+            if user_visible:
+                results.append(empty_text)
+            return CalendarReadResult(
+                observation_summary=empty_text,
+                open_app_button=user_visible,
+            )
 
         lines = ["Calendar events:"]
-        start_label = utc_to_local(start, user.timezone).strftime("%Y-%m-%d")
-        end_label = utc_to_local(end, user.timezone).strftime("%Y-%m-%d")
-        rich_window = start_label if start_label == end_label else f"{start_label} - {end_label}"
-        rich_lines = [f"<b>📅 Calendar · {rich_window}</b>"]
-        rich_limit = 8
+        rich_lines = [f"<b>{escape(_calendar_window_title(language, start=start, end=end, tz=user.timezone))}</b>"]
+        rich_limit = CALENDAR_TELEGRAM_EVENT_LIMIT
+        reply_lines = [_calendar_window_title(language, start=start, end=end, tz=user.timezone)]
         for index, event in enumerate(events[:20]):
-            start_local = utc_to_local(event.start_at, user.timezone)
-            end_local = utc_to_local(event.end_at, user.timezone)
-            when = (
-                "all day"
-                if event.all_day
-                else f"{start_local.strftime('%H:%M')}–{end_local.strftime('%H:%M')}"
-            )
+            when = _calendar_event_when(event, user.timezone)
             line = f"{when} — {event.title}"
             location = event.metadata_.get("location")
             meeting_url = event.metadata_.get("meeting_url")
@@ -2659,21 +2771,32 @@ class AssistantOrchestrator:
             lines.append(line)
 
             if index < rich_limit:
+                reply_line = f"{when} — {event.title}"
+                if location:
+                    reply_line += f" ({location})"
+                reply_lines.append(reply_line)
                 rich_item = f"<b>{escape(when)}</b>  {escape(event.title)}"
                 if location:
                     rich_item += f"\n<i>{escape(str(location))}</i>"
                 if request.include_details and meeting_url:
                     rich_item += (
                         f'\n<a href="{escape(str(meeting_url), quote=True)}">'
-                        "↗ open call</a>"
+                        "↗ call</a>"
                     )
                 rich_lines.append(rich_item)
         if len(events) > 20:
             lines.append(f"{len(events) - 20} more events not shown.")
         if len(events) > rich_limit:
-            rich_lines.append(f"<i>... and {len(events) - rich_limit} more events</i>")
-        results.append("\n".join(lines))
-        return "\n\n".join(rich_lines)
+            more = _calendar_more_text(language, len(events) - rich_limit)
+            reply_lines.append(more)
+            rich_lines.append(f"<i>{escape(more)}</i>")
+        if user_visible:
+            results.append("\n".join(reply_lines))
+        return CalendarReadResult(
+            observation_summary="\n".join(lines),
+            reply_rich_html="\n\n".join(rich_lines) if user_visible else None,
+            open_app_button=user_visible,
+        )
 
     async def _next_available_calendar_slot_after(
         self,

@@ -151,6 +151,68 @@ async def test_send_turn_reply_falls_back_to_html_when_rich_send_fails(monkeypat
     assert fallback["link_preview_options"].is_disabled is True
 
 
+async def test_send_turn_reply_can_attach_mini_app_button(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+
+    class FakeBot:
+        def __init__(self, token: str) -> None:
+            self.token = token
+            self.session = SimpleNamespace(close=self._close)
+
+        async def _close(self) -> None:
+            calls.append(("close", {}))
+
+        async def send_message(self, **kwargs):
+            calls.append(("send_message", kwargs))
+            return SimpleNamespace(message_id=11)
+
+    def fake_markup_from_buttons(
+        buttons,
+        *,
+        with_app_button: bool = False,
+        app_button_text: str | None = None,
+    ):
+        calls.append((
+            "markup",
+            {
+                "buttons": buttons,
+                "with_app_button": with_app_button,
+                "app_button_text": app_button_text,
+            },
+        ))
+        return "MARKUP"
+
+    monkeypatch.setattr("aiogram.Bot", FakeBot)
+    monkeypatch.setattr(jobs, "markup_from_buttons", fake_markup_from_buttons)
+    monkeypatch.setattr(
+        jobs,
+        "get_settings",
+        lambda: SimpleNamespace(telegram_bot_token="123:test"),
+    )
+
+    delivered = await jobs.send_turn_reply(
+        user=SimpleNamespace(telegram_chat_id=777, telegram_user_id=777),
+        turn=SimpleNamespace(telegram_chat_id=777, status_message_id=None),
+        reply_text="📅 Today\n10:00-10:30 Standup",
+        buttons=[],
+        open_app_button=True,
+        open_app_button_label="✨ Open Lumi",
+    )
+
+    assert delivered is True
+    assert calls[0] == (
+        "markup",
+        {
+            "buttons": [],
+            "with_app_button": True,
+            "app_button_text": "✨ Open Lumi",
+        },
+    )
+    assert calls[1][0] == "send_message"
+    assert calls[1][1]["reply_markup"] == "MARKUP"
+    assert calls[-1] == ("close", {})
+
+
 async def test_intake_debounces_fast_messages_into_one_turn():
     async with session_scope() as session:
         intake = TelegramIntakeService(session, now=lambda: BASE_NOW)

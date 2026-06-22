@@ -1986,16 +1986,17 @@ async def test_agent_planner_read_calendar_events_syncs_requested_range_without_
             "days_ahead": days_ahead,
             "days_back": days_back,
         })
-        await CalendarService(self.session).upsert_external_event(
-            user,
-            source=CalendarSource.YANDEX,
-            external_calendar_id="work",
-            external_event_id="recurring-planning-2026-07-13",
-            title="Lumi weekly planning",
-            start_at=local_to_utc(datetime(2026, 7, 13, 10, 0), user.timezone),
-            end_at=local_to_utc(datetime(2026, 7, 13, 11, 0), user.timezone),
-            meeting_url="https://meet.example/lumi",
-        )
+        for index in range(7):
+            await CalendarService(self.session).upsert_external_event(
+                user,
+                source=CalendarSource.YANDEX,
+                external_calendar_id="work",
+                external_event_id=f"recurring-planning-2026-07-13-{index}",
+                title="Lumi weekly planning" if index == 0 else f"Planning follow-up {index}",
+                start_at=local_to_utc(datetime(2026, 7, 13, 10 + index, 0), user.timezone),
+                end_at=local_to_utc(datetime(2026, 7, 13, 10 + index, 30), user.timezone),
+                meeting_url="https://meet.example/lumi" if index == 0 else None,
+            )
         return {"yandex": 1}
 
     monkeypatch.setattr(
@@ -2034,12 +2035,20 @@ async def test_agent_planner_read_calendar_events_syncs_requested_range_without_
     assert len(sync_calls) == 1
     assert sync_calls[0]["start_at"] == local_to_utc(datetime(2026, 7, 13), "Europe/Moscow")
     assert sync_calls[0]["end_at"] == local_to_utc(datetime(2026, 7, 14), "Europe/Moscow")
+    assert result.open_app_button is True
+    assert result.open_app_button_label == "✨ Открыть Lumi"
+    assert result.reply_text.startswith("📅")
     assert "Lumi weekly planning" in result.reply_text
-    assert "10:00" in result.reply_text
+    assert "\n10:00" in result.reply_text
+    assert "Planning follow-up 5" not in result.reply_text
+    assert "\n+ ещё 2 в календаре" in result.reply_text
+    assert "https://meet.example/lumi" not in result.reply_text
+    assert "Calendar events:" not in result.reply_text
     assert result.reply_rich_html is not None
-    assert "<b>📅 Calendar" in result.reply_rich_html
+    assert result.reply_rich_html.startswith("<b>📅")
     assert "Lumi weekly planning" in result.reply_rich_html
     assert 'href="https://meet.example/lumi"' in result.reply_rich_html
+    assert "↗ call" in result.reply_rich_html
     assert "https://meet.example/lumi" not in result.reply_rich_html.replace(
         'href="https://meet.example/lumi"', ""
     )
@@ -2119,6 +2128,10 @@ async def test_agent_loop_reads_calendar_then_creates_block_with_localized_progr
     assert created[0].description == "- chat task\n- migration test"
     assert created[0].status == CalendarEventStatus.CONFIRMED
     assert "17:00" in result.reply_text or "chat task and migration test" in result.reply_text
+    assert "Calendar events:" not in result.reply_text
+    assert "Grooming" not in result.reply_text
+    assert result.reply_rich_html is None
+    assert result.open_app_button is False
     assert [call.tool_name for call in tool_calls[-2:]] == [
         "read_calendar_events",
         "create_internal_calendar_block",
@@ -2128,7 +2141,76 @@ async def test_agent_loop_reads_calendar_then_creates_block_with_localized_progr
     assert len(provider.planner_prompts) == 2
     assert "tool_observations:" in provider.planner_prompts[1]
     assert "Grooming" in provider.planner_prompts[1]
+    assert "Grooming" in (run.metadata_ or {}).get("loop_trace", {}).get("observations", [])[0]["summary"]
     assert (run.metadata_ or {}).get("loop_trace", {}).get("stop_reason") == "completed"
+
+
+async def test_agent_loop_read_calendar_then_ask_user_sends_final_answer_not_calendar_dump():
+    final_answer = (
+        "Il primo spazio libero e 22:45-23:15. Vuoi che crei il blocco "
+        "QA conferma italiana?"
+    )
+    provider = AgentPlannerProvider([
+        {
+            "mode": "tool_calls",
+            "language": "it",
+            "user_visible_status": "Controllo il calendario...",
+            "tool_calls": [
+                {
+                    "name": "read_calendar_events",
+                    "args": {
+                        "start_at_local": "2026-06-22T00:00:00",
+                        "end_at_local": "2026-06-23T00:00:00",
+                        "sync_if_needed": False,
+                        "include_details": True,
+                    },
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                }
+            ],
+            "should_answer_normally": False,
+        },
+        {
+            "mode": "ask_user",
+            "language": "it",
+            "user_visible_status": "Propongo lo slot...",
+            "tool_calls": [],
+            "final_answer": final_answer,
+            "should_answer_normally": False,
+        },
+    ])
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        await CalendarService(session).create_internal_block(
+            user,
+            title="Existing busy block",
+            start_at=local_to_utc(datetime(2026, 6, 22, 20, 0), user.timezone),
+            end_at=local_to_utc(datetime(2026, 6, 22, 22, 45), user.timezone),
+            created_by="test",
+        )
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=49,
+            text=(
+                "Proponi un blocco di 30 minuti nel primo spazio libero dopo "
+                "la mia prossima riunione, chiedimi conferma."
+            ),
+        )
+        run = (await session.execute(select(AgentRun).order_by(AgentRun.created_at.desc()))).scalars().first()
+
+    assert result.reply_text == final_answer
+    assert "Calendar events:" not in result.reply_text
+    assert "Existing busy block" not in result.reply_text
+    assert result.reply_rich_html is None
+    assert result.open_app_button is False
+    assert (run.metadata_ or {}).get("loop_trace", {}).get("stop_reason") == "planner_final"
+    assert "Existing busy block" in (
+        (run.metadata_ or {}).get("loop_trace", {}).get("observations", [])[0]["summary"]
+    )
 
 
 async def test_agent_loop_shifts_flexible_calendar_block_away_from_conflicts():

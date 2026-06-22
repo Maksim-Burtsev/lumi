@@ -90,6 +90,8 @@ async def send_turn_reply(
     reply_text: str,
     buttons,
     reply_rich_html: str | None = None,
+    open_app_button: bool = False,
+    open_app_button_label: str | None = None,
 ) -> bool:
     settings = get_settings()
     if not settings.telegram_bot_token:
@@ -101,7 +103,11 @@ async def send_turn_reply(
     bot = Bot(token=settings.telegram_bot_token)
     chat_id = turn.telegram_chat_id or user.telegram_chat_id or user.telegram_user_id
     chunks = chunk_telegram(telegram_plain_text(reply_text))
-    markup = markup_from_buttons(buttons)
+    markup = markup_from_buttons(
+        buttons,
+        with_app_button=open_app_button,
+        app_button_text=open_app_button_label,
+    )
     markup_payload = _telegram_json(markup)
     link_preview_options = LinkPreviewOptions(is_disabled=True)
     rich_html = reply_rich_html if reply_rich_html and len(chunks) == 1 else None
@@ -485,6 +491,10 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
     }
     if result.reply_rich_html:
         reply_kwargs["reply_rich_html"] = result.reply_rich_html
+    if result.open_app_button:
+        reply_kwargs["open_app_button"] = result.open_app_button
+    if result.open_app_button_label:
+        reply_kwargs["open_app_button_label"] = result.open_app_button_label
     delivered = await send_turn_reply(**reply_kwargs)
     if not delivered:
         next_turn = None
