@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from html import escape
 from typing import Any
@@ -61,7 +61,7 @@ from lumi.i18n import (
 )
 from lumi.llm.gateway import LLMGateway
 from lumi.logging import agent_run_id_var, get_logger
-from lumi.services.calendar import CalendarService
+from lumi.services.calendar import CalendarService, merge_busy_intervals
 from lumi.services.confirmations import ConfirmationService
 from lumi.services.planning import CalendarSyncService, PlanningService
 from lumi.services.realtime import RealtimeEventService, commit_with_realtime
@@ -129,6 +129,19 @@ MULTI_STEP_INTENT_MARKERS = (
     "riunione",
     "finché",
     "finche",
+)
+FLEXIBLE_CALENDAR_SLOT_MARKERS = (
+    "after",
+    "first free",
+    "free slot",
+    "without overlap",
+    "без налож",
+    "после",
+    "свобод",
+    "окно",
+    "dopo",
+    "spazio libero",
+    "senza sovrapp",
 )
 ImageLoader = Callable[[dict], Awaitable[ImageInput | None]]
 
@@ -386,6 +399,84 @@ def _safe_user_visible_status(status: str | None, *, language: str | None = None
 def _looks_like_multi_step_request(text: str) -> bool:
     lower = text.lower()
     return any(marker in lower for marker in MULTI_STEP_INTENT_MARKERS)
+
+
+def _looks_like_flexible_calendar_slot_request(text: str) -> bool:
+    lower = text.lower()
+    return any(marker in lower for marker in FLEXIBLE_CALENDAR_SLOT_MARKERS)
+
+
+def _calendar_busy_intervals(events) -> list[tuple]:
+    return [
+        (event.start_at, event.end_at)
+        for event in events
+        if event.busy and event.status in (
+            CalendarEventStatus.CONFIRMED,
+            CalendarEventStatus.TENTATIVE,
+            CalendarEventStatus.PROPOSED,
+        )
+    ]
+
+
+def _text_for_language(language: str | None, *, en: str, ru: str, it: str | None = None) -> str:
+    primary = normalize_reply_language(language)
+    if primary == "ru":
+        return ru
+    if primary == "it":
+        return it or en
+    return en
+
+
+def _accept_block_button_text(language: str | None) -> str:
+    return _text_for_language(
+        language,
+        en="✓ Accept block",
+        ru="✓ Принять блок",
+        it="✓ Accetta blocco",
+    )
+
+
+def _calendar_conflict_text(
+    language: str | None,
+    *,
+    title: str,
+    conflict_title: str,
+    start_label: str,
+    end_label: str,
+) -> str:
+    return _text_for_language(
+        language,
+        en=(
+            f"Could not create “{title}”: {start_label}–{end_label} overlaps "
+            f"with “{conflict_title}”."
+        ),
+        ru=(
+            f"Не создал «{title}»: {start_label}–{end_label} пересекается "
+            f"с «{conflict_title}»."
+        ),
+        it=(
+            f"Non ho creato “{title}”: {start_label}–{end_label} si sovrappone "
+            f"a “{conflict_title}”."
+        ),
+    )
+
+
+def _calendar_added_text(language: str | None, *, title: str, start_label: str) -> str:
+    return _text_for_language(
+        language,
+        en=f"Added to calendar: {title} {start_label}",
+        ru=f"Добавил в календарь: {title} {start_label}",
+        it=f"Aggiunto al calendario: {title} {start_label}",
+    )
+
+
+def _calendar_proposed_text(language: str | None, *, title: str, start_label: str) -> str:
+    return _text_for_language(
+        language,
+        en=f"Proposed block “{title}” {start_label} — confirmation required",
+        ru=f"Предложил блок «{title}» {start_label} — нужно подтверждение",
+        it=f"Ho proposto il blocco “{title}” {start_label} — serve conferma",
+    )
 
 
 def _tool_observation(
@@ -1235,6 +1326,7 @@ class AssistantOrchestrator:
                     user=user,
                     run=run,
                     plan=plan,
+                    text=text,
                     source_message_id=source_message_id,
                     planner_context=planner_context,
                 )
@@ -1331,6 +1423,7 @@ class AssistantOrchestrator:
         user: User,
         run,
         plan: AgentPlan,
+        text: str,
         source_message_id: uuid.UUID,
         planner_context: PlannerContext,
     ) -> tuple[list[str], list[ActionOutcome], list[list[Button]], str | None, list[dict[str, Any]]]:
@@ -1422,7 +1515,7 @@ class AssistantOrchestrator:
                 request = _calendar_request_from_tool_call(call)
                 await self._apply_calendar_request(
                     user=user, run=run, call=call, request=request, results=results,
-                    buttons=buttons
+                    buttons=buttons, outcomes=outcomes, language=plan.language, text=text
                 )
             elif call.name == "read_calendar_events":
                 request = CalendarEventsRequest.model_validate(_args_with_call_defaults(call))
@@ -2582,6 +2675,40 @@ class AssistantOrchestrator:
         results.append("\n".join(lines))
         return "\n\n".join(rich_lines)
 
+    async def _next_available_calendar_slot_after(
+        self,
+        user: User,
+        *,
+        start: datetime,
+        end: datetime,
+    ) -> tuple[datetime, datetime] | None:
+        duration = end - start
+        if duration <= timedelta(0):
+            return None
+        local_start = utc_to_local(start, user.timezone)
+        day_start = local_to_utc(
+            datetime(local_start.year, local_start.month, local_start.day, 0, 0),
+            user.timezone,
+        )
+        day_end = local_to_utc(
+            datetime(local_start.year, local_start.month, local_start.day, 23, 59, 59),
+            user.timezone,
+        )
+        cursor = start
+        events = await self.calendar.list_events(user, day_start, day_end)
+        for busy_start, busy_end in merge_busy_intervals(_calendar_busy_intervals(events)):
+            if busy_end <= cursor:
+                continue
+            candidate_end = cursor + duration
+            if candidate_end <= busy_start:
+                return cursor, candidate_end
+            if busy_start < candidate_end and busy_end > cursor:
+                cursor = max(cursor, busy_end)
+        candidate_end = cursor + duration
+        if candidate_end <= day_end:
+            return cursor, candidate_end
+        return None
+
     async def _apply_calendar_request(
         self,
         *,
@@ -2591,6 +2718,9 @@ class AssistantOrchestrator:
         request: CalendarRequest,
         results: list[str],
         buttons: list[list[Button]],
+        outcomes: list[ActionOutcome],
+        language: str,
+        text: str,
     ) -> None:
         tz = user.timezone
         if request.kind == "plan_day":
@@ -2639,6 +2769,7 @@ class AssistantOrchestrator:
                 status=CalendarEventStatus.PROPOSED,
                 created_by="agent",
                 agent_run_id=run.id,
+                metadata={"reply_language": language},
             )
             await self.runs.log_tool_call(
                 run=run, tool_name="create_internal_calendar_block", status="completed",
@@ -2650,26 +2781,92 @@ class AssistantOrchestrator:
                 f"{utc_to_local(end, tz).strftime('%H:%M')} window for “{title}” (proposed)"
             )
             buttons.append([
-                Button(text="✓ Accept block", callback_data=f"block_confirm:{event.id}"),
+                Button(
+                    text=_accept_block_button_text(language),
+                    callback_data=f"block_confirm:{event.id}",
+                    key="block_confirm",
+                ),
             ])
             return
 
         if request.kind == "create_internal_block":
             if not request.start_at_local or not request.end_at_local or request.confidence < 0.75:
                 return
+            title = request.title or "Block"
+            start_at = local_to_utc(request.start_at_local, tz)
+            end_at = local_to_utc(request.end_at_local, tz)
+            if end_at <= start_at:
+                return
+            requested_start_at = start_at
+            requested_end_at = end_at
+            conflicts = await self.calendar.list_events(user, start_at, end_at)
+            busy_conflicts = [
+                event for event in conflicts
+                if event.busy and event.status in (
+                    CalendarEventStatus.CONFIRMED,
+                    CalendarEventStatus.TENTATIVE,
+                    CalendarEventStatus.PROPOSED,
+                )
+            ]
+            if busy_conflicts:
+                adjusted = (
+                    await self._next_available_calendar_slot_after(user, start=start_at, end=end_at)
+                    if _looks_like_flexible_calendar_slot_request(text)
+                    else None
+                )
+                if adjusted is None:
+                    conflict = busy_conflicts[0]
+                    start_label = utc_to_local(start_at, tz).strftime("%H:%M")
+                    end_label = utc_to_local(end_at, tz).strftime("%H:%M")
+                    fallback = _calendar_conflict_text(
+                        language,
+                        title=title,
+                        conflict_title=conflict.title,
+                        start_label=start_label,
+                        end_label=end_label,
+                    )
+                    await self.runs.log_tool_call(
+                        run=run,
+                        tool_name="create_internal_calendar_block",
+                        status="skipped",
+                        args={**request.model_dump(mode="json"), **_call_source_payload(call)},
+                        result={
+                            "reason": "calendar_conflict",
+                            "conflict_event_id": str(conflict.id),
+                            "conflict_title": conflict.title,
+                        },
+                    )
+                    results.append(fallback)
+                    outcomes.append(ActionOutcome(
+                        action_type="create_internal_calendar_block",
+                        status="skipped",
+                        fallback_text=fallback,
+                        title=title,
+                        error_code="calendar_conflict",
+                        details={"conflict_event_id": str(conflict.id)},
+                    ))
+                    return
+                start_at, end_at = adjusted
             requires_confirmation = request.requires_confirmation
             event = await self.calendar.create_internal_block(
                 user,
-                title=request.title or "Block",
+                title=title,
                 description=request.description,
-                start_at=local_to_utc(request.start_at_local, tz),
-                end_at=local_to_utc(request.end_at_local, tz),
+                start_at=start_at,
+                end_at=end_at,
                 status=(
                     CalendarEventStatus.PROPOSED
                     if requires_confirmation else CalendarEventStatus.CONFIRMED
                 ),
                 created_by="agent",
                 agent_run_id=run.id,
+                metadata={
+                    "reply_language": language,
+                    **({
+                        "adjusted_from_start_at": requested_start_at.isoformat(),
+                        "adjusted_from_end_at": requested_end_at.isoformat(),
+                    } if (start_at, end_at) != (requested_start_at, requested_end_at) else {}),
+                },
             )
             await self.runs.log_tool_call(
                 run=run,
@@ -2680,17 +2877,21 @@ class AssistantOrchestrator:
                 requires_confirmation=requires_confirmation,
             )
             if requires_confirmation:
+                start_label = fmt_local(event.start_at, tz, "%d.%m %H:%M")
                 results.append(
-                    f"Proposed block “{request.title or 'block'}” "
-                    f"{fmt_local(event.start_at, tz, '%d.%m %H:%M')} — confirmation required"
+                    _calendar_proposed_text(language, title=title, start_label=start_label)
                 )
                 buttons.append([
-                    Button(text="✓ Accept block", callback_data=f"block_confirm:{event.id}"),
+                    Button(
+                        text=_accept_block_button_text(language),
+                        callback_data=f"block_confirm:{event.id}",
+                        key="block_confirm",
+                    ),
                 ])
             else:
+                start_label = fmt_local(event.start_at, tz, "%d.%m %H:%M")
                 results.append(
-                    f"Added to calendar: {request.title or 'block'} "
-                    f"{fmt_local(event.start_at, tz, '%d.%m %H:%M')}"
+                    _calendar_added_text(language, title=title, start_label=start_label)
                 )
             return
 

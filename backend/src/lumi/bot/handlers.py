@@ -20,6 +20,7 @@ from lumi.bot.media import (
 from lumi.config import get_settings
 from lumi.db.models import CalendarEventStatus, ConfirmationStatus, Message, MessageRole
 from lumi.db.session import session_scope
+from lumi.i18n import ensure_language_settings, normalize_reply_language
 from lumi.logging import get_logger, telegram_update_id_var
 from lumi.services.confirmation_executor import ConfirmationExecutor
 from lumi.services.confirmations import ConfirmationService
@@ -56,6 +57,58 @@ def _is_owner(telegram_user_id: int) -> bool:
 
 def _language_code(event: TgMessage | CallbackQuery) -> str | None:
     return getattr(event.from_user, "language_code", None) if event.from_user else None
+
+
+def _text_for_language(language: str | None, *, en: str, ru: str, it: str | None = None) -> str:
+    primary = normalize_reply_language(language)
+    if primary == "ru":
+        return ru
+    if primary == "it":
+        return it or en
+    return en
+
+
+def _reply_language_for_callback(user, language_code: str | None = None) -> str:
+    settings = ensure_language_settings(user.settings)
+    mode = settings.get("reply_language_mode")
+    if mode == "fixed":
+        return normalize_reply_language(str(settings.get("reply_language") or "en"))
+    if mode == "app_locale":
+        return normalize_reply_language(user.locale)
+    return normalize_reply_language(language_code or user.language_code or user.locale)
+
+
+def _block_confirm_missing_text(language: str | None) -> str:
+    return _text_for_language(
+        language,
+        en="Block not found or already confirmed",
+        ru="Блок не найден или уже подтвержден",
+        it="Blocco non trovato o gia confermato",
+    )
+
+
+def _block_confirm_accepted_text(language: str | None) -> str:
+    return _text_for_language(
+        language,
+        en="Accepted",
+        ru="Принято",
+        it="Accettato",
+    )
+
+
+def _block_confirmed_text(
+    language: str | None,
+    *,
+    title: str,
+    start_label: str,
+    end_label: str,
+) -> str:
+    return _text_for_language(
+        language,
+        en=f"✓ Focus block in calendar: {title}, {start_label}–{end_label}",
+        ru=f"✓ Фокус-блок в календаре: {title}, {start_label}–{end_label}",
+        it=f"✓ Blocco focus in calendario: {title}, {start_label}–{end_label}",
+    )
 
 
 async def _check_allowed(event: TgMessage | CallbackQuery) -> bool:
@@ -854,18 +907,24 @@ async def on_block_confirm(callback: CallbackQuery) -> None:
             event = await calendar.get_event(user, uuid.UUID(block_id_raw))
         except ValueError:
             event = None
+        language = _reply_language_for_callback(user, _language_code(callback))
+        if event is not None:
+            language = normalize_reply_language(
+                str((event.metadata_ or {}).get("reply_language") or language)
+            )
         if event is None or event.status != CalendarEventStatus.PROPOSED:
-            await callback.answer("Блок не найден или уже подтвержден")
+            await callback.answer(_block_confirm_missing_text(language))
             return
         await calendar.confirm_proposed_block(user, event)
         from lumi.utils.time import fmt_local
 
-        text = (
-            f"✓ Фокус-блок в календаре: {event.title}, "
-            f"{fmt_local(event.start_at, user.timezone, '%d.%m %H:%M')}–"
-            f"{fmt_local(event.end_at, user.timezone, '%H:%M')}"
+        text = _block_confirmed_text(
+            language,
+            title=event.title,
+            start_label=fmt_local(event.start_at, user.timezone, "%d.%m %H:%M"),
+            end_label=fmt_local(event.end_at, user.timezone, "%H:%M"),
         )
-    await callback.answer("Принято")
+    await callback.answer(_block_confirm_accepted_text(language))
     if callback.message:
         await callback.message.answer(text)
 

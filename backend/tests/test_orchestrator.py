@@ -2131,6 +2131,156 @@ async def test_agent_loop_reads_calendar_then_creates_block_with_localized_progr
     assert (run.metadata_ or {}).get("loop_trace", {}).get("stop_reason") == "completed"
 
 
+async def test_agent_loop_shifts_flexible_calendar_block_away_from_conflicts():
+    provider = AgentPlannerProvider([
+        {
+            "mode": "tool_calls",
+            "language": "it",
+            "user_visible_status": "Controllo il calendario...",
+            "tool_calls": [
+                {
+                    "name": "read_calendar_events",
+                    "args": {
+                        "start_at_local": "2026-06-22T00:00:00",
+                        "end_at_local": "2026-06-23T00:00:00",
+                        "sync_if_needed": False,
+                        "include_details": True,
+                    },
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                }
+            ],
+            "should_answer_normally": False,
+        },
+        {
+            "mode": "tool_calls",
+            "language": "it",
+            "user_visible_status": "Creo il blocco...",
+            "tool_calls": [
+                {
+                    "name": "create_internal_calendar_block",
+                    "args": {
+                        "title": "QA blocco senza sovrapposizione",
+                        "description": "test release",
+                        "start_at_local": "2026-06-22T20:00:00",
+                        "end_at_local": "2026-06-22T20:45:00",
+                        "confidence": 0.95,
+                        "requires_confirmation": False,
+                    },
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                }
+            ],
+            "should_answer_normally": False,
+        },
+    ])
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        calendar = CalendarService(session)
+        await calendar.create_internal_block(
+            user,
+            title="Busy 20:00",
+            start_at=local_to_utc(datetime(2026, 6, 22, 20, 0), user.timezone),
+            end_at=local_to_utc(datetime(2026, 6, 22, 20, 45), user.timezone),
+            created_by="test",
+        )
+        await calendar.create_internal_block(
+            user,
+            title="Busy 20:45",
+            start_at=local_to_utc(datetime(2026, 6, 22, 20, 45), user.timezone),
+            end_at=local_to_utc(datetime(2026, 6, 22, 21, 30), user.timezone),
+            created_by="test",
+        )
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=47,
+            text=(
+                "Aggiungi un blocco di 45 minuti nel primo spazio libero dopo "
+                "la mia prossima riunione: QA blocco senza sovrapposizione."
+            ),
+        )
+
+        events = (await session.execute(
+            select(CalendarEvent).where(CalendarEvent.user_id == user.id).order_by(CalendarEvent.start_at)
+        )).scalars().all()
+        tool_calls = (await session.execute(select(ToolCall).order_by(ToolCall.created_at))).scalars().all()
+
+    requested_start = local_to_utc(datetime(2026, 6, 22, 20, 0), user.timezone)
+    expected_start = local_to_utc(datetime(2026, 6, 22, 21, 30), user.timezone)
+    expected_end = local_to_utc(datetime(2026, 6, 22, 22, 15), user.timezone)
+    created = [event for event in events if event.title == "QA blocco senza sovrapposizione"]
+    assert len(created) == 1
+    assert created[0].start_at == expected_start
+    assert created[0].end_at == expected_end
+    assert created[0].status == CalendarEventStatus.CONFIRMED
+    assert created[0].metadata_["reply_language"] == "it"
+    assert created[0].metadata_["adjusted_from_start_at"] == requested_start.isoformat()
+    assert "21:30" in result.reply_text
+    assert not any(
+        event.title == "QA blocco senza sovrapposizione" and event.start_at == requested_start
+        for event in events
+    )
+    assert tool_calls[-1].tool_name == "create_internal_calendar_block"
+    assert tool_calls[-1].status == "completed"
+    assert tool_calls[-1].result_json["event_id"] == str(created[0].id)
+
+
+async def test_agent_loop_rejects_fixed_calendar_block_conflict_without_creating():
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "language": "en",
+        "user_visible_status": "Creating the block...",
+        "tool_calls": [
+            {
+                "name": "create_internal_calendar_block",
+                "args": {
+                    "title": "fixed conflict QA",
+                    "description": "must not overlap",
+                    "start_at_local": "2026-06-22T20:00:00",
+                    "end_at_local": "2026-06-22T20:30:00",
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                },
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        await CalendarService(session).create_internal_block(
+            user,
+            title="Existing busy block",
+            start_at=local_to_utc(datetime(2026, 6, 22, 20, 0), user.timezone),
+            end_at=local_to_utc(datetime(2026, 6, 22, 20, 45), user.timezone),
+            created_by="test",
+        )
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=48,
+            text="Create a block at exactly 20:00: fixed conflict QA.",
+        )
+
+        events = (await session.execute(select(CalendarEvent).where(CalendarEvent.user_id == user.id))).scalars().all()
+        tool_call = (await session.execute(select(ToolCall))).scalars().one()
+
+    assert not any(event.title == "fixed conflict QA" for event in events)
+    assert tool_call.tool_name == "create_internal_calendar_block"
+    assert tool_call.status == "skipped"
+    assert tool_call.result_json["reason"] == "calendar_conflict"
+    assert "Could not create" in result.reply_text
+    assert "Existing busy block" in result.reply_text
+
+
 async def test_agent_loop_status_falls_back_when_model_status_is_unsafe():
     progress_updates: list[str] = []
     provider = AgentPlannerProvider({
