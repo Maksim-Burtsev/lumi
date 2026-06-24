@@ -321,6 +321,18 @@ export interface FinishFocusSessionInput {
   focus_score?: number | null;
 }
 
+export interface LogFocusSessionInput {
+  task_id?: string | null;
+  project?: string | null;
+  intention: string;
+  logged_at: string;
+  duration_minutes: number;
+  accomplished_text?: string | null;
+  distraction_text?: string | null;
+  next_step_text?: string | null;
+  focus_score?: number | null;
+}
+
 export interface FocusSessionResponse {
   session: FocusSession;
 }
