@@ -11,6 +11,7 @@ from lumi.api.routes import (
     confirmations,
     connectors,
     debug,
+    focus,
     inbox,
     me,
     memory,
@@ -26,6 +27,7 @@ api_router.include_router(me.router, tags=["me"])
 api_router.include_router(today.router, tags=["today"])
 api_router.include_router(tasks.router, tags=["tasks"])
 api_router.include_router(calendar.router, tags=["calendar"])
+api_router.include_router(focus.router, tags=["focus"])
 api_router.include_router(confirmations.router, tags=["confirmations"])
 api_router.include_router(inbox.router, tags=["inbox"])
 api_router.include_router(news.router, tags=["news"])
