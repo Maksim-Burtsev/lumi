@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import httpx
 import pytest
 
@@ -5,8 +7,10 @@ from lumi.api.deps import get_current_user
 from lumi.api.routes import telegram
 from lumi.db.session import session_scope
 from lumi.main import app
+from lumi.services.calendar import CalendarService
 from lumi.services.confirmations import ConfirmationService
 from lumi.services.users import UserService
+from lumi.utils.time import local_to_utc
 
 from .conftest import TEST_TELEGRAM_ID
 
@@ -168,6 +172,30 @@ async def test_today_shape(client):
                 "suggestions", "recent_runs"):
         assert key in body
     assert body["summary"]["tasks_active"] == 0
+
+
+async def test_today_timeline_includes_personal_note_fields(client, db_session):
+    user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID)
+    calendar = CalendarService(db_session)
+    event = await calendar.create_internal_block(
+        user,
+        title="Board prep",
+        start_at=local_to_utc(datetime(2026, 6, 24, 10, 0), user.timezone),
+        end_at=local_to_utc(datetime(2026, 6, 24, 10, 30), user.timezone),
+        created_by="test",
+    )
+    await calendar.set_private_note(user, event, "Ask about launch risk.")
+    await db_session.commit()
+
+    response = await client.get("/api/today")
+
+    assert response.status_code == 200
+    item = next(item for item in response.json()["timeline"] if item["id"] == str(event.id))
+    assert item["private_note"] == "Ask about launch risk."
+    assert item["private_note_summary"] is None
+    assert item["private_note_summary_status"] == "not_needed"
+    assert item["private_note_updated_at"] is not None
+    assert item["private_note_summary_updated_at"] is None
 
 
 async def test_today_hides_auto_memory_confirmations(client, db_session):

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AlertCircle,
@@ -18,23 +18,27 @@ import {
   useCompleteTask,
   useConfirmBlock,
   useCreateTaskFromThread,
+  useDeleteCalendarPrivateNote,
   useDecideConfirmation,
   useSnoozeTask,
   useToday,
+  useUpdateCalendarPrivateNote,
 } from '../api/hooks';
 import type { AttentionItem, Suggestion, TimelineItem, TodaySummary } from '../api/types';
+import { PRIVATE_NOTE_MAX_CHARS, PrivateNoteSection } from '../components/calendar/PrivateNoteSection';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorState } from '../components/ui/ErrorState';
 import { SectionHeader } from '../components/ui/SectionHeader';
+import { Sheet } from '../components/ui/Sheet';
 import { Skeleton, SkeletonList, SkeletonTimeline } from '../components/ui/Skeleton';
 import { StatPill } from '../components/ui/StatPill';
 import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
 import { Timeline } from '../components/timeline/Timeline';
 import type { TimelineEntry } from '../components/timeline/Timeline';
-import { countLabel, formatDateHeading, formatDueLabel, formatSpanMinutes, plural } from '../lib/format';
+import { countLabel, formatDateHeading, formatDueLabel, formatSpanMinutes, formatTimeRange, plural } from '../lib/format';
 import type { TimeDisplayOptions } from '../lib/format';
 import type { AppLocale } from '../lib/i18n';
 import { useAppLocale } from '../lib/useAppLocale';
@@ -338,6 +342,20 @@ export default function TodayPage() {
   const completeTask = useCompleteTask('today');
   const snoozeTask = useSnoozeTask('today');
   const createTaskFromThread = useCreateTaskFromThread();
+  const updatePrivateNote = useUpdateCalendarPrivateNote();
+  const deletePrivateNote = useDeleteCalendarPrivateNote();
+  const [selectedTimelineEvent, setSelectedTimelineEvent] = useState<TimelineItem | null>(null);
+  const [noteEditing, setNoteEditing] = useState(false);
+  const [noteExpanded, setNoteExpanded] = useState(false);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [noteError, setNoteError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setNoteEditing(false);
+    setNoteExpanded(false);
+    setNoteDraft(selectedTimelineEvent?.private_note ?? '');
+    setNoteError(null);
+  }, [selectedTimelineEvent?.id, selectedTimelineEvent?.private_note]);
 
   const planAction = useAgentRunAction({
     start: () => api.planDay(),
@@ -463,6 +481,90 @@ export default function TodayPage() {
     });
   };
 
+  const patchSelectedEventNote = (event: {
+    id: string;
+    private_note?: string | null;
+    private_note_summary?: string | null;
+    private_note_summary_status?: TimelineItem['private_note_summary_status'];
+    private_note_updated_at?: string | null;
+    private_note_summary_updated_at?: string | null;
+  }) => {
+    setSelectedTimelineEvent((current) => {
+      if (!current || current.id !== event.id) return current;
+      return {
+        ...current,
+        private_note: event.private_note ?? null,
+        private_note_summary: event.private_note_summary ?? null,
+        private_note_summary_status: event.private_note_summary_status ?? null,
+        private_note_updated_at: event.private_note_updated_at ?? null,
+        private_note_summary_updated_at: event.private_note_summary_updated_at ?? null,
+      };
+    });
+  };
+
+  const closeEventSheet = () => {
+    setSelectedTimelineEvent(null);
+    setNoteEditing(false);
+    setNoteExpanded(false);
+    setNoteError(null);
+  };
+
+  const savePrivateNote = () => {
+    if (!selectedTimelineEvent) return;
+    if (noteDraft.length > PRIVATE_NOTE_MAX_CHARS) {
+      setNoteError(`Личная заметка — до ${PRIVATE_NOTE_MAX_CHARS} символов`);
+      return;
+    }
+    const note = noteDraft.trim();
+    setNoteError(null);
+    if (!note) {
+      if (!selectedTimelineEvent.private_note) {
+        setNoteEditing(false);
+        return;
+      }
+      deletePrivateNote.mutate(selectedTimelineEvent.id, {
+        onSuccess: ({ event }) => {
+          haptic('success');
+          show('Заметка удалена', 'success');
+          patchSelectedEventNote(event);
+          setNoteEditing(false);
+        },
+        onError: () => show('Не удалось удалить заметку', 'error'),
+      });
+      return;
+    }
+    updatePrivateNote.mutate(
+      { id: selectedTimelineEvent.id, input: { note } },
+      {
+        onSuccess: ({ event }) => {
+          haptic('success');
+          show('Заметка сохранена', 'success');
+          patchSelectedEventNote(event);
+          setNoteEditing(false);
+          setNoteExpanded(false);
+        },
+        onError: () => show('Не удалось сохранить заметку', 'error'),
+      },
+    );
+  };
+
+  const removePrivateNote = () => {
+    if (!selectedTimelineEvent?.private_note) return;
+    deletePrivateNote.mutate(selectedTimelineEvent.id, {
+      onSuccess: ({ event }) => {
+        haptic('success');
+        show('Заметка удалена', 'success');
+        patchSelectedEventNote(event);
+        setNoteEditing(false);
+      },
+      onError: () => show('Не удалось удалить заметку', 'error'),
+    });
+  };
+
+  const openTimelineEvent = (item: TimelineItem) => {
+    setSelectedTimelineEvent(item);
+  };
+
   const suggestionBusy = (suggestion: Suggestion): boolean => {
     switch (suggestion.action.type) {
       case 'plan_day':
@@ -502,6 +604,8 @@ export default function TodayPage() {
               : item.kind === 'focus'
                 ? copy.focus
                 : undefined,
+      hasPersonalNote: Boolean(item.private_note?.trim()),
+      onPress: item.kind === 'task' ? undefined : () => openTimelineEvent(item),
       action:
         item.kind === 'proposed'
           ? {
@@ -751,6 +855,41 @@ export default function TodayPage() {
         </Rise>
       )}
 
+      <Sheet open={selectedTimelineEvent !== null} onClose={closeEventSheet} title={selectedTimelineEvent?.title ?? ''}>
+        {selectedTimelineEvent && (
+          <div className="space-y-4">
+            <p className="tnum text-[14px] text-hint">
+              {formatTimeRange(selectedTimelineEvent.start_at, selectedTimelineEvent.end_at, timeDisplay)}
+              {selectedTimelineEvent.source === 'google' && ' · Google'}
+              {selectedTimelineEvent.source === 'yandex' && (locale === 'en' ? ' · Yandex' : ' · Яндекс')}
+              {selectedTimelineEvent.status === 'proposed' && (locale === 'en' ? ' · Lumi proposal' : ' · предложение Lumi')}
+            </p>
+            <PrivateNoteSection
+              event={selectedTimelineEvent}
+              editing={noteEditing}
+              expanded={noteExpanded}
+              draft={noteDraft}
+              error={noteError}
+              saving={updatePrivateNote.isPending || deletePrivateNote.isPending}
+              deleting={deletePrivateNote.isPending}
+              onEdit={() => {
+                setNoteDraft(selectedTimelineEvent.private_note ?? '');
+                setNoteError(null);
+                setNoteEditing(true);
+              }}
+              onCancel={() => {
+                setNoteDraft(selectedTimelineEvent.private_note ?? '');
+                setNoteError(null);
+                setNoteEditing(false);
+              }}
+              onDelete={removePrivateNote}
+              onDraftChange={setNoteDraft}
+              onExpandedChange={setNoteExpanded}
+              onSave={savePrivateNote}
+            />
+          </div>
+        )}
+      </Sheet>
     </Stagger>
   );
 }
