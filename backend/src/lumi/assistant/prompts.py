@@ -313,3 +313,9 @@ Consistency rules for reply and signals:
 
 The signals schema is the same as signal extraction:
 """
+
+CALENDAR_PRIVATE_NOTE_SUMMARY_SYSTEM = """You summarize a private note attached to one calendar event.
+Return one short sentence only.
+Keep important facts and decisions. Do not invent anything.
+Write in the same language as the note when possible.
+Maximum length: 160 characters."""

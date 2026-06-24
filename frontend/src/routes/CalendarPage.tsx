@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
@@ -9,11 +9,15 @@ import {
   CloudOff,
   Copy,
   ExternalLink,
+  Pencil,
   Users,
   MapPin,
   Plus,
   RefreshCw,
+  Save,
   Sparkles,
+  StickyNote,
+  Trash2,
   Video,
   X,
 } from 'lucide-react';
@@ -25,7 +29,9 @@ import {
   useCalendarEvents,
   useConfirmBlock,
   useCreateEvent,
+  useDeleteCalendarPrivateNote,
   useDeleteEvent,
+  useUpdateCalendarPrivateNote,
 } from '../api/hooks';
 import type { CalendarAttendee, CalendarEvent, CalendarPerson } from '../api/types';
 import { DayGrid } from '../components/calendar/DayGrid';
@@ -49,6 +55,18 @@ interface SheetPrefill {
 interface ContactAction {
   person: CalendarPerson | CalendarAttendee;
   anchor: DOMRect;
+}
+
+const PRIVATE_NOTE_SUMMARY_THRESHOLD_CHARS = 600;
+const PRIVATE_NOTE_MAX_CHARS = 4000;
+
+function normalizedPrivateNoteLength(value: string): number {
+  return value.replace(/\s+/g, ' ').trim().length;
+}
+
+function truncatePrivateNote(value: string, limit = 560): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  return normalized.length > limit ? `${normalized.slice(0, limit).trimEnd()}...` : normalized;
 }
 
 function combine(day: Date, time: string): Date | null {
@@ -234,6 +252,122 @@ function ParticipantRow({
   );
 }
 
+function PrivateNoteSection({
+  event,
+  editing,
+  expanded,
+  draft,
+  error,
+  saving,
+  deleting,
+  onEdit,
+  onCancel,
+  onDelete,
+  onDraftChange,
+  onExpandedChange,
+  onSave,
+}: {
+  event: CalendarEvent;
+  editing: boolean;
+  expanded: boolean;
+  draft: string;
+  error: string | null;
+  saving: boolean;
+  deleting: boolean;
+  onEdit: () => void;
+  onCancel: () => void;
+  onDelete: () => void;
+  onDraftChange: (value: string) => void;
+  onExpandedChange: (value: boolean) => void;
+  onSave: () => void;
+}) {
+  const note = event.private_note ?? '';
+  const hasNote = note.trim().length > 0;
+  const isLong = normalizedPrivateNoteLength(note) >= PRIVATE_NOTE_SUMMARY_THRESHOLD_CHARS;
+  const hasReadySummary = Boolean(event.private_note_summary_status === 'ready' && event.private_note_summary);
+  const showSummary = hasNote && isLong && hasReadySummary && !expanded;
+  const showPreview = hasNote && isLong && !hasReadySummary && !expanded;
+  const body = showSummary ? event.private_note_summary! : showPreview ? truncatePrivateNote(note) : note;
+  const canExpand = hasNote && isLong;
+
+  return (
+    <section className="space-y-3 rounded-xl bg-[var(--secondary-bg)] px-3.5 py-3">
+      <div className="flex items-center gap-2">
+        <StickyNote size={15} className="shrink-0 text-hint" />
+        <p className="min-w-0 flex-1 text-[13px] font-medium text-hint">Личная заметка</p>
+        {!editing && hasNote && (
+          <div className="flex shrink-0 gap-1.5">
+            <button
+              type="button"
+              aria-label="Редактировать личную заметку"
+              onClick={onEdit}
+              className="flex h-8 w-8 items-center justify-center rounded-full text-hint transition active:bg-[var(--surface-strong)]"
+            >
+              <Pencil size={14} />
+            </button>
+            <button
+              type="button"
+              aria-label="Удалить личную заметку"
+              onClick={onDelete}
+              disabled={deleting}
+              className="flex h-8 w-8 items-center justify-center rounded-full text-danger transition active:bg-[var(--danger-soft)] disabled:opacity-50"
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {editing ? (
+        <div className="space-y-3">
+          <Textarea value={draft} onChange={onDraftChange} rows={5} placeholder="Короткий личный контекст" />
+          <div className="flex items-center justify-between gap-3">
+            <span className={`text-[12px] ${draft.length > PRIVATE_NOTE_MAX_CHARS ? 'text-danger' : 'text-hint'}`}>
+              {draft.length}/{PRIVATE_NOTE_MAX_CHARS}
+            </span>
+            <div className="flex shrink-0 gap-2">
+              <Button variant="ghost" size="sm" onClick={onCancel}>
+                Отмена
+              </Button>
+              <Button size="sm" icon={<Save size={14} />} busy={saving} onClick={onSave}>
+                Сохранить
+              </Button>
+            </div>
+          </div>
+          {error && <p className="text-[13px] text-danger">{error}</p>}
+        </div>
+      ) : hasNote ? (
+        <div className="space-y-2">
+          <p className="whitespace-pre-wrap text-[14px] leading-relaxed text-ink">{body}</p>
+          {canExpand && (
+            <button
+              type="button"
+              onClick={() => onExpandedChange(!expanded)}
+              className="text-[13px] font-medium text-accent-text"
+            >
+              {expanded ? 'Свернуть' : 'Показать полностью'}
+            </button>
+          )}
+          {event.private_note_summary_status === 'pending' && (
+            <p className="text-[12px] text-hint">Summary обновляется</p>
+          )}
+          {event.private_note_summary_status === 'failed' && (
+            <p className="text-[12px] text-hint">Summary не обновился</p>
+          )}
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={onEdit}
+          className="flex min-h-10 w-full items-center justify-center rounded-xl border border-dashed border-hairline text-[13.5px] font-medium text-accent-text"
+        >
+          Добавить заметку
+        </button>
+      )}
+    </section>
+  );
+}
+
 function CreateBlockSheet({
   open,
   onClose,
@@ -249,6 +383,7 @@ function CreateBlockSheet({
   const [start, setStart] = useState('10:00');
   const [end, setEnd] = useState('11:00');
   const [description, setDescription] = useState('');
+  const [privateNote, setPrivateNote] = useState('');
   const [location, setLocation] = useState('');
   const [linksText, setLinksText] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -272,6 +407,7 @@ function CreateBlockSheet({
     setStart('10:00');
     setEnd('11:00');
     setDescription('');
+    setPrivateNote('');
     setLocation('');
     setLinksText('');
     setError(null);
@@ -289,15 +425,21 @@ function CreateBlockSheet({
       setError('Время окончания должно быть позже начала');
       return;
     }
+    if (privateNote.length > PRIVATE_NOTE_MAX_CHARS) {
+      setError(`Личная заметка — до ${PRIVATE_NOTE_MAX_CHARS} символов`);
+      return;
+    }
     setError(null);
+    const links = parseLinks(linksText);
     createEvent.mutate(
       {
         title: trimmed,
         start_at: startDate.toISOString(),
         end_at: endDate.toISOString(),
         ...(description.trim() ? { description: description.trim() } : {}),
+        ...(privateNote.trim() ? { private_note: privateNote.trim() } : {}),
         ...(location.trim() ? { location: location.trim() } : {}),
-        ...(parseLinks(linksText).length ? { links: parseLinks(linksText) } : {}),
+        ...(links.length ? { links } : {}),
       },
       {
         onSuccess: () => {
@@ -332,6 +474,10 @@ function CreateBlockSheet({
         <Textarea value={description} onChange={setDescription} rows={2} placeholder="Что нужно сделать в этом блоке" />
       </label>
       <label className="mt-4 block">
+        <FieldLabel>Личная заметка (необязательно)</FieldLabel>
+        <Textarea value={privateNote} onChange={setPrivateNote} rows={3} placeholder="Контекст только для себя" />
+      </label>
+      <label className="mt-4 block">
         <FieldLabel>Место (необязательно)</FieldLabel>
         <Input value={location} onChange={setLocation} placeholder="Офис, Zoom, дом" />
       </label>
@@ -362,6 +508,8 @@ export default function CalendarPage() {
   const eventsQuery = useCalendarEvents(rangeStart, rangeEnd);
   const confirmBlock = useConfirmBlock();
   const deleteEvent = useDeleteEvent();
+  const updatePrivateNote = useUpdateCalendarPrivateNote();
+  const deletePrivateNote = useDeleteCalendarPrivateNote();
 
   const syncAction = useAgentRunAction({
     start: () => api.syncCalendar(),
@@ -387,9 +535,20 @@ export default function CalendarPage() {
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
   const [showAllAttendees, setShowAllAttendees] = useState(false);
   const [contactAction, setContactAction] = useState<ContactAction | null>(null);
+  const [noteEditing, setNoteEditing] = useState(false);
+  const [noteExpanded, setNoteExpanded] = useState(false);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [noteError, setNoteError] = useState<string | null>(null);
   const dayStart = useMemo(() => startOfDay(day), [day]);
   const events = eventsQuery.data?.items ?? [];
   const syncState = eventsQuery.data?.sync;
+
+  useEffect(() => {
+    setNoteEditing(false);
+    setNoteExpanded(false);
+    setNoteDraft(selectedEvent?.private_note ?? '');
+    setNoteError(null);
+  }, [selectedEvent?.id, selectedEvent?.private_note]);
 
   const openContactAction = (person: CalendarPerson | CalendarAttendee, anchor: DOMRect) => {
     if (!person.email) return;
@@ -405,6 +564,64 @@ export default function CalendarPage() {
         setContactAction(null);
       })
       .catch(() => show('Не удалось скопировать', 'error'));
+  };
+
+  const closeEventSheet = () => {
+    setShowAllAttendees(false);
+    setContactAction(null);
+    setSelectedEvent(null);
+  };
+
+  const savePrivateNote = () => {
+    if (!selectedEvent) return;
+    if (noteDraft.length > PRIVATE_NOTE_MAX_CHARS) {
+      setNoteError(`Личная заметка — до ${PRIVATE_NOTE_MAX_CHARS} символов`);
+      return;
+    }
+    const note = noteDraft.trim();
+    setNoteError(null);
+    if (!note) {
+      if (!selectedEvent.private_note) {
+        setNoteEditing(false);
+        return;
+      }
+      deletePrivateNote.mutate(selectedEvent.id, {
+        onSuccess: ({ event }) => {
+          haptic('success');
+          show('Заметка удалена', 'success');
+          setSelectedEvent(event);
+          setNoteEditing(false);
+        },
+        onError: () => show('Не удалось удалить заметку', 'error'),
+      });
+      return;
+    }
+    updatePrivateNote.mutate(
+      { id: selectedEvent.id, input: { note } },
+      {
+        onSuccess: ({ event }) => {
+          haptic('success');
+          show('Заметка сохранена', 'success');
+          setSelectedEvent(event);
+          setNoteEditing(false);
+          setNoteExpanded(false);
+        },
+        onError: () => show('Не удалось сохранить заметку', 'error'),
+      },
+    );
+  };
+
+  const removePrivateNote = () => {
+    if (!selectedEvent?.private_note) return;
+    deletePrivateNote.mutate(selectedEvent.id, {
+      onSuccess: ({ event }) => {
+        haptic('success');
+        show('Заметка удалена', 'success');
+        setSelectedEvent(event);
+        setNoteEditing(false);
+      },
+      onError: () => show('Не удалось удалить заметку', 'error'),
+    });
   };
 
   return (
@@ -526,6 +743,8 @@ export default function CalendarPage() {
               onEventTap={(e) => {
                 setShowAllAttendees(false);
                 setContactAction(null);
+                setNoteEditing(false);
+                setNoteExpanded(false);
                 setSelectedEvent(e);
               }}
               onEmptyTap={(time) => {
@@ -541,11 +760,7 @@ export default function CalendarPage() {
       {/* Event details */}
       <Sheet
         open={selectedEvent !== null}
-        onClose={() => {
-          setShowAllAttendees(false);
-          setContactAction(null);
-          setSelectedEvent(null);
-        }}
+        onClose={closeEventSheet}
         title={selectedEvent?.title ?? ''}
       >
         {selectedEvent && (
@@ -598,6 +813,29 @@ export default function CalendarPage() {
             {selectedEvent.description && (
               <p className="whitespace-pre-wrap text-[14px] leading-relaxed text-ink">{selectedEvent.description}</p>
             )}
+            <PrivateNoteSection
+              event={selectedEvent}
+              editing={noteEditing}
+              expanded={noteExpanded}
+              draft={noteDraft}
+              error={noteError}
+              saving={updatePrivateNote.isPending || deletePrivateNote.isPending}
+              deleting={deletePrivateNote.isPending}
+              onEdit={() => {
+                setNoteDraft(selectedEvent.private_note ?? '');
+                setNoteError(null);
+                setNoteEditing(true);
+              }}
+              onCancel={() => {
+                setNoteDraft(selectedEvent.private_note ?? '');
+                setNoteError(null);
+                setNoteEditing(false);
+              }}
+              onDelete={removePrivateNote}
+              onDraftChange={setNoteDraft}
+              onExpandedChange={setNoteExpanded}
+              onSave={savePrivateNote}
+            />
             {(selectedEvent.meeting_url || selectedEvent.external_url || visibleLinks(selectedEvent).length > 0) && (
               <div className="flex flex-wrap gap-2.5">
                 {selectedEvent.meeting_url && (

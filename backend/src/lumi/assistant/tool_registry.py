@@ -19,6 +19,8 @@ TOOL_NAMES = {
     "find_focus_slot",
     "read_calendar_events",
     "create_internal_calendar_block",
+    "update_calendar_private_note",
+    "delete_calendar_private_note",
     "create_external_calendar_event",
     "create_automation",
     "email_triage",
@@ -38,7 +40,9 @@ TOOL_CATALOG = """Available backend tools:
 - plan_day()
 - find_focus_slot(title?, duration_minutes?, time_window_local?)
 - read_calendar_events(start_at_local, end_at_local, include_details?, sync_if_needed?)
-- create_internal_calendar_block(title, start_at_local, end_at_local, description?)
+- create_internal_calendar_block(title, start_at_local, end_at_local, description?, private_note?)
+- update_calendar_private_note(event_id? | event_query?, private_note)
+- delete_calendar_private_note(event_id? | event_query?)
 - create_external_calendar_event(title, start_at_local, end_at_local)
 - create_automation(type, title, cron_expression, timezone?, config?)
 - email_triage(time_window?)
@@ -62,6 +66,10 @@ Rules:
 - Delete/remove task requests should set updates.status="cancelled"; never physically delete tasks.
 - Calendar questions about meetings/events on today, tomorrow, a future date, or a recurring date must use read_calendar_events with the requested local time window.
 - For short follow-ups to recent backend task actions, use recency_hint=last_created_task or last_touched_task from Planner context.
+- Calendar private notes are user-only. If the user gives private details for a block/meeting,
+  put them in private_note, not description.
+- To add, edit, or remove a private note on an existing calendar event, use update_calendar_private_note
+  or delete_calendar_private_note. If you just read events, prefer event_id from tool observations.
 - For create_task follow-ups that refer to a recent project, use project_ref=last_task_project,
   last_created_task_project, last_proposed_task_project, or last_touched_task_project.
 - Do not resolve ambiguous task matches yourself. If the user intent is a task update and Planner context has multiple plausible candidates, still call update_task with task_query; backend will ask with confirmation buttons.

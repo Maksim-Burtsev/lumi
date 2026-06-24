@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta
+from hashlib import sha256
 from typing import Any
 
 from sqlalchemy import select
@@ -23,6 +24,19 @@ from lumi.utils.time import get_zone, local_day_bounds, utc_now
 DEFAULT_DAY_START_HOUR = 9
 DEFAULT_DAY_END_HOUR = 19
 MEETING_BUFFER = timedelta(minutes=10)
+PRIVATE_NOTE_MAX_CHARS = 4000
+PRIVATE_NOTE_SUMMARY_THRESHOLD_CHARS = 600
+PRIVATE_NOTE_SUMMARY_MAX_CHARS = 160
+
+PRIVATE_NOTE_KEYS = {
+    "private_note",
+    "private_note_hash",
+    "private_note_updated_at",
+    "private_note_summary",
+    "private_note_summary_status",
+    "private_note_summary_updated_at",
+    "private_note_summary_error",
+}
 
 
 def _same_url(a: str | None, b: str | None) -> bool:
@@ -43,6 +57,42 @@ def _clean_links(
         out.append(link)
         seen.add(normalized)
     return out
+
+
+def normalize_private_note_for_threshold(note: str) -> str:
+    return " ".join(note.split()).strip()
+
+
+def private_note_hash(note: str) -> str:
+    return sha256(normalize_private_note_for_threshold(note).encode("utf-8")).hexdigest()
+
+
+def private_note_needs_summary(note: str) -> bool:
+    return len(normalize_private_note_for_threshold(note)) >= PRIVATE_NOTE_SUMMARY_THRESHOLD_CHARS
+
+
+def clean_private_note(note: str | None) -> str | None:
+    if note is None:
+        return None
+    cleaned = note.strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > PRIVATE_NOTE_MAX_CHARS:
+        raise ValueError("private_note_too_long")
+    return cleaned
+
+
+def calendar_private_note_summary_text(event: CalendarEvent) -> str | None:
+    metadata = event.metadata_ or {}
+    note = metadata.get("private_note")
+    if not isinstance(note, str) or not note.strip():
+        return None
+    if not private_note_needs_summary(note):
+        return note
+    summary = metadata.get("private_note_summary")
+    if metadata.get("private_note_summary_status") == "ready" and isinstance(summary, str) and summary.strip():
+        return summary.strip()
+    return normalize_private_note_for_threshold(note)[:180].rstrip() + "…"
 
 
 def merge_busy_intervals(intervals: list[tuple[datetime, datetime]]) -> list[tuple[datetime, datetime]]:
@@ -110,6 +160,122 @@ class CalendarService:
             )
         )
         return result.scalar_one_or_none()
+
+    async def set_private_note(
+        self,
+        user: User,
+        event: CalendarEvent,
+        note: str | None,
+    ) -> CalendarEvent:
+        cleaned = clean_private_note(note)
+        if cleaned is None:
+            return await self.delete_private_note(user, event)
+
+        digest = private_note_hash(cleaned)
+        now = utc_now().isoformat()
+        metadata = dict(event.metadata_ or {})
+        previous_hash = metadata.get("private_note_hash")
+        previous_status = metadata.get("private_note_summary_status")
+        previous_summary = metadata.get("private_note_summary")
+
+        metadata["private_note"] = cleaned
+        metadata["private_note_hash"] = digest
+        metadata["private_note_updated_at"] = now
+        metadata.pop("private_note_summary_error", None)
+
+        if private_note_needs_summary(cleaned):
+            if previous_hash == digest and previous_status == "ready" and previous_summary:
+                metadata["private_note_summary_status"] = "ready"
+            elif previous_hash == digest and previous_status in {"pending", "failed"}:
+                metadata["private_note_summary_status"] = previous_status
+            else:
+                metadata["private_note_summary_status"] = "pending"
+                metadata.pop("private_note_summary", None)
+                metadata.pop("private_note_summary_updated_at", None)
+        else:
+            metadata["private_note_summary_status"] = "not_needed"
+            metadata.pop("private_note_summary", None)
+            metadata.pop("private_note_summary_updated_at", None)
+
+        event.metadata_ = metadata
+        await self.session.flush()
+        await self.audit.log(
+            user_id=user.id,
+            actor="user",
+            entity_type="calendar_event",
+            entity_id=event.id,
+            action="private_note.updated",
+            details={"summary_status": metadata.get("private_note_summary_status")},
+        )
+        await self._emit_calendar_changed(event, "calendar_event.private_note.updated")
+        return event
+
+    async def delete_private_note(self, user: User, event: CalendarEvent) -> CalendarEvent:
+        metadata = {
+            key: value
+            for key, value in dict(event.metadata_ or {}).items()
+            if key not in PRIVATE_NOTE_KEYS
+        }
+        event.metadata_ = metadata
+        await self.session.flush()
+        await self.audit.log(
+            user_id=user.id,
+            actor="user",
+            entity_type="calendar_event",
+            entity_id=event.id,
+            action="private_note.deleted",
+            details={},
+        )
+        await self._emit_calendar_changed(event, "calendar_event.private_note.deleted")
+        return event
+
+    async def write_private_note_summary(
+        self,
+        user: User,
+        event: CalendarEvent,
+        *,
+        note_hash: str,
+        summary: str,
+    ) -> CalendarEvent:
+        metadata = dict(event.metadata_ or {})
+        note = metadata.get("private_note")
+        if (
+            event.user_id != user.id
+            or metadata.get("private_note_hash") != note_hash
+            or not isinstance(note, str)
+        ):
+            return event
+        if not private_note_needs_summary(note):
+            metadata["private_note_summary_status"] = "not_needed"
+            metadata.pop("private_note_summary", None)
+            metadata.pop("private_note_summary_updated_at", None)
+        else:
+            clean_summary = normalize_private_note_for_threshold(summary)[:PRIVATE_NOTE_SUMMARY_MAX_CHARS]
+            metadata["private_note_summary"] = clean_summary or calendar_private_note_summary_text(event)
+            metadata["private_note_summary_status"] = "ready"
+            metadata["private_note_summary_updated_at"] = utc_now().isoformat()
+            metadata.pop("private_note_summary_error", None)
+        event.metadata_ = metadata
+        await self.session.flush()
+        await self._emit_calendar_changed(event, "calendar_event.private_note.summary_ready")
+        return event
+
+    async def mark_private_note_summary_failed(
+        self,
+        user: User,
+        event: CalendarEvent,
+        *,
+        note_hash: str,
+        error: str,
+    ) -> CalendarEvent:
+        metadata = dict(event.metadata_ or {})
+        if event.user_id == user.id and metadata.get("private_note_hash") == note_hash:
+            metadata["private_note_summary_status"] = "failed"
+            metadata["private_note_summary_error"] = error[:300]
+            event.metadata_ = metadata
+            await self.session.flush()
+            await self._emit_calendar_changed(event, "calendar_event.private_note.summary_failed")
+        return event
 
     async def create_internal_block(
         self,

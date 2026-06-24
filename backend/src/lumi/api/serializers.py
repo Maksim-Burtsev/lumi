@@ -61,6 +61,8 @@ def task_to_dict(task: Task) -> dict[str, Any]:
 
 def event_to_dict(event: CalendarEvent) -> dict[str, Any]:
     metadata = event.metadata_ or {}
+    private_note = metadata.get("private_note")
+    private_note_summary = metadata.get("private_note_summary")
     return {
         "id": str(event.id),
         "title": event.title,
@@ -81,6 +83,11 @@ def event_to_dict(event: CalendarEvent) -> dict[str, Any]:
         "attendees": list(metadata.get("attendees") or []),
         "attendee_count": metadata.get("attendee_count", len(metadata.get("attendees") or [])),
         "user_response_status": metadata.get("user_response_status"),
+        "private_note": private_note if isinstance(private_note, str) else None,
+        "private_note_summary": private_note_summary if isinstance(private_note_summary, str) else None,
+        "private_note_summary_status": metadata.get("private_note_summary_status"),
+        "private_note_updated_at": metadata.get("private_note_updated_at"),
+        "private_note_summary_updated_at": metadata.get("private_note_summary_updated_at"),
     }
 
 
