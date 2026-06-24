@@ -109,6 +109,7 @@ IMAGE_SOURCED_CONFIRM_TOOLS = {
 AGENT_LOOP_MAX_MODEL_STEPS = 4
 AGENT_LOOP_MAX_TOOL_CALLS = 8
 CALENDAR_TELEGRAM_EVENT_LIMIT = 5
+CALENDAR_TELEGRAM_FREE_GAP_MINUTES = 15
 NEUTRAL_PROGRESS_STATUS = "⏳"
 READ_ONLY_LOOP_TOOLS = {"read_tasks", "read_calendar_events"}
 MULTI_STEP_INTENT_MARKERS = (
@@ -541,6 +542,108 @@ def _calendar_event_when(event, tz: str) -> str:
     start_local = utc_to_local(event.start_at, tz)
     end_local = utc_to_local(event.end_at, tz)
     return f"{start_local.strftime('%H:%M')}–{end_local.strftime('%H:%M')}"
+
+
+def _calendar_event_start_label(
+    event,
+    tz: str,
+    *,
+    include_date: bool,
+    language: str | None,
+) -> str:
+    if event.all_day:
+        return _text_for_language(
+            language,
+            en="all day",
+            ru="весь день",
+            it="tutto il giorno",
+        )
+    start_local = utc_to_local(event.start_at, tz)
+    if include_date:
+        return start_local.strftime("%d.%m %H:%M")
+    return start_local.strftime("%H:%M")
+
+
+def _calendar_duration_text(language: str | None, duration: timedelta) -> str:
+    total_minutes = max(1, round(duration.total_seconds() / 60))
+    hours, minutes = divmod(total_minutes, 60)
+    lang = normalize_reply_language(language)
+    if lang == "ru":
+        if hours and minutes:
+            return f"{hours}ч {minutes}м"
+        if hours:
+            return f"{hours}ч"
+        return f"{minutes}м"
+    if lang == "it":
+        if hours and minutes:
+            return f"{hours}h {minutes}m"
+        if hours:
+            return f"{hours}h"
+        return f"{minutes} min"
+    if hours and minutes:
+        return f"{hours}h {minutes}m"
+    if hours:
+        return f"{hours}h"
+    return f"{minutes}m"
+
+
+def _calendar_free_label(language: str | None) -> str:
+    return _text_for_language(language, en="Free", ru="Свободно", it="Libero")
+
+
+def _calendar_timeline_reply(
+    *,
+    events: list[Any],
+    language: str | None,
+    start: datetime,
+    end: datetime,
+    tz: str,
+    include_details: bool,
+) -> tuple[list[str], list[str]]:
+    start_date = utc_to_local(start, tz).date()
+    end_date = (
+        utc_to_local(end - timedelta(seconds=1), tz).date()
+        if end > start
+        else start_date
+    )
+    include_date = start_date != end_date
+    reply_lines = [_calendar_window_title(language, start=start, end=end, tz=tz)]
+    rich_lines = [f"<b>{escape(reply_lines[0])}</b>"]
+    visible_events = events[:CALENDAR_TELEGRAM_EVENT_LIMIT]
+    busy_cursor: datetime | None = None
+
+    for event in visible_events:
+        if busy_cursor is not None and event.start_at > busy_cursor:
+            gap = event.start_at - busy_cursor
+            if gap >= timedelta(minutes=CALENDAR_TELEGRAM_FREE_GAP_MINUTES):
+                gap_start = utc_to_local(busy_cursor, tz)
+                free_line = (
+                    f"⬜ {gap_start.strftime('%H:%M')}  "
+                    f"{_calendar_free_label(language)} · {_calendar_duration_text(language, gap)}"
+                )
+                reply_lines.append(free_line)
+                rich_lines.append(escape(free_line))
+
+        start_label = _calendar_event_start_label(
+            event,
+            tz,
+            include_date=include_date,
+            language=language,
+        )
+        duration = _calendar_duration_text(language, event.end_at - event.start_at)
+        title = truncate(event.title, 64)
+        reply_line = f"🟦 {start_label}  {title} · {duration}"
+        reply_lines.append(reply_line)
+
+        rich_item = f"<b>🟦 {escape(start_label)}</b>  {escape(title)} · {escape(duration)}"
+        meeting_url = event.metadata_.get("meeting_url")
+        if include_details and meeting_url:
+            rich_item += f'  <a href="{escape(str(meeting_url), quote=True)}">↗</a>'
+        rich_lines.append(rich_item)
+
+        busy_cursor = max(busy_cursor or event.end_at, event.end_at)
+
+    return reply_lines, rich_lines
 
 
 def _mini_app_button_text(language: str | None) -> str:
@@ -2756,10 +2859,15 @@ class AssistantOrchestrator:
             )
 
         lines = ["Calendar events:"]
-        rich_lines = [f"<b>{escape(_calendar_window_title(language, start=start, end=end, tz=user.timezone))}</b>"]
-        rich_limit = CALENDAR_TELEGRAM_EVENT_LIMIT
-        reply_lines = [_calendar_window_title(language, start=start, end=end, tz=user.timezone)]
-        for index, event in enumerate(events[:20]):
+        reply_lines, rich_lines = _calendar_timeline_reply(
+            events=events,
+            language=language,
+            start=start,
+            end=end,
+            tz=user.timezone,
+            include_details=request.include_details,
+        )
+        for event in events[:20]:
             when = _calendar_event_when(event, user.timezone)
             line = f"{when} — {event.title}"
             location = event.metadata_.get("location")
@@ -2769,25 +2877,10 @@ class AssistantOrchestrator:
             if request.include_details and meeting_url:
                 line += f" — {meeting_url}"
             lines.append(line)
-
-            if index < rich_limit:
-                reply_line = f"{when} — {event.title}"
-                if location:
-                    reply_line += f" ({location})"
-                reply_lines.append(reply_line)
-                rich_item = f"<b>{escape(when)}</b>  {escape(event.title)}"
-                if location:
-                    rich_item += f"\n<i>{escape(str(location))}</i>"
-                if request.include_details and meeting_url:
-                    rich_item += (
-                        f'\n<a href="{escape(str(meeting_url), quote=True)}">'
-                        "↗ call</a>"
-                    )
-                rich_lines.append(rich_item)
         if len(events) > 20:
             lines.append(f"{len(events) - 20} more events not shown.")
-        if len(events) > rich_limit:
-            more = _calendar_more_text(language, len(events) - rich_limit)
+        if len(events) > CALENDAR_TELEGRAM_EVENT_LIMIT:
+            more = _calendar_more_text(language, len(events) - CALENDAR_TELEGRAM_EVENT_LIMIT)
             reply_lines.append(more)
             rich_lines.append(f"<i>{escape(more)}</i>")
         if user_visible:

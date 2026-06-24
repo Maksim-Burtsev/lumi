@@ -2039,7 +2039,8 @@ async def test_agent_planner_read_calendar_events_syncs_requested_range_without_
     assert result.open_app_button_label == "✨ Открыть Lumi"
     assert result.reply_text.startswith("📅")
     assert "Lumi weekly planning" in result.reply_text
-    assert "\n10:00" in result.reply_text
+    assert "\n🟦 10:00  Lumi weekly planning · 30м" in result.reply_text
+    assert "\n⬜ 10:30  Свободно · 30м" in result.reply_text
     assert "Planning follow-up 5" not in result.reply_text
     assert "\n+ ещё 2 в календаре" in result.reply_text
     assert "https://meet.example/lumi" not in result.reply_text
@@ -2048,7 +2049,7 @@ async def test_agent_planner_read_calendar_events_syncs_requested_range_without_
     assert result.reply_rich_html.startswith("<b>📅")
     assert "Lumi weekly planning" in result.reply_rich_html
     assert 'href="https://meet.example/lumi"' in result.reply_rich_html
-    assert "↗ call" in result.reply_rich_html
+    assert "↗" in result.reply_rich_html
     assert "https://meet.example/lumi" not in result.reply_rich_html.replace(
         'href="https://meet.example/lumi"', ""
     )
