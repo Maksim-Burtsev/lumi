@@ -11,6 +11,7 @@ import { normalizeThemeMode } from './lib/theme';
 import { setThemeMode } from './telegram/webapp';
 import TodayPage from './routes/TodayPage';
 import TasksPage from './routes/TasksPage';
+import FocusPage from './routes/FocusPage';
 import CalendarPage from './routes/CalendarPage';
 import InboxPage from './routes/InboxPage';
 import NewsPage from './routes/NewsPage';
@@ -63,6 +64,7 @@ function AppRoutes() {
       <Routes>
         <Route path="/" element={<TodayPage />} />
         <Route path="/tasks" element={<TasksPage />} />
+        <Route path="/focus" element={<FocusPage />} />
         <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/inbox" element={<InboxPage />} />
         <Route path="/news" element={<NewsPage />} />

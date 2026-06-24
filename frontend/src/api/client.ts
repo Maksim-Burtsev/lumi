@@ -13,6 +13,10 @@ import type {
   CreateEventInput,
   CreateNewsTopicInput,
   CreateTaskInput,
+  FinishFocusSessionInput,
+  FocusSessionResponse,
+  FocusStateResponse,
+  FocusSummaryResponse,
   FreeSlotsResponse,
   GoogleStatus,
   YandexConnectInput,
@@ -37,6 +41,7 @@ import type {
   RunRef,
   SettingsResponse,
   SnoozeInput,
+  StartFocusSessionInput,
   TaskFilter,
   TaskResponse,
   TasksResponse,
@@ -197,6 +202,27 @@ export class LumiApiClient {
 
   dismissAssistantSuggestion(id: string): Promise<AssistantSuggestionResponse> {
     return request('POST', `/api/assistant/suggestions/${id}/dismiss`);
+  }
+
+  // -------------------------------------------------- Focus
+  getFocusState(): Promise<FocusStateResponse> {
+    return request('GET', '/api/focus/state');
+  }
+
+  getFocusSummary(period: 'week' | 'month' = 'week'): Promise<FocusSummaryResponse> {
+    return request('GET', '/api/focus/summary', { query: { period } });
+  }
+
+  startFocusSession(input: StartFocusSessionInput): Promise<FocusSessionResponse> {
+    return request('POST', '/api/focus/sessions', { body: input });
+  }
+
+  finishFocusSession(id: string, input: FinishFocusSessionInput): Promise<FocusSessionResponse> {
+    return request('POST', `/api/focus/sessions/${id}/finish`, { body: input });
+  }
+
+  abandonFocusSession(id: string): Promise<FocusSessionResponse> {
+    return request('POST', `/api/focus/sessions/${id}/abandon`);
   }
 
   // -------------------------------------------------- Calendar

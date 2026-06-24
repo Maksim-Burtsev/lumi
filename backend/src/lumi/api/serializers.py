@@ -9,6 +9,7 @@ from lumi.db.models import (
     AssistantSuggestion,
     CalendarEvent,
     EmailThread,
+    FocusSession,
     LLMCall,
     Memory,
     Message,
@@ -117,6 +118,27 @@ def assistant_suggestion_to_dict(suggestion: AssistantSuggestion) -> dict[str, A
         "expires_at": _iso(suggestion.expires_at),
         "decided_at": _iso(suggestion.decided_at),
         "created_at": _iso(suggestion.created_at),
+    }
+
+
+def focus_session_to_dict(focus_session: FocusSession, task: Task | None = None) -> dict[str, Any]:
+    return {
+        "id": str(focus_session.id),
+        "status": focus_session.status.value,
+        "task": task_to_dict(task) if task else None,
+        "project": focus_session.project_snapshot,
+        "intention": focus_session.intention,
+        "planned_minutes": focus_session.planned_minutes,
+        "started_at": _iso(focus_session.started_at),
+        "target_end_at": _iso(focus_session.target_end_at),
+        "ended_at": _iso(focus_session.ended_at),
+        "duration_seconds": focus_session.duration_seconds,
+        "reflection": {
+            "accomplished_text": focus_session.accomplished_text,
+            "distraction_text": focus_session.distraction_text,
+            "next_step_text": focus_session.next_step_text,
+            "focus_score": focus_session.focus_score,
+        },
     }
 
 

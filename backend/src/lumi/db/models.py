@@ -77,6 +77,12 @@ class TaskStatus(enum.StrEnum):
     CANCELLED = "cancelled"
 
 
+class FocusSessionStatus(enum.StrEnum):
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    ABANDONED = "abandoned"
+
+
 class Priority(enum.StrEnum):
     LOW = "low"
     MEDIUM = "medium"
@@ -538,6 +544,43 @@ class TaskEvent(Base):
     actor: Mapped[str] = mapped_column(Text, nullable=False)  # user/agent/system
     agent_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("agent_runs.id"))
     created_at: Mapped[datetime] = created_at_col()
+
+
+class FocusSession(Base):
+    __tablename__ = "focus_sessions"
+    __table_args__ = (
+        Index("ix_focus_sessions_user_started", "user_id", "started_at"),
+        Index("ix_focus_sessions_user_status", "user_id", "status"),
+        Index("ix_focus_sessions_user_project", "user_id", "project_snapshot"),
+        Index(
+            "uq_focus_sessions_one_active",
+            "user_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    task_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tasks.id"))
+    project_snapshot: Mapped[str | None] = mapped_column(Text)
+    intention: Mapped[str] = mapped_column(Text, nullable=False)
+    planned_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[FocusSessionStatus] = mapped_column(
+        str_enum(FocusSessionStatus, "focus_session_status"),
+        nullable=False,
+        default=FocusSessionStatus.ACTIVE,
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    target_end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_seconds: Mapped[int | None] = mapped_column(Integer)
+    accomplished_text: Mapped[str | None] = mapped_column(Text)
+    distraction_text: Mapped[str | None] = mapped_column(Text)
+    next_step_text: Mapped[str | None] = mapped_column(Text)
+    focus_score: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = created_at_col()
+    updated_at: Mapped[datetime] = updated_at_col()
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ import type {
   CreateEventInput,
   CreateNewsTopicInput,
   CreateTaskInput,
+  FinishFocusSessionInput,
   PatchAutomationInput,
   PatchNewsTopicInput,
   PatchSettingsInput,
@@ -17,6 +18,7 @@ import type {
   PrivateNoteInput,
   RunRef,
   SnoozeInput,
+  StartFocusSessionInput,
   Task,
   TaskFilter,
   TasksResponse,
@@ -38,6 +40,8 @@ export const qk = {
   projectTasks: (projectId: string) => ['tasks', 'project', projectId] as const,
   projects: ['projects'] as const,
   assistantSuggestions: ['assistant-suggestions'] as const,
+  focus: ['focus'] as const,
+  focusSummary: (period: 'week' | 'month') => ['focus-summary', period] as const,
   eventsAll: ['calendar-events'] as const,
   events: (start: string, end: string) => ['calendar-events', start, end] as const,
   freeSlotsAll: ['free-slots'] as const,
@@ -192,6 +196,14 @@ export function useAssistantSuggestions(kind?: string) {
     queryKey: kind ? [...qk.assistantSuggestions, kind] : qk.assistantSuggestions,
     queryFn: () => api.listAssistantSuggestions(kind),
   });
+}
+
+export function useFocusState() {
+  return useQuery({ queryKey: qk.focus, queryFn: () => api.getFocusState() });
+}
+
+export function useFocusSummary(period: 'week' | 'month') {
+  return useQuery({ queryKey: qk.focusSummary(period), queryFn: () => api.getFocusSummary(period) });
 }
 
 export function useCalendarEvents(start: string, end: string) {
@@ -380,6 +392,51 @@ export function useDecideAssistantSuggestion() {
       if (context?.previous) queryClient.setQueryData(qk.assistantSuggestions, context.previous);
     },
     onSettled: () => invalidateTaskSurfaces(queryClient),
+  });
+}
+
+// ------------------------------------------------------------------ focus mutations
+
+export function useStartFocusSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: StartFocusSessionInput) => api.startFocusSession(input),
+    onSuccess: (response) => {
+      const previous = queryClient.getQueryData(qk.focus) as
+        | { today?: unknown; recent_sessions?: unknown[] }
+        | undefined;
+      queryClient.setQueryData(qk.focus, {
+        active_session: response.session,
+        today: previous?.today ?? { focus_seconds: 0, completed_sessions: 0, streak_days: 0 },
+        recent_sessions: previous?.recent_sessions ?? [],
+      });
+      void queryClient.invalidateQueries({ queryKey: qk.focusSummary('week') });
+      void queryClient.invalidateQueries({ queryKey: qk.focusSummary('month') });
+    },
+  });
+}
+
+export function useFinishFocusSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: FinishFocusSessionInput }) => api.finishFocusSession(id, input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: qk.focus });
+      void queryClient.invalidateQueries({ queryKey: qk.focusSummary('week') });
+      void queryClient.invalidateQueries({ queryKey: qk.focusSummary('month') });
+    },
+  });
+}
+
+export function useAbandonFocusSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.abandonFocusSession(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: qk.focus });
+      void queryClient.invalidateQueries({ queryKey: qk.focusSummary('week') });
+      void queryClient.invalidateQueries({ queryKey: qk.focusSummary('month') });
+    },
   });
 }
 

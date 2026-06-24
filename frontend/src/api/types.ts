@@ -353,6 +353,85 @@ export interface AssistantSuggestionResponse {
   suggestion: AssistantSuggestion;
 }
 
+// ---------------------------------------------------------------- Focus
+
+export type FocusSessionStatus = 'active' | 'completed' | 'abandoned';
+
+export interface FocusReflection {
+  accomplished_text: string | null;
+  distraction_text: string | null;
+  next_step_text: string | null;
+  focus_score: number | null;
+}
+
+export interface FocusSession {
+  id: string;
+  status: FocusSessionStatus;
+  task: Task | null;
+  project: string | null;
+  intention: string;
+  planned_minutes: number;
+  started_at: string;
+  target_end_at: string;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  reflection: FocusReflection;
+}
+
+export interface FocusTodaySummary {
+  focus_seconds: number;
+  completed_sessions: number;
+  streak_days: number;
+}
+
+export interface FocusStateResponse {
+  active_session: FocusSession | null;
+  today: FocusTodaySummary;
+  recent_sessions: FocusSession[];
+}
+
+export interface StartFocusSessionInput {
+  task_id?: string | null;
+  project?: string | null;
+  intention: string;
+  planned_minutes: number;
+}
+
+export interface FinishFocusSessionInput {
+  ended_at?: string;
+  accomplished_text?: string | null;
+  distraction_text?: string | null;
+  next_step_text?: string | null;
+  focus_score?: number | null;
+}
+
+export interface FocusSessionResponse {
+  session: FocusSession;
+}
+
+export interface FocusDailyActivity {
+  date: string;
+  focus_seconds: number;
+  session_count: number;
+}
+
+export interface FocusProjectBreakdown {
+  project: string;
+  focus_seconds: number;
+  session_count: number;
+}
+
+export interface FocusSummaryResponse {
+  period: 'week' | 'month';
+  total_focus_seconds: number;
+  total_sessions: number;
+  streak_days: number;
+  average_focus_score: number | null;
+  daily_activity: FocusDailyActivity[];
+  project_breakdown: FocusProjectBreakdown[];
+  next_steps: string[];
+}
+
 // ---------------------------------------------------------------- Calendar
 
 export interface CalendarEvent {
