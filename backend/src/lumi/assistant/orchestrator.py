@@ -261,7 +261,7 @@ def _calendar_request_from_tool_call(call: PlannedToolCall) -> CalendarRequest:
 
 
 def _calendar_private_note_label(language: str | None) -> str:
-    return _text_for_language(language, en="Private note", ru="Личная заметка", it="Nota privata")
+    return _text_for_language(language, en="Personal note", ru="Личная заметка", it="Nota personale")
 
 
 def _calendar_private_note_open_app_text(language: str | None) -> str:
@@ -534,18 +534,18 @@ def _calendar_added_text(language: str | None, *, title: str, start_label: str) 
 def _calendar_private_note_updated_text(language: str | None, *, title: str) -> str:
     return _text_for_language(
         language,
-        en=f"Updated private note for: {title}",
+        en=f"Updated personal note for: {title}",
         ru=f"Обновил личную заметку: {title}",
-        it=f"Nota privata aggiornata: {title}",
+        it=f"Nota personale aggiornata: {title}",
     )
 
 
 def _calendar_private_note_deleted_text(language: str | None, *, title: str) -> str:
     return _text_for_language(
         language,
-        en=f"Deleted private note for: {title}",
+        en=f"Deleted personal note for: {title}",
         ru=f"Удалил личную заметку: {title}",
-        it=f"Nota privata eliminata: {title}",
+        it=f"Nota personale eliminata: {title}",
     )
 
 

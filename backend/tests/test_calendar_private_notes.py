@@ -276,7 +276,7 @@ async def test_agent_can_create_block_with_private_note_without_public_descripti
             telegram_user_id=TEST_TELEGRAM_ID,
             telegram_chat_id=TEST_TELEGRAM_ID,
             telegram_message_id=72,
-            text="Add a block with private notes.",
+            text="Add a block with personal notes.",
         )
         event = (await session.execute(select(CalendarEvent))).scalar_one()
         tool_call = (
@@ -347,24 +347,24 @@ async def test_agent_can_update_and_delete_private_note_by_event_id():
             telegram_user_id=TEST_TELEGRAM_ID,
             telegram_chat_id=TEST_TELEGRAM_ID,
             telegram_message_id=73,
-            text="Add a private note to this event.",
+            text="Add a personal note to this event.",
         )
         await session.refresh(event)
-        assert "Updated private note" in update_result.reply_text
+        assert "Updated personal note" in update_result.reply_text
         assert event.metadata_["private_note"] == "Ask whether finance owns the rollout numbers."
 
         delete_result = await orchestrator.handle_user_message(
             telegram_user_id=TEST_TELEGRAM_ID,
             telegram_chat_id=TEST_TELEGRAM_ID,
             telegram_message_id=74,
-            text="Delete the private note.",
+            text="Delete the personal note.",
         )
         await session.refresh(event)
         tool_calls = (
             await session.execute(select(ToolCall).order_by(ToolCall.created_at.desc()).limit(2))
         ).scalars().all()
 
-    assert "Deleted private note" in delete_result.reply_text
+    assert "Deleted personal note" in delete_result.reply_text
     assert "private_note" not in (event.metadata_ or {})
     assert sorted(call.tool_name for call in tool_calls) == [
         "delete_calendar_private_note",

@@ -66,9 +66,9 @@ Rules:
 - Delete/remove task requests should set updates.status="cancelled"; never physically delete tasks.
 - Calendar questions about meetings/events on today, tomorrow, a future date, or a recurring date must use read_calendar_events with the requested local time window.
 - For short follow-ups to recent backend task actions, use recency_hint=last_created_task or last_touched_task from Planner context.
-- Calendar private notes are user-only. If the user gives private details for a block/meeting,
+- Calendar personal notes are user-only. If the user gives personal details for a block/meeting,
   put them in private_note, not description.
-- To add, edit, or remove a private note on an existing calendar event, use update_calendar_private_note
+- To add, edit, or remove a personal note on an existing calendar event, use update_calendar_private_note
   or delete_calendar_private_note. If you just read events, prefer event_id from tool observations.
 - For create_task follow-ups that refer to a recent project, use project_ref=last_task_project,
   last_created_task_project, last_proposed_task_project, or last_touched_task_project.

@@ -731,16 +731,16 @@ async def summarize_calendar_private_note(
     metadata = event.metadata_ or {}
     note = metadata.get("private_note")
     if metadata.get("private_note_hash") != private_note_hash:
-        return "stale private note hash"
+        return "stale personal note hash"
     if not isinstance(note, str) or not note.strip():
-        return "private note missing"
+        return "personal note missing"
     calendar = CalendarService(session)
     if not private_note_needs_summary(note):
         await calendar.set_private_note(user, event, note)
         return "summary not needed"
     try:
         response = await LLMGateway().complete(
-            messages=[LLMMessage(role="user", content=f"Private note:\n{note}")],
+            messages=[LLMMessage(role="user", content=f"Personal note:\n{note}")],
             system=CALENDAR_PRIVATE_NOTE_SUMMARY_SYSTEM,
             temperature=0.1,
             max_tokens=80,
@@ -956,7 +956,7 @@ async def recover_pending_calendar_private_note_summaries(ctx: dict[str, Any]) -
             )
             if job_id:
                 enqueued += 1
-    return f"enqueued {enqueued} calendar private note summaries"
+    return f"enqueued {enqueued} calendar personal note summaries"
 
 
 JOB_BY_AUTOMATION_TYPE = {
