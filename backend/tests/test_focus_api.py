@@ -15,6 +15,10 @@ from lumi.utils.time import get_zone
 from .conftest import TEST_TELEGRAM_ID
 
 
+def parse_iso(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
 @pytest.fixture
 async def client(user):
     async def _override_user():
@@ -127,3 +131,45 @@ async def test_focus_summary_groups_by_project_and_ignores_abandoned(client, db_
     ]
     assert body["streak_days"] == 1
     assert body["daily_activity"][-1]["date"] == datetime.now(get_zone(user.timezone)).date().isoformat()
+
+
+async def test_focus_manual_log_creates_completed_session_without_active_timer(client, db_session):
+    user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID)
+    task = await TaskService(db_session).create_task(
+        user,
+        title="Перенести дизайн Focus",
+        project="Lumi",
+    )
+    await db_session.commit()
+
+    logged_at = datetime.now(UTC) - timedelta(hours=1)
+    response = await client.post(
+        "/api/focus/sessions/log",
+        json={
+            "task_id": str(task.id),
+            "project": "Lumi",
+            "intention": "Сверстал макет в другом таймере",
+            "logged_at": logged_at.isoformat(),
+            "duration_minutes": 37,
+            "accomplished_text": "Проверил minimal console",
+            "distraction_text": "Нативный select мешал",
+            "next_step_text": "Запустить browser QA",
+            "focus_score": 5,
+        },
+    )
+
+    assert response.status_code == 201
+    session = response.json()["session"]
+    assert session["status"] == "completed"
+    assert session["task"]["title"] == "Перенести дизайн Focus"
+    assert session["planned_minutes"] == 37
+    assert session["duration_seconds"] == 37 * 60
+    assert parse_iso(session["started_at"]) == logged_at
+    assert parse_iso(session["ended_at"]) == logged_at + timedelta(minutes=37)
+    assert session["reflection"]["focus_score"] == 5
+
+    state = await client.get("/api/focus/state")
+    body = state.json()
+    assert body["active_session"] is None
+    assert body["today"]["completed_sessions"] == 1
+    assert body["recent_sessions"][0]["id"] == session["id"]

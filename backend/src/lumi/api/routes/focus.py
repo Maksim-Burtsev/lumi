@@ -32,6 +32,18 @@ class FocusFinish(BaseModel):
     focus_score: int | None = Field(default=None, ge=1, le=5)
 
 
+class FocusLog(BaseModel):
+    task_id: uuid.UUID | None = None
+    project: str | None = Field(default=None, max_length=120)
+    intention: str = Field(min_length=1, max_length=300)
+    logged_at: datetime
+    duration_minutes: int = Field(ge=1, le=240)
+    accomplished_text: str | None = Field(default=None, max_length=2000)
+    distraction_text: str | None = Field(default=None, max_length=2000)
+    next_step_text: str | None = Field(default=None, max_length=1000)
+    focus_score: int | None = Field(default=None, ge=1, le=5)
+
+
 async def _session_or_404(service: FocusService, user: User, session_id: str):
     try:
         parsed = uuid.UUID(session_id)
@@ -101,6 +113,31 @@ async def start_focus_session(
         code = str(exc)
         status = 409 if code == "active_focus_session_exists" else 404
         raise HTTPException(status_code=status, detail=code) from exc
+    return {"session": await _with_task(service, user, focus_session)}
+
+
+@router.post("/focus/sessions/log", status_code=201)
+async def log_focus_session(
+    payload: FocusLog,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    service = FocusService(session)
+    try:
+        focus_session = await service.log_session(
+            user,
+            task_id=payload.task_id,
+            project=payload.project,
+            intention=payload.intention,
+            logged_at=payload.logged_at,
+            duration_minutes=payload.duration_minutes,
+            accomplished_text=payload.accomplished_text,
+            distraction_text=payload.distraction_text,
+            next_step_text=payload.next_step_text,
+            focus_score=payload.focus_score,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"session": await _with_task(service, user, focus_session)}
 
 

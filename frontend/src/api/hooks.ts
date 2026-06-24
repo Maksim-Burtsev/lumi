@@ -11,6 +11,7 @@ import type {
   CreateNewsTopicInput,
   CreateTaskInput,
   FinishFocusSessionInput,
+  LogFocusSessionInput,
   PatchAutomationInput,
   PatchNewsTopicInput,
   PatchSettingsInput,
@@ -410,6 +411,18 @@ export function useStartFocusSession() {
         today: previous?.today ?? { focus_seconds: 0, completed_sessions: 0, streak_days: 0 },
         recent_sessions: previous?.recent_sessions ?? [],
       });
+      void queryClient.invalidateQueries({ queryKey: qk.focusSummary('week') });
+      void queryClient.invalidateQueries({ queryKey: qk.focusSummary('month') });
+    },
+  });
+}
+
+export function useLogFocusSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: LogFocusSessionInput) => api.logFocusSession(input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: qk.focus });
       void queryClient.invalidateQueries({ queryKey: qk.focusSummary('week') });
       void queryClient.invalidateQueries({ queryKey: qk.focusSummary('month') });
     },

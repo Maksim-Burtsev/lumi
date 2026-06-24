@@ -23,6 +23,7 @@ import type {
   YandexStatus,
   HealthResponse,
   InboxSummaryResponse,
+  LogFocusSessionInput,
   MeResponse,
   MemoriesResponse,
   MemoryResponse,
@@ -215,6 +216,10 @@ export class LumiApiClient {
 
   startFocusSession(input: StartFocusSessionInput): Promise<FocusSessionResponse> {
     return request('POST', '/api/focus/sessions', { body: input });
+  }
+
+  logFocusSession(input: LogFocusSessionInput): Promise<FocusSessionResponse> {
+    return request('POST', '/api/focus/sessions/log', { body: input });
   }
 
   finishFocusSession(id: string, input: FinishFocusSessionInput): Promise<FocusSessionResponse> {

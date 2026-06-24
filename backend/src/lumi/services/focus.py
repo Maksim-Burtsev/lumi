@@ -113,6 +113,47 @@ class FocusService:
         await self.session.flush()
         return focus_session
 
+    async def log_session(
+        self,
+        user: User,
+        *,
+        intention: str,
+        logged_at: datetime,
+        duration_minutes: int,
+        task_id: uuid.UUID | None = None,
+        project: str | None = None,
+        accomplished_text: str | None = None,
+        distraction_text: str | None = None,
+        next_step_text: str | None = None,
+        focus_score: int | None = None,
+    ) -> FocusSession:
+        task = await self.get_task(user, task_id)
+        if task_id is not None and task is None:
+            raise ValueError("task_not_found")
+
+        started = logged_at if logged_at.tzinfo else logged_at.replace(tzinfo=get_zone(user.timezone))
+        ended = started + timedelta(minutes=duration_minutes)
+        cleaned_project = (project or "").strip() or None
+        focus_session = FocusSession(
+            user_id=user.id,
+            task_id=task.id if task else None,
+            project_snapshot=cleaned_project or (task.project if task else None),
+            intention=intention.strip()[:300],
+            planned_minutes=duration_minutes,
+            status=FocusSessionStatus.COMPLETED,
+            started_at=started,
+            target_end_at=ended,
+            ended_at=ended,
+            duration_seconds=duration_minutes * 60,
+            accomplished_text=(accomplished_text or "").strip() or None,
+            distraction_text=(distraction_text or "").strip() or None,
+            next_step_text=(next_step_text or "").strip() or None,
+            focus_score=focus_score,
+        )
+        self.session.add(focus_session)
+        await self.session.flush()
+        return focus_session
+
     async def abandon_session(self, user: User, focus_session: FocusSession) -> FocusSession:
         if focus_session.user_id != user.id or focus_session.status != FocusSessionStatus.ACTIVE:
             raise ValueError("focus_session_not_active")

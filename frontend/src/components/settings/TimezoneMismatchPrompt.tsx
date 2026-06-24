@@ -91,11 +91,11 @@ export function TimezoneMismatchPrompt() {
           <p className="mt-1 break-words text-[12.5px] leading-snug text-hint">
             {copy.current}: {profileTimezone} · {copy.detected}: {deviceTimezone}
           </p>
-          <div className="mt-3 flex gap-2">
-            <Button size="sm" onClick={useDetected} busy={patch.isPending}>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <Button size="sm" fullWidth onClick={useDetected} busy={patch.isPending} className="min-w-0 px-2">
               {copy.use}
             </Button>
-            <Button size="sm" variant="ghost" onClick={keepCurrent}>
+            <Button size="sm" fullWidth variant="ghost" onClick={keepCurrent} className="min-w-0 px-2">
               {copy.keep}
             </Button>
           </div>
