@@ -19,7 +19,7 @@ import {
   useStartFocusSession,
   useTasks,
 } from '../api/hooks';
-import type { FocusSession, Task } from '../api/types';
+import type { FocusDailyActivity, FocusSession, FocusSummaryResponse, Task } from '../api/types';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { Chip } from '../components/ui/Chip';
@@ -29,16 +29,165 @@ import { Sheet } from '../components/ui/Sheet';
 import { SkeletonList } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
+import type { AppLocale } from '../lib/i18n';
 import { formatTime } from '../lib/format';
+import { useAppLocale } from '../lib/useAppLocale';
 import { haptic } from '../telegram/webapp';
 
 const DURATIONS = [25, 45, 60];
 const DEFAULT_DURATION = 45;
 
-function secondsLabel(seconds: number): string {
+const COPY = {
+  en: {
+    session: 'Session',
+    sessions: 'Sessions',
+    noProject: 'No project',
+    noTask: 'No task',
+    taskStatusActive: 'active',
+    taskStatusInbox: 'inbox',
+    onlyIntentProject: 'Intent and project only',
+    search: 'Search',
+    searchTasks: 'Search tasks',
+    chooseTask: 'Choose task',
+    taskPicker: 'Choose task',
+    nothingFound: 'Nothing found.',
+    duration: 'Duration',
+    customDuration: 'Custom duration',
+    intention: 'Intent',
+    project: 'Project',
+    task: 'Task',
+    newSession: 'New session',
+    startSession: 'Start session',
+    startCta: 'Start',
+    logSession: 'Log session',
+    logShort: 'Log',
+    readyTitle: 'Ready for a session?',
+    readyBody: 'Start a timer or log work you already did elsewhere.',
+    whatWork: 'What will you work on?',
+    optionalProject: 'Optional',
+    active: 'session running',
+    overtime: 'over plan',
+    remaining: 'left',
+    plan: 'plan',
+    finish: 'Finish',
+    cancel: 'Cancel',
+    reflectionTitle: 'Session review',
+    doneQuestion: 'What got done?',
+    donePlaceholder: 'Short result',
+    blockersQuestion: 'What got in the way?',
+    blockersPlaceholder: 'Distractions, blockers, context',
+    nextStep: 'Next step',
+    nextStepPlaceholder: 'What happens next?',
+    score: 'Focus',
+    saveSession: 'Save session',
+    saveBlock: 'Save block',
+    today: 'today',
+    countSessions: 'sessions',
+    streak: 'streak',
+    analytics: 'Analytics',
+    week: 'Week',
+    month: 'Month',
+    forWeek: 'this week',
+    forMonth: 'this month',
+    projectsEmpty: 'Projects appear after completed sessions.',
+    history: 'History',
+    details: 'Details',
+    historyEmpty: 'Completed sessions appear here.',
+    historyDetails: 'Session history',
+    days: 'Days',
+    projects: 'Projects',
+    recentSessions: 'Recent sessions',
+    noSessionsForDay: 'No sessions for this day.',
+    startAt: 'Start',
+    durationMinutes: 'Duration, minutes',
+    whatDid: 'What did you do?',
+    logIntentPlaceholder: 'What did you do?',
+    defaultIntention: 'Session',
+    startError: 'Could not start session',
+    saveError: 'Could not save session',
+    logError: 'Could not save block',
+    progressLabel: 'Session progress',
+  },
+  ru: {
+    session: 'Сессия',
+    sessions: 'Сессии',
+    noProject: 'Без проекта',
+    noTask: 'Без задачи',
+    taskStatusActive: 'активная',
+    taskStatusInbox: 'входящая',
+    onlyIntentProject: 'Только намерение и проект',
+    search: 'Поиск',
+    searchTasks: 'Поиск задач',
+    chooseTask: 'Выбрать задачу',
+    taskPicker: 'Выбор задачи',
+    nothingFound: 'Ничего не найдено.',
+    duration: 'Длительность',
+    customDuration: 'Своя длительность',
+    intention: 'Намерение',
+    project: 'Проект',
+    task: 'Задача',
+    newSession: 'Новая сессия',
+    startSession: 'Начать сессию',
+    startCta: 'Старт',
+    logSession: 'Залогировать сессию',
+    logShort: 'Лог',
+    readyTitle: 'Готов к сессии?',
+    readyBody: 'Запусти таймер или залогируй блок, который уже сделал в другом месте.',
+    whatWork: 'Над чем будешь работать?',
+    optionalProject: 'Опционально',
+    active: 'идет сессия',
+    overtime: 'сверх плана',
+    remaining: 'осталось',
+    plan: 'план',
+    finish: 'Завершить',
+    cancel: 'Отменить',
+    reflectionTitle: 'Итог сессии',
+    doneQuestion: 'Что сделал?',
+    donePlaceholder: 'Коротко зафиксируй результат',
+    blockersQuestion: 'Что мешало?',
+    blockersPlaceholder: 'Отвлечения, блокеры, контекст',
+    nextStep: 'Следующий шаг',
+    nextStepPlaceholder: 'Что сделать дальше?',
+    score: 'Фокус',
+    saveSession: 'Сохранить сессию',
+    saveBlock: 'Сохранить блок',
+    today: 'сегодня',
+    countSessions: 'сессий',
+    streak: 'стрик',
+    analytics: 'Аналитика',
+    week: 'Неделя',
+    month: 'Месяц',
+    forWeek: 'за неделю',
+    forMonth: 'за месяц',
+    projectsEmpty: 'Проекты появятся после завершенных сессий.',
+    history: 'История',
+    details: 'Детали',
+    historyEmpty: 'Завершенные сессии появятся здесь.',
+    historyDetails: 'История сессий',
+    days: 'Дни',
+    projects: 'Проекты',
+    recentSessions: 'Последние сессии',
+    noSessionsForDay: 'В этот день сессий нет.',
+    startAt: 'Начало',
+    durationMinutes: 'Длительность, минут',
+    whatDid: 'Что сделал?',
+    logIntentPlaceholder: 'Что делал?',
+    defaultIntention: 'Сессия',
+    startError: 'Не удалось начать сессию',
+    saveError: 'Не удалось сохранить сессию',
+    logError: 'Не удалось сохранить блок',
+    progressLabel: 'Прогресс сессии',
+  },
+} satisfies Record<AppLocale, Record<string, string>>;
+
+function secondsLabel(seconds: number, locale: AppLocale): string {
   const safe = Math.max(0, Math.round(seconds));
   const hours = Math.floor(safe / 3600);
   const minutes = Math.floor((safe % 3600) / 60);
+  if (locale === 'en') {
+    if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}m`;
+    return `${minutes}m`;
+  }
   if (hours > 0) return `${hours}ч ${String(minutes).padStart(2, '0')}м`;
   return `${minutes}м`;
 }
@@ -127,10 +276,12 @@ interface TaskPickerSheetProps {
   onClose: () => void;
   tasks: Task[];
   selectedTaskId: string;
+  locale: AppLocale;
   onSelect: (task: Task | null) => void;
 }
 
-function TaskPickerSheet({ open, onClose, tasks, selectedTaskId, onSelect }: TaskPickerSheetProps) {
+function TaskPickerSheet({ open, onClose, tasks, selectedTaskId, locale, onSelect }: TaskPickerSheetProps) {
+  const copy = COPY[locale];
   const [query, setQuery] = useState('');
   const visible = useMemo(() => tasks.filter((task) => matchesTask(task, query)), [query, tasks]);
 
@@ -144,16 +295,16 @@ function TaskPickerSheet({ open, onClose, tasks, selectedTaskId, onSelect }: Tas
   };
 
   return (
-    <Sheet open={open} onClose={onClose} title="Выбор задачи">
+    <Sheet open={open} onClose={onClose} title={copy.taskPicker}>
       <div className="space-y-3">
         <label>
-          <FieldLabel>Поиск</FieldLabel>
+          <FieldLabel>{copy.search}</FieldLabel>
           <div className="relative">
             <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-hint" />
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Поиск задач"
+              placeholder={copy.searchTasks}
               className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] pl-9 pr-3 text-[15px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
             />
           </div>
@@ -165,8 +316,8 @@ function TaskPickerSheet({ open, onClose, tasks, selectedTaskId, onSelect }: Tas
             className={`flex w-full items-center justify-between px-4 py-3 text-left ${selectedTaskId === '' ? 'bg-[var(--accent-soft)]' : 'bg-transparent'}`}
           >
             <span>
-              <span className="block text-[14.5px] font-medium text-ink">Без задачи</span>
-              <span className="block text-[12.5px] text-hint">Только намерение и проект</span>
+              <span className="block text-[14.5px] font-medium text-ink">{copy.noTask}</span>
+              <span className="block text-[12.5px] text-hint">{copy.onlyIntentProject}</span>
             </span>
             {selectedTaskId === '' && <Check size={16} className="text-accent-text" />}
           </button>
@@ -181,19 +332,31 @@ function TaskPickerSheet({ open, onClose, tasks, selectedTaskId, onSelect }: Tas
             >
               <span className="min-w-0">
                 <span className="block truncate text-[14.5px] font-medium text-ink">{task.title}</span>
-                <span className="block truncate text-[12.5px] text-hint">{task.project ?? 'Без проекта'} · {task.status}</span>
+                <span className="block truncate text-[12.5px] text-hint">
+                  {task.project ?? copy.noProject} · {task.status === 'active' ? copy.taskStatusActive : copy.taskStatusInbox}
+                </span>
               </span>
               {selectedTaskId === task.id && <Check size={16} className="shrink-0 text-accent-text" />}
             </button>
           ))}
-          {visible.length === 0 && <p className="border-t border-hairline px-4 py-4 text-[13px] text-hint">Ничего не найдено.</p>}
+          {visible.length === 0 && <p className="border-t border-hairline px-4 py-4 text-[13px] text-hint">{copy.nothingFound}</p>}
         </div>
       </div>
     </Sheet>
   );
 }
 
-function DurationControl({ value, onChange, label }: { value: number; onChange: (value: number) => void; label: string }) {
+function DurationControl({
+  value,
+  onChange,
+  label,
+  heading,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+  label: string;
+  heading: string;
+}) {
   const [draft, setDraft] = useState(String(value));
 
   useEffect(() => {
@@ -207,7 +370,7 @@ function DurationControl({ value, onChange, label }: { value: number; onChange: 
 
   return (
     <div>
-      <FieldLabel>Длительность</FieldLabel>
+      <FieldLabel>{heading}</FieldLabel>
       <div className="flex flex-wrap items-center gap-2">
         {DURATIONS.map((item) => (
           <Chip key={item} label={`${item}`} active={value === item} onClick={() => onChange(item)} />
@@ -259,7 +422,8 @@ function MinuteInput({ value, onChange, label }: { value: number; onChange: (val
   );
 }
 
-function StartSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+function StartSheet({ open, onClose, locale }: { open: boolean; onClose: () => void; locale: AppLocale }) {
+  const copy = COPY[locale];
   const tasksQuery = useTasks('all');
   const start = useStartFocusSession();
   const { show } = useToast();
@@ -277,8 +441,8 @@ function StartSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
   }, [selectedTask]);
 
   const submit = () => {
-    const text = intention.trim();
-    if (!text || start.isPending) return;
+    const text = intention.trim() || selectedTask?.title || project.trim() || copy.defaultIntention;
+    if (start.isPending) return;
     haptic('light');
     start.mutate(
       {
@@ -295,37 +459,37 @@ function StartSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
           setDuration(DEFAULT_DURATION);
           onClose();
         },
-        onError: () => show('Не удалось начать сессию', 'error'),
+        onError: () => show(copy.startError, 'error'),
       },
     );
   };
 
   return (
     <>
-      <Sheet open={open} onClose={onClose} title="Новая сессия">
+      <Sheet open={open} onClose={onClose} title={copy.newSession}>
         <div className="space-y-4">
           <label>
-            <FieldLabel>Намерение</FieldLabel>
-            <Input value={intention} onChange={setIntention} placeholder="Над чем будешь работать?" />
+            <FieldLabel>{copy.intention}</FieldLabel>
+            <Input value={intention} onChange={setIntention} placeholder={copy.whatWork} />
           </label>
-          <DurationControl value={duration} onChange={setDuration} label="Своя длительность" />
+          <DurationControl value={duration} onChange={setDuration} label={copy.customDuration} heading={copy.duration} />
           <div>
-            <FieldLabel>Задача</FieldLabel>
+            <FieldLabel>{copy.task}</FieldLabel>
             <button
               type="button"
               onClick={() => setTaskPickerOpen(true)}
               className="flex h-11 w-full items-center justify-between rounded-xl border border-hairline bg-[var(--surface-strong)] px-3.5 text-left text-[15px] text-ink"
             >
-              <span className="min-w-0 truncate">{selectedTask ? selectedTask.title : 'Без задачи'}</span>
-              <span className="text-[12px] text-hint">Выбрать задачу</span>
+              <span className="min-w-0 truncate">{selectedTask ? selectedTask.title : copy.noTask}</span>
+              <span className="text-[12px] text-hint">{copy.chooseTask}</span>
             </button>
           </div>
           <label>
-            <FieldLabel>Проект</FieldLabel>
+            <FieldLabel>{copy.project}</FieldLabel>
             <Input value={project} onChange={setProject} placeholder="Lumi" />
           </label>
           <Button fullWidth busy={start.isPending} onClick={submit} icon={<Timer size={16} />}>
-            Старт {duration} мин
+            {copy.startCta} {duration} {locale === 'en' ? 'min' : 'мин'}
           </Button>
         </div>
       </Sheet>
@@ -334,6 +498,7 @@ function StartSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
         onClose={() => setTaskPickerOpen(false)}
         tasks={tasks}
         selectedTaskId={taskId}
+        locale={locale}
         onSelect={(task) => {
           setTaskId(task?.id ?? '');
           setProject(task?.project ?? project);
@@ -343,10 +508,10 @@ function StartSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
   );
 }
 
-function ScorePicker({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+function ScorePicker({ value, onChange, label }: { value: number; onChange: (value: number) => void; label: string }) {
   return (
     <div>
-      <FieldLabel>Фокус</FieldLabel>
+      <FieldLabel>{label}</FieldLabel>
       <div className="flex gap-2">
         {[1, 2, 3, 4, 5].map((item) => (
           <button
@@ -365,7 +530,18 @@ function ScorePicker({ value, onChange }: { value: number; onChange: (value: num
   );
 }
 
-function ReflectionSheet({ session, open, onClose }: { session: FocusSession | null; open: boolean; onClose: () => void }) {
+function ReflectionSheet({
+  session,
+  open,
+  onClose,
+  locale,
+}: {
+  session: FocusSession | null;
+  open: boolean;
+  onClose: () => void;
+  locale: AppLocale;
+}) {
+  const copy = COPY[locale];
   const finish = useFinishFocusSession();
   const { show } = useToast();
   const [accomplished, setAccomplished] = useState('');
@@ -401,40 +577,41 @@ function ReflectionSheet({ session, open, onClose }: { session: FocusSession | n
           haptic('success');
           onClose();
         },
-        onError: () => show('Не удалось сохранить сессию', 'error'),
+        onError: () => show(copy.saveError, 'error'),
       },
     );
   };
 
   return (
-    <Sheet open={open} onClose={onClose} title="Итог сессии">
+    <Sheet open={open} onClose={onClose} title={copy.reflectionTitle}>
       <div className="space-y-4">
         <div className="rounded-2xl bg-[var(--accent-soft)] px-4 py-3">
-          <p className="text-[13px] font-medium text-ink">{session.project ?? 'Без проекта'}</p>
+          <p className="text-[13px] font-medium text-ink">{session.project ?? copy.noProject}</p>
           <p className="mt-0.5 text-[12.5px] text-hint">{session.intention}</p>
         </div>
         <label>
-          <FieldLabel>Что сделал?</FieldLabel>
-          <Textarea value={accomplished} onChange={setAccomplished} rows={3} placeholder="Коротко зафиксируй результат" />
+          <FieldLabel>{copy.doneQuestion}</FieldLabel>
+          <Textarea value={accomplished} onChange={setAccomplished} rows={3} placeholder={copy.donePlaceholder} />
         </label>
         <label>
-          <FieldLabel>Что мешало?</FieldLabel>
-          <Textarea value={distraction} onChange={setDistraction} rows={2} placeholder="Отвлечения, блокеры, контекст" />
+          <FieldLabel>{copy.blockersQuestion}</FieldLabel>
+          <Textarea value={distraction} onChange={setDistraction} rows={2} placeholder={copy.blockersPlaceholder} />
         </label>
         <label>
-          <FieldLabel>Следующий шаг</FieldLabel>
-          <Textarea value={nextStep} onChange={setNextStep} rows={2} placeholder="Что сделать дальше?" />
+          <FieldLabel>{copy.nextStep}</FieldLabel>
+          <Textarea value={nextStep} onChange={setNextStep} rows={2} placeholder={copy.nextStepPlaceholder} />
         </label>
-        <ScorePicker value={score} onChange={setScore} />
+        <ScorePicker value={score} onChange={setScore} label={copy.score} />
         <Button fullWidth busy={finish.isPending} onClick={submit} icon={<Check size={16} />}>
-          Сохранить сессию
+          {copy.saveSession}
         </Button>
       </div>
     </Sheet>
   );
 }
 
-function ManualLogSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+function ManualLogSheet({ open, onClose, locale }: { open: boolean; onClose: () => void; locale: AppLocale }) {
+  const copy = COPY[locale];
   const tasksQuery = useTasks('all');
   const logFocus = useLogFocusSession();
   const { show } = useToast();
@@ -453,8 +630,8 @@ function ManualLogSheet({ open, onClose }: { open: boolean; onClose: () => void 
   const selectedTask = tasks.find((task) => task.id === taskId) ?? null;
 
   const submit = () => {
-    const text = intention.trim();
-    if (!text || logFocus.isPending) return;
+    const text = intention.trim() || selectedTask?.title || project.trim() || copy.defaultIntention;
+    if (logFocus.isPending) return;
     logFocus.mutate(
       {
         task_id: taskId || null,
@@ -480,60 +657,60 @@ function ManualLogSheet({ open, onClose }: { open: boolean; onClose: () => void 
           setLoggedAt(datetimeInputValue(new Date()));
           onClose();
         },
-        onError: () => show('Не удалось сохранить блок', 'error'),
+        onError: () => show(copy.logError, 'error'),
       },
     );
   };
 
   return (
     <>
-      <Sheet open={open} onClose={onClose} title="Залогировать блок">
+      <Sheet open={open} onClose={onClose} title={copy.logSession}>
         <div className="space-y-4">
           <label>
-            <FieldLabel>Намерение</FieldLabel>
-            <Input value={intention} onChange={setIntention} placeholder="Что делал?" />
+            <FieldLabel>{copy.intention}</FieldLabel>
+            <Input value={intention} onChange={setIntention} placeholder={copy.logIntentPlaceholder} />
           </label>
           <label>
-            <FieldLabel>Начало</FieldLabel>
+            <FieldLabel>{copy.startAt}</FieldLabel>
             <input
-              aria-label="Начало"
+              aria-label={copy.startAt}
               type="datetime-local"
               value={loggedAt}
               onChange={(event) => setLoggedAt(event.target.value)}
               className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3.5 text-[15px] text-ink outline-none transition-shadow focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
             />
           </label>
-          <MinuteInput value={duration} onChange={setDuration} label="Длительность, минут" />
+          <MinuteInput value={duration} onChange={setDuration} label={copy.durationMinutes} />
           <div>
-            <FieldLabel>Задача</FieldLabel>
+            <FieldLabel>{copy.task}</FieldLabel>
             <button
               type="button"
               onClick={() => setTaskPickerOpen(true)}
               className="flex h-11 w-full items-center justify-between rounded-xl border border-hairline bg-[var(--surface-strong)] px-3.5 text-left text-[15px] text-ink"
             >
-              <span className="min-w-0 truncate">{selectedTask ? selectedTask.title : 'Без задачи'}</span>
-              <span className="text-[12px] text-hint">Выбрать задачу</span>
+              <span className="min-w-0 truncate">{selectedTask ? selectedTask.title : copy.noTask}</span>
+              <span className="text-[12px] text-hint">{copy.chooseTask}</span>
             </button>
           </div>
           <label>
-            <FieldLabel>Проект</FieldLabel>
-            <Input value={project} onChange={setProject} placeholder="Опционально" />
+            <FieldLabel>{copy.project}</FieldLabel>
+            <Input value={project} onChange={setProject} placeholder={copy.optionalProject} />
           </label>
           <label>
-            <FieldLabel>Что сделал?</FieldLabel>
-            <Textarea value={accomplished} onChange={setAccomplished} rows={3} placeholder="Итог блока" />
+            <FieldLabel>{copy.whatDid}</FieldLabel>
+            <Textarea value={accomplished} onChange={setAccomplished} rows={3} placeholder={copy.donePlaceholder} />
           </label>
           <label>
-            <FieldLabel>Что мешало?</FieldLabel>
-            <Textarea value={distraction} onChange={setDistraction} rows={2} placeholder="Опционально" />
+            <FieldLabel>{copy.blockersQuestion}</FieldLabel>
+            <Textarea value={distraction} onChange={setDistraction} rows={2} placeholder={copy.optionalProject} />
           </label>
           <label>
-            <FieldLabel>Следующий шаг</FieldLabel>
-            <Textarea value={nextStep} onChange={setNextStep} rows={2} placeholder="Опционально" />
+            <FieldLabel>{copy.nextStep}</FieldLabel>
+            <Textarea value={nextStep} onChange={setNextStep} rows={2} placeholder={copy.optionalProject} />
           </label>
-          <ScorePicker value={score} onChange={setScore} />
+          <ScorePicker value={score} onChange={setScore} label={copy.score} />
           <Button fullWidth busy={logFocus.isPending} onClick={submit} icon={<ClipboardPenLine size={16} />}>
-            Сохранить блок
+            {copy.saveBlock}
           </Button>
         </div>
       </Sheet>
@@ -542,6 +719,7 @@ function ManualLogSheet({ open, onClose }: { open: boolean; onClose: () => void 
         onClose={() => setTaskPickerOpen(false)}
         tasks={tasks}
         selectedTaskId={taskId}
+        locale={locale}
         onSelect={(task) => {
           setTaskId(task?.id ?? '');
           setProject(task?.project ?? project);
@@ -551,7 +729,8 @@ function ManualLogSheet({ open, onClose }: { open: boolean; onClose: () => void 
   );
 }
 
-function FloatingDial({ session, now }: { session: FocusSession; now: number }) {
+function FloatingDial({ session, now, locale }: { session: FocusSession; now: number; locale: AppLocale }) {
+  const copy = COPY[locale];
   const started = new Date(session.started_at).getTime();
   const target = new Date(session.target_end_at).getTime();
   const { total, remaining, overtime, progress } = getDialMetrics({ started, target, now });
@@ -568,7 +747,7 @@ function FloatingDial({ session, now }: { session: FocusSession; now: number }) 
 
   return (
     <div className="relative mx-auto mt-5 flex h-[270px] w-[270px] items-center justify-center">
-      <svg aria-label="Прогресс фокус-сессии" viewBox="0 0 260 260" className="absolute inset-0 h-full w-full">
+      <svg aria-label={copy.progressLabel} viewBox="0 0 260 260" className="absolute inset-0 h-full w-full">
         <circle
           cx="130"
           cy="130"
@@ -598,14 +777,15 @@ function FloatingDial({ session, now }: { session: FocusSession; now: number }) 
         <p className={`tnum text-[48px] font-semibold leading-none tracking-normal ${overtime > 0 ? 'text-success' : 'text-ink'}`}>
           {overtime > 0 ? `+${timerLabel(overtime)}` : timerLabel(remaining)}
         </p>
-        <p className="mt-2 text-[12.5px] font-medium text-hint">{overtime > 0 ? 'сверх плана' : 'осталось'}</p>
-        <p className="tnum mt-1 text-[12px] text-hint">{secondsLabel(total)} план</p>
+        <p className="mt-2 text-[12.5px] font-medium text-hint">{overtime > 0 ? copy.overtime : copy.remaining}</p>
+        <p className="tnum mt-1 text-[12px] text-hint">{secondsLabel(total, locale)} {copy.plan}</p>
       </div>
     </div>
   );
 }
 
-function ActiveSessionCard({ session }: { session: FocusSession }) {
+function ActiveSessionCard({ session, locale }: { session: FocusSession; locale: AppLocale }) {
+  const copy = COPY[locale];
   const now = useNow();
   const abandon = useAbandonFocusSession();
   const [reflectionOpen, setReflectionOpen] = useState(false);
@@ -627,35 +807,36 @@ function ActiveSessionCard({ session }: { session: FocusSession }) {
         <div className="relative">
           <div className="flex items-center justify-between gap-3">
             <span className="rounded-full bg-[var(--accent-soft)] px-3 py-1 text-[12px] font-medium text-accent-text">
-              {session.project ?? 'Без проекта'}
+              {session.project ?? copy.noProject}
             </span>
             <span className={`inline-flex items-center gap-1.5 text-[12px] font-medium ${overtime ? 'text-success' : 'text-hint'}`}>
               <span className={`h-1.5 w-1.5 rounded-full ${overtime ? 'bg-success' : 'bg-accent'}`} />
-              {overtime ? 'сверх плана' : 'идет сессия'}
+              {overtime ? copy.overtime : copy.active}
             </span>
           </div>
           <h2 className="mt-5 text-[24px] font-semibold leading-tight tracking-normal text-ink">{session.intention}</h2>
-          <FloatingDial session={session} now={now} />
+          <FloatingDial session={session} now={now} locale={locale} />
           <p className="tnum text-center text-[12.5px] text-hint">
             {formatTime(session.started_at)} — {formatTime(session.target_end_at)}
             {session.task ? ` · ${session.task.title}` : ''}
           </p>
           <div className="mt-5 grid grid-cols-2 gap-2.5">
             <Button onClick={() => setReflectionOpen(true)} icon={<Check size={16} />}>
-              Завершить
+              {copy.finish}
             </Button>
             <Button variant="secondary" busy={abandon.isPending} onClick={() => abandon.mutate(session.id)} icon={<X size={16} />}>
-              Отменить
+              {copy.cancel}
             </Button>
           </div>
         </div>
       </Card>
-      <ReflectionSheet session={session} open={reflectionOpen} onClose={() => setReflectionOpen(false)} />
+      <ReflectionSheet session={session} open={reflectionOpen} onClose={() => setReflectionOpen(false)} locale={locale} />
     </>
   );
 }
 
-function EmptyFocusCard({ onStart, onLog }: { onStart: () => void; onLog: () => void }) {
+function EmptyFocusCard({ onStart, onLog, locale }: { onStart: () => void; onLog: () => void; locale: AppLocale }) {
+  const copy = COPY[locale];
   return (
     <Card className="relative overflow-hidden p-5">
       <div aria-hidden className="dawn-glow" />
@@ -663,16 +844,16 @@ function EmptyFocusCard({ onStart, onLog }: { onStart: () => void; onLog: () => 
         <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-[var(--accent-soft)] text-accent-text">
           <Timer size={19} />
         </span>
-        <h2 className="mt-4 text-[23px] font-semibold leading-tight text-ink">Готов к фокус-сессии?</h2>
+        <h2 className="mt-4 text-[23px] font-semibold leading-tight text-ink">{copy.readyTitle}</h2>
         <p className="mt-2 text-[13.5px] leading-relaxed text-hint">
-          Запусти таймер или залогируй блок, который уже сделал в другом месте.
+          {copy.readyBody}
         </p>
         <div className="mt-5 grid grid-cols-2 gap-2.5">
           <Button onClick={onStart} icon={<Plus size={16} />}>
-            Начать фокус
+            {copy.startSession}
           </Button>
           <Button variant="secondary" onClick={onLog} icon={<ClipboardPenLine size={16} />}>
-            Залогировать
+            {copy.logSession}
           </Button>
         </div>
       </div>
@@ -680,35 +861,156 @@ function EmptyFocusCard({ onStart, onLog }: { onStart: () => void; onLog: () => 
   );
 }
 
-function ActivityStrip({ items }: { items: { date: string; focus_seconds: number }[] }) {
+function sessionDateKey(session: FocusSession): string {
+  return session.started_at.slice(0, 10);
+}
+
+function ActivityStrip({
+  items,
+  locale,
+  selectedDate,
+  onSelectDate,
+}: {
+  items: FocusDailyActivity[];
+  locale: AppLocale;
+  selectedDate: string | null;
+  onSelectDate?: (date: string) => void;
+}) {
   const max = Math.max(1, ...items.map((item) => item.focus_seconds));
   return (
     <div className="flex h-16 items-end gap-2 rounded-2xl border border-hairline px-3 py-3">
       {items.map((item) => {
-        const height = 8 + Math.round((item.focus_seconds / max) * 34);
+        const hasWork = item.focus_seconds > 0;
+        const selected = selectedDate === item.date;
+        const height = hasWork ? 10 + Math.round((item.focus_seconds / max) * 32) : 6;
         return (
-          <div key={item.date} className="flex flex-1 flex-col items-center gap-1.5">
+          <button
+            key={item.date}
+            type="button"
+            onClick={() => onSelectDate?.(item.date)}
+            className="flex min-w-0 flex-1 flex-col items-center gap-1.5 rounded-xl outline-none focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+            aria-label={`${item.date}: ${secondsLabel(item.focus_seconds, locale)}`}
+          >
             <div
-              className="w-full rounded-full bg-[var(--accent-soft)]"
+              className={`w-full rounded-full transition-colors ${
+                selected
+                  ? 'bg-accent'
+                  : hasWork
+                    ? 'bg-[var(--accent-soft)]'
+                    : 'bg-[var(--hairline)] opacity-60'
+              }`}
               style={{ height }}
-              title={`${item.date}: ${secondsLabel(item.focus_seconds)}`}
+              title={`${item.date}: ${secondsLabel(item.focus_seconds, locale)}`}
             />
-            <span className="tnum text-[10px] text-hint">{new Date(item.date).getDate()}</span>
-          </div>
+            <span className={`tnum text-[10px] ${selected || hasWork ? 'text-ink' : 'text-hint'}`}>{new Date(item.date).getDate()}</span>
+          </button>
         );
       })}
     </div>
   );
 }
 
+function HistoryDetailsSheet({
+  open,
+  onClose,
+  locale,
+  summary,
+  sessions,
+}: {
+  open: boolean;
+  onClose: () => void;
+  locale: AppLocale;
+  summary: FocusSummaryResponse | undefined;
+  sessions: FocusSession[];
+}) {
+  const copy = COPY[locale];
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const daily = summary?.daily_activity ?? [];
+  const activeDate = selectedDate ?? [...daily].reverse().find((item) => item.focus_seconds > 0)?.date ?? daily[daily.length - 1]?.date ?? null;
+  const sessionsForDay = activeDate ? sessions.filter((item) => sessionDateKey(item) === activeDate) : sessions;
+  const maxProjectSeconds = Math.max(1, ...(summary?.project_breakdown ?? []).map((item) => item.focus_seconds));
+
+  useEffect(() => {
+    if (open) setSelectedDate(null);
+  }, [open]);
+
+  return (
+    <Sheet open={open} onClose={onClose} title={copy.historyDetails}>
+      <div className="space-y-5">
+        <section>
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="text-[13px] font-semibold text-ink">{copy.days}</h3>
+            <span className="tnum text-[12px] text-hint">{activeDate ?? '—'}</span>
+          </div>
+          <ActivityStrip items={daily} locale={locale} selectedDate={activeDate} onSelectDate={setSelectedDate} />
+        </section>
+
+        <section>
+          <h3 className="mb-2 text-[13px] font-semibold text-ink">{copy.projects}</h3>
+          <div className="space-y-2.5">
+            {(summary?.project_breakdown ?? []).map((item) => (
+              <div key={item.project}>
+                <div className="mb-1 flex items-center justify-between gap-3 text-[12.5px]">
+                  <span className="truncate font-medium text-ink">{item.project}</span>
+                  <span className="tnum shrink-0 text-hint">{secondsLabel(item.focus_seconds, locale)}</span>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-[var(--hairline)]">
+                  <div
+                    className="h-full rounded-full bg-[var(--accent)]"
+                    style={{ width: `${Math.max(6, Math.round((item.focus_seconds / maxProjectSeconds) * 100))}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section>
+          <h3 className="mb-2 text-[13px] font-semibold text-ink">{copy.recentSessions}</h3>
+          <div className="max-h-[34dvh] overflow-y-auto rounded-2xl border border-hairline">
+            {sessionsForDay.length > 0 ? (
+              sessionsForDay.map((item) => (
+                <div key={item.id} className="border-b border-hairline px-4 py-3 last:border-b-0">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-[14px] font-medium text-ink">{item.intention}</p>
+                      <p className="mt-0.5 truncate text-[12.5px] text-hint">
+                        {item.project ?? copy.noProject}{item.task ? ` · ${item.task.title}` : ''}
+                      </p>
+                    </div>
+                    <span className="tnum shrink-0 text-[13px] font-medium text-ink">{secondsLabel(item.duration_seconds ?? 0, locale)}</span>
+                  </div>
+                  {(item.reflection.accomplished_text || item.reflection.next_step_text) && (
+                    <p className="mt-2 max-h-10 overflow-hidden text-[12.5px] leading-relaxed text-hint">
+                      {item.reflection.accomplished_text ?? item.reflection.next_step_text}
+                    </p>
+                  )}
+                </div>
+              ))
+            ) : (
+              <p className="px-4 py-4 text-[13px] text-hint">{copy.noSessionsForDay}</p>
+            )}
+          </div>
+        </section>
+      </div>
+    </Sheet>
+  );
+}
+
 export default function FocusPage() {
+  const locale = useAppLocale();
+  const copy = COPY[locale];
   const [startOpen, setStartOpen] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [period, setPeriod] = useState<'week' | 'month'>('week');
   const state = useFocusState();
   const summary = useFocusSummary(period);
   const active = state.data?.active_session ?? null;
   const today = state.data?.today;
+  const daily = summary.data?.daily_activity ?? [];
+  const activeDate = selectedDate ?? [...daily].reverse().find((item) => item.focus_seconds > 0)?.date ?? null;
 
   return (
     <Stagger className={!active ? 'pb-24' : ''}>
@@ -716,54 +1018,57 @@ export default function FocusPage() {
         <SkeletonList count={4} lines={2} />
       ) : active ? (
         <Rise>
-          <ActiveSessionCard session={active} />
+          <ActiveSessionCard session={active} locale={locale} />
         </Rise>
       ) : (
         <Rise>
-          <EmptyFocusCard onStart={() => setStartOpen(true)} onLog={() => setLogOpen(true)} />
+          <EmptyFocusCard onStart={() => setStartOpen(true)} onLog={() => setLogOpen(true)} locale={locale} />
         </Rise>
       )}
 
       <Rise>
         <div className="mt-4 grid grid-cols-3 gap-2.5">
           <Card className="px-3 py-3 text-center" strong>
-            <p className="tnum text-[16px] font-semibold text-ink">{secondsLabel(today?.focus_seconds ?? 0)}</p>
-            <p className="mt-0.5 text-[11.5px] text-hint">сегодня</p>
+            <p className="tnum text-[16px] font-semibold text-ink">{secondsLabel(today?.focus_seconds ?? 0, locale)}</p>
+            <p className="mt-0.5 text-[11.5px] text-hint">{copy.today}</p>
           </Card>
           <Card className="px-3 py-3 text-center" strong>
             <p className="tnum text-[16px] font-semibold text-ink">{today?.completed_sessions ?? 0}</p>
-            <p className="mt-0.5 text-[11.5px] text-hint">сессий</p>
+            <p className="mt-0.5 text-[11.5px] text-hint">{copy.countSessions}</p>
           </Card>
           <Card className="px-3 py-3 text-center" strong>
             <p className="tnum text-[16px] font-semibold text-ink">{today?.streak_days ?? 0}</p>
-            <p className="mt-0.5 text-[11.5px] text-hint">стрик</p>
+            <p className="mt-0.5 text-[11.5px] text-hint">{copy.streak}</p>
           </Card>
         </div>
       </Rise>
 
       <Rise>
         <SectionHeader
-          title="Аналитика"
+          title={copy.analytics}
           action={
             <div className="flex gap-1.5">
-              <Chip label="Неделя" active={period === 'week'} onClick={() => setPeriod('week')} />
-              <Chip label="Месяц" active={period === 'month'} onClick={() => setPeriod('month')} />
+              <Chip label={copy.week} active={period === 'week'} onClick={() => setPeriod('week')} />
+              <Chip label={copy.month} active={period === 'month'} onClick={() => setPeriod('month')} />
             </div>
           }
         />
         <Card className="p-4" strong>
           <div className="flex items-start justify-between gap-4">
             <div>
-              <p className="tnum text-[25px] font-semibold text-ink">{secondsLabel(summary.data?.total_focus_seconds ?? 0)}</p>
-              <p className="text-[12.5px] text-hint">{period === 'week' ? 'за неделю' : 'за месяц'}</p>
+              <p className="tnum text-[25px] font-semibold text-ink">{secondsLabel(summary.data?.total_focus_seconds ?? 0, locale)}</p>
+              <p className="text-[12.5px] text-hint">{period === 'week' ? copy.forWeek : copy.forMonth}</p>
             </div>
             <div className="text-right text-[12.5px] text-hint">
-              <p><span className="tnum font-semibold text-ink">{summary.data?.total_sessions ?? 0}</span> сессий</p>
-              <p><span className="tnum font-semibold text-ink">{summary.data?.average_focus_score ?? '—'}</span> фокус</p>
+              <p><span className="tnum font-semibold text-ink">{summary.data?.total_sessions ?? 0}</span> {copy.countSessions}</p>
+              <p><span className="tnum font-semibold text-ink">{summary.data?.average_focus_score ?? '—'}</span> {copy.score.toLowerCase()}</p>
             </div>
           </div>
           <div className="mt-4">
-            <ActivityStrip items={summary.data?.daily_activity ?? []} />
+            <ActivityStrip items={daily} locale={locale} selectedDate={activeDate} onSelectDate={(date) => {
+              setSelectedDate(date);
+              setHistoryOpen(true);
+            }} />
           </div>
           {summary.data?.project_breakdown.length ? (
             <div className="mt-4 divide-y divide-hairline">
@@ -773,31 +1078,51 @@ export default function FocusPage() {
                     <CircleDot size={14} className="text-accent-text" />
                     {item.project}
                   </span>
-                  <span className="tnum text-[13px] text-hint">{secondsLabel(item.focus_seconds)}</span>
+                  <span className="tnum text-[13px] text-hint">{secondsLabel(item.focus_seconds, locale)}</span>
                 </div>
               ))}
             </div>
           ) : (
-            <p className="mt-4 text-[13px] text-hint">Проекты появятся после завершенных сессий.</p>
+            <p className="mt-4 text-[13px] text-hint">{copy.projectsEmpty}</p>
           )}
         </Card>
       </Rise>
 
       <Rise>
-        <SectionHeader title="История" action={<BarChart3 size={16} className="text-hint" />} />
+        <SectionHeader
+          title={copy.history}
+          action={
+            <button
+              type="button"
+              onClick={() => setHistoryOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-full border border-hairline px-3 py-1.5 text-[12.5px] font-medium text-ink"
+            >
+              <BarChart3 size={14} className="text-hint" />
+              {copy.details}
+            </button>
+          }
+        />
         <Card className="divide-y divide-hairline overflow-hidden !p-0" strong>
           {(state.data?.recent_sessions ?? []).length > 0 ? (
             state.data?.recent_sessions.map((item) => (
-              <div key={item.id} className="flex items-center justify-between gap-3 px-4 py-3">
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => {
+                  setSelectedDate(sessionDateKey(item));
+                  setHistoryOpen(true);
+                }}
+                className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+              >
                 <div className="min-w-0">
                   <p className="truncate text-[14px] font-medium text-ink">{item.intention}</p>
-                  <p className="truncate text-[12.5px] text-hint">{item.project ?? 'Без проекта'}{item.task ? ` · ${item.task.title}` : ''}</p>
+                  <p className="truncate text-[12.5px] text-hint">{item.project ?? copy.noProject}{item.task ? ` · ${item.task.title}` : ''}</p>
                 </div>
-                <span className="tnum shrink-0 text-[13px] font-medium text-ink">{secondsLabel(item.duration_seconds ?? 0)}</span>
-              </div>
+                <span className="tnum shrink-0 text-[13px] font-medium text-ink">{secondsLabel(item.duration_seconds ?? 0, locale)}</span>
+              </button>
             ))
           ) : (
-            <p className="px-4 py-4 text-[13px] text-hint">Завершенные сессии появятся здесь.</p>
+            <p className="px-4 py-4 text-[13px] text-hint">{copy.historyEmpty}</p>
           )}
         </Card>
       </Rise>
@@ -805,16 +1130,23 @@ export default function FocusPage() {
       {!active && (
         <div className="fixed bottom-[calc(env(safe-area-inset-bottom)+88px)] left-1/2 z-40 grid w-[calc(100%-32px)] max-w-[420px] -translate-x-1/2 grid-cols-2 gap-2">
           <Button fullWidth onClick={() => setStartOpen(true)} icon={<Timer size={16} />}>
-            Таймер
+            {copy.session}
           </Button>
           <Button fullWidth variant="secondary" onClick={() => setLogOpen(true)} icon={<ListChecks size={16} />}>
-            Лог
+            {copy.logShort}
           </Button>
         </div>
       )}
 
-      <StartSheet open={startOpen} onClose={() => setStartOpen(false)} />
-      <ManualLogSheet open={logOpen} onClose={() => setLogOpen(false)} />
+      <StartSheet open={startOpen} onClose={() => setStartOpen(false)} locale={locale} />
+      <ManualLogSheet open={logOpen} onClose={() => setLogOpen(false)} locale={locale} />
+      <HistoryDetailsSheet
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        locale={locale}
+        summary={summary.data}
+        sessions={state.data?.recent_sessions ?? []}
+      />
     </Stagger>
   );
 }
