@@ -2,9 +2,14 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   BarChart3,
   Check,
+  ChevronRight,
   CircleDot,
   ClipboardPenLine,
+  Clock3,
+  Flame,
+  Folder,
   ListChecks,
+  Pencil,
   Plus,
   Search,
   Timer,
@@ -50,6 +55,10 @@ const COPY = {
     searchTasks: 'Search tasks',
     chooseTask: 'Choose task',
     taskPicker: 'Choose task',
+    projectPicker: 'Choose project',
+    chooseProject: 'Choose project',
+    searchProjects: 'Search projects',
+    customProject: 'Use custom project',
     nothingFound: 'Nothing found.',
     duration: 'Duration',
     customDuration: 'Custom duration',
@@ -66,6 +75,11 @@ const COPY = {
     whatWork: 'What will you work on?',
     optionalProject: 'Optional',
     active: 'session running',
+    focusModeOn: 'Focus mode is on',
+    detailsHistory: 'Details & History',
+    detailsHistoryBody: 'See analytics, projects and past sessions',
+    editSession: 'Review session',
+    finishSession: 'Finish session',
     overtime: 'over plan',
     remaining: 'left',
     plan: 'plan',
@@ -99,6 +113,11 @@ const COPY = {
     recentSessions: 'Recent sessions',
     noSessionsForDay: 'No sessions for this day.',
     startAt: 'Start',
+    date: 'Date',
+    time: 'Time',
+    todayChip: 'Today',
+    yesterdayChip: 'Yesterday',
+    startEndPreview: 'Start — End',
     durationMinutes: 'Duration, minutes',
     whatDid: 'What did you do?',
     logIntentPlaceholder: 'What did you do?',
@@ -120,6 +139,10 @@ const COPY = {
     searchTasks: 'Поиск задач',
     chooseTask: 'Выбрать задачу',
     taskPicker: 'Выбор задачи',
+    projectPicker: 'Выбор проекта',
+    chooseProject: 'Выбрать проект',
+    searchProjects: 'Поиск проектов',
+    customProject: 'Свой проект',
     nothingFound: 'Ничего не найдено.',
     duration: 'Длительность',
     customDuration: 'Своя длительность',
@@ -136,6 +159,11 @@ const COPY = {
     whatWork: 'Над чем будешь работать?',
     optionalProject: 'Опционально',
     active: 'идет сессия',
+    focusModeOn: 'Фокус-режим включен',
+    detailsHistory: 'Детали и история',
+    detailsHistoryBody: 'Аналитика, проекты и прошлые сессии',
+    editSession: 'Итоги сессии',
+    finishSession: 'Завершить сессию',
     overtime: 'сверх плана',
     remaining: 'осталось',
     plan: 'план',
@@ -169,6 +197,11 @@ const COPY = {
     recentSessions: 'Последние сессии',
     noSessionsForDay: 'В этот день сессий нет.',
     startAt: 'Начало',
+    date: 'Дата',
+    time: 'Время',
+    todayChip: 'Сегодня',
+    yesterdayChip: 'Вчера',
+    startEndPreview: 'Старт — финиш',
     durationMinutes: 'Длительность, минут',
     whatDid: 'Что сделал?',
     logIntentPlaceholder: 'Что делал?',
@@ -205,14 +238,35 @@ function clampMinutes(value: string | number): number {
   return Math.min(240, Math.max(1, parsed));
 }
 
-function datetimeInputValue(date: Date): string {
+function dateInputValue(date: Date): string {
   const offsetMs = date.getTimezoneOffset() * 60_000;
-  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 10);
 }
 
-function datetimeInputToIso(value: string): string {
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? new Date().toISOString() : parsed.toISOString();
+function timeInputValue(date: Date): string {
+  const offsetMs = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(11, 16);
+}
+
+function localPartsToDate(date: string, time: string): Date {
+  const parsed = new Date(`${date}T${time || '00:00'}`);
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+}
+
+function localPartsToIso(date: string, time: string): string {
+  return localPartsToDate(date, time).toISOString();
+}
+
+function dayValue(offsetDays: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() + offsetDays);
+  return dateInputValue(date);
+}
+
+function previewStartEnd(date: string, time: string, duration: number): string {
+  const start = localPartsToDate(date, time);
+  const end = new Date(start.getTime() + duration * 60_000);
+  return `${formatTime(start.toISOString())} — ${formatTime(end.toISOString())}`;
 }
 
 function useNow(intervalMs = 1000): number {
@@ -271,6 +325,24 @@ function matchesTask(task: Task, query: string): boolean {
   return `${task.title} ${task.project ?? ''} ${task.tags.join(' ')}`.toLowerCase().includes(q);
 }
 
+function groupTasks(tasks: Task[], copy: (typeof COPY)[AppLocale]): Array<{ project: string; tasks: Task[] }> {
+  const groups = new Map<string, Task[]>();
+  for (const task of tasks) {
+    const project = task.project?.trim() || copy.noProject;
+    groups.set(project, [...(groups.get(project) ?? []), task]);
+  }
+  return [...groups.entries()].map(([project, items]) => ({ project, tasks: items }));
+}
+
+function projectOptions(tasks: Task[], summaryProjects: string[]): string[] {
+  const seen = new Set<string>();
+  for (const value of [...tasks.map((task) => task.project), ...summaryProjects]) {
+    const project = value?.trim();
+    if (project) seen.add(project);
+  }
+  return [...seen].sort((a, b) => a.localeCompare(b, 'ru'));
+}
+
 interface TaskPickerSheetProps {
   open: boolean;
   onClose: () => void;
@@ -284,6 +356,7 @@ function TaskPickerSheet({ open, onClose, tasks, selectedTaskId, locale, onSelec
   const copy = COPY[locale];
   const [query, setQuery] = useState('');
   const visible = useMemo(() => tasks.filter((task) => matchesTask(task, query)), [query, tasks]);
+  const grouped = useMemo(() => groupTasks(visible, copy), [copy, visible]);
 
   useEffect(() => {
     if (open) setQuery('');
@@ -297,7 +370,7 @@ function TaskPickerSheet({ open, onClose, tasks, selectedTaskId, locale, onSelec
   return (
     <Sheet open={open} onClose={onClose} title={copy.taskPicker}>
       <div className="space-y-3">
-        <label>
+        <label className="sticky top-[74px] z-20 block bg-[var(--surface-strong)] pb-2">
           <FieldLabel>{copy.search}</FieldLabel>
           <div className="relative">
             <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-hint" />
@@ -309,7 +382,7 @@ function TaskPickerSheet({ open, onClose, tasks, selectedTaskId, locale, onSelec
             />
           </div>
         </label>
-        <div className="overflow-hidden rounded-2xl border border-hairline">
+        <div className="max-h-[56dvh] overflow-y-auto rounded-2xl border border-hairline">
           <button
             type="button"
             onClick={() => choose(null)}
@@ -321,25 +394,118 @@ function TaskPickerSheet({ open, onClose, tasks, selectedTaskId, locale, onSelec
             </span>
             {selectedTaskId === '' && <Check size={16} className="text-accent-text" />}
           </button>
-          {visible.map((task) => (
-            <button
-              key={task.id}
-              type="button"
-              onClick={() => choose(task)}
-              className={`flex w-full items-center justify-between border-t border-hairline px-4 py-3 text-left ${
-                selectedTaskId === task.id ? 'bg-[var(--accent-soft)]' : 'bg-transparent'
-              }`}
-            >
-              <span className="min-w-0">
-                <span className="block truncate text-[14.5px] font-medium text-ink">{task.title}</span>
-                <span className="block truncate text-[12.5px] text-hint">
-                  {task.project ?? copy.noProject} · {task.status === 'active' ? copy.taskStatusActive : copy.taskStatusInbox}
-                </span>
-              </span>
-              {selectedTaskId === task.id && <Check size={16} className="shrink-0 text-accent-text" />}
-            </button>
+          {grouped.map((group) => (
+            <div key={group.project} className="border-t border-hairline">
+              <div className="sticky top-0 z-10 bg-[var(--surface-strong)] px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-hint">
+                {group.project}
+              </div>
+              {group.tasks.map((task) => (
+                <button
+                  key={task.id}
+                  type="button"
+                  onClick={() => choose(task)}
+                  className={`flex w-full items-center justify-between border-t border-hairline px-4 py-3 text-left first:border-t-0 ${
+                    selectedTaskId === task.id ? 'bg-[var(--accent-soft)]' : 'bg-transparent'
+                  }`}
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-[14.5px] font-medium text-ink">{task.title}</span>
+                    <span className="block truncate text-[12.5px] text-hint">
+                      {task.tags.length ? `${task.tags.join(', ')} · ` : ''}{task.status === 'active' ? copy.taskStatusActive : copy.taskStatusInbox}
+                    </span>
+                  </span>
+                  {selectedTaskId === task.id && <Check size={16} className="shrink-0 text-accent-text" />}
+                </button>
+              ))}
+            </div>
           ))}
           {visible.length === 0 && <p className="border-t border-hairline px-4 py-4 text-[13px] text-hint">{copy.nothingFound}</p>}
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+interface ProjectPickerSheetProps {
+  open: boolean;
+  onClose: () => void;
+  projects: string[];
+  selectedProject: string;
+  locale: AppLocale;
+  onSelect: (project: string) => void;
+}
+
+function ProjectPickerSheet({ open, onClose, projects, selectedProject, locale, onSelect }: ProjectPickerSheetProps) {
+  const copy = COPY[locale];
+  const [query, setQuery] = useState('');
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return projects;
+    return projects.filter((project) => project.toLowerCase().includes(q));
+  }, [projects, query]);
+  const custom = query.trim();
+  const canUseCustom = custom.length > 0 && !projects.some((project) => project.toLowerCase() === custom.toLowerCase());
+
+  useEffect(() => {
+    if (open) setQuery('');
+  }, [open]);
+
+  const choose = (project: string) => {
+    onSelect(project);
+    onClose();
+  };
+
+  return (
+    <Sheet open={open} onClose={onClose} title={copy.projectPicker}>
+      <div className="space-y-3">
+        <label className="sticky top-[74px] z-20 block bg-[var(--surface-strong)] pb-2">
+          <FieldLabel>{copy.search}</FieldLabel>
+          <div className="relative">
+            <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-hint" />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={copy.searchProjects}
+              className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] pl-9 pr-3 text-[15px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+            />
+          </div>
+        </label>
+        <div className="max-h-[50dvh] overflow-y-auto rounded-2xl border border-hairline">
+          <button
+            type="button"
+            onClick={() => choose('')}
+            className={`flex w-full items-center justify-between px-4 py-3 text-left ${selectedProject.trim() === '' ? 'bg-[var(--accent-soft)]' : 'bg-transparent'}`}
+          >
+            <span className="text-[14.5px] font-medium text-ink">{copy.noProject}</span>
+            {selectedProject.trim() === '' && <Check size={16} className="text-accent-text" />}
+          </button>
+          {visible.map((project) => (
+            <button
+              key={project}
+              type="button"
+              onClick={() => choose(project)}
+              className={`flex w-full items-center justify-between border-t border-hairline px-4 py-3 text-left ${
+                selectedProject === project ? 'bg-[var(--accent-soft)]' : 'bg-transparent'
+              }`}
+            >
+              <span className="text-[14.5px] font-medium text-ink">{project}</span>
+              {selectedProject === project && <Check size={16} className="text-accent-text" />}
+            </button>
+          ))}
+          {canUseCustom && (
+            <button
+              type="button"
+              onClick={() => choose(custom)}
+              className="flex w-full items-center justify-between border-t border-hairline px-4 py-3 text-left"
+            >
+              <span>
+                <span className="block text-[14.5px] font-medium text-ink">{custom}</span>
+                <span className="block text-[12.5px] text-hint">{copy.customProject}</span>
+              </span>
+              <Plus size={16} className="text-accent-text" />
+            </button>
+          )}
+          {visible.length === 0 && !canUseCustom && <p className="border-t border-hairline px-4 py-4 text-[13px] text-hint">{copy.nothingFound}</p>}
         </div>
       </div>
     </Sheet>
@@ -393,47 +559,30 @@ function DurationControl({
   );
 }
 
-function MinuteInput({ value, onChange, label }: { value: number; onChange: (value: number) => void; label: string }) {
-  const [draft, setDraft] = useState(String(value));
-
-  useEffect(() => {
-    setDraft(String(value));
-  }, [value]);
-
-  const update = (next: string) => {
-    setDraft(next);
-    if (next.trim() !== '') onChange(clampMinutes(next));
-  };
-
-  return (
-    <label>
-      <FieldLabel>{label}</FieldLabel>
-      <input
-        aria-label={label}
-        type="number"
-        min={1}
-        max={240}
-        value={draft}
-        onBlur={() => setDraft(String(clampMinutes(draft)))}
-        onChange={(event) => update(event.target.value)}
-        className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3.5 text-[15px] text-ink outline-none transition-shadow focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
-      />
-    </label>
-  );
-}
-
-function StartSheet({ open, onClose, locale }: { open: boolean; onClose: () => void; locale: AppLocale }) {
+function StartSheet({
+  open,
+  onClose,
+  locale,
+  summaryProjects,
+}: {
+  open: boolean;
+  onClose: () => void;
+  locale: AppLocale;
+  summaryProjects: string[];
+}) {
   const copy = COPY[locale];
   const tasksQuery = useTasks('all');
   const start = useStartFocusSession();
   const { show } = useToast();
   const [taskPickerOpen, setTaskPickerOpen] = useState(false);
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [intention, setIntention] = useState('');
   const [duration, setDuration] = useState(DEFAULT_DURATION);
   const [taskId, setTaskId] = useState('');
   const [project, setProject] = useState('');
 
   const tasks = useMemo(() => activeTasks(tasksQuery.data?.items ?? []), [tasksQuery.data]);
+  const projects = useMemo(() => projectOptions(tasks, summaryProjects), [summaryProjects, tasks]);
   const selectedTask = tasks.find((task) => task.id === taskId) ?? null;
 
   useEffect(() => {
@@ -484,10 +633,17 @@ function StartSheet({ open, onClose, locale }: { open: boolean; onClose: () => v
               <span className="text-[12px] text-hint">{copy.chooseTask}</span>
             </button>
           </div>
-          <label>
+          <div>
             <FieldLabel>{copy.project}</FieldLabel>
-            <Input value={project} onChange={setProject} placeholder="Lumi" />
-          </label>
+            <button
+              type="button"
+              onClick={() => setProjectPickerOpen(true)}
+              className="flex h-11 w-full items-center justify-between rounded-xl border border-hairline bg-[var(--surface-strong)] px-3.5 text-left text-[15px] text-ink"
+            >
+              <span className="min-w-0 truncate">{project.trim() || copy.noProject}</span>
+              <span className="text-[12px] text-hint">{copy.chooseProject}</span>
+            </button>
+          </div>
           <Button fullWidth busy={start.isPending} onClick={submit} icon={<Timer size={16} />}>
             {copy.startCta} {duration} {locale === 'en' ? 'min' : 'мин'}
           </Button>
@@ -503,6 +659,14 @@ function StartSheet({ open, onClose, locale }: { open: boolean; onClose: () => v
           setTaskId(task?.id ?? '');
           setProject(task?.project ?? project);
         }}
+      />
+      <ProjectPickerSheet
+        open={projectPickerOpen}
+        onClose={() => setProjectPickerOpen(false)}
+        projects={projects}
+        selectedProject={project}
+        locale={locale}
+        onSelect={setProject}
       />
     </>
   );
@@ -610,12 +774,23 @@ function ReflectionSheet({
   );
 }
 
-function ManualLogSheet({ open, onClose, locale }: { open: boolean; onClose: () => void; locale: AppLocale }) {
+function ManualLogSheet({
+  open,
+  onClose,
+  locale,
+  summaryProjects,
+}: {
+  open: boolean;
+  onClose: () => void;
+  locale: AppLocale;
+  summaryProjects: string[];
+}) {
   const copy = COPY[locale];
   const tasksQuery = useTasks('all');
   const logFocus = useLogFocusSession();
   const { show } = useToast();
   const [taskPickerOpen, setTaskPickerOpen] = useState(false);
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [intention, setIntention] = useState('');
   const [duration, setDuration] = useState(DEFAULT_DURATION);
   const [taskId, setTaskId] = useState('');
@@ -624,10 +799,17 @@ function ManualLogSheet({ open, onClose, locale }: { open: boolean; onClose: () 
   const [distraction, setDistraction] = useState('');
   const [nextStep, setNextStep] = useState('');
   const [score, setScore] = useState(4);
-  const [loggedAt, setLoggedAt] = useState(() => datetimeInputValue(new Date()));
+  const [logDate, setLogDate] = useState(() => dateInputValue(new Date()));
+  const [logTime, setLogTime] = useState(() => timeInputValue(new Date()));
 
   const tasks = useMemo(() => activeTasks(tasksQuery.data?.items ?? []), [tasksQuery.data]);
+  const projects = useMemo(() => projectOptions(tasks, summaryProjects), [summaryProjects, tasks]);
   const selectedTask = tasks.find((task) => task.id === taskId) ?? null;
+  const preview = useMemo(() => previewStartEnd(logDate, logTime, duration), [duration, logDate, logTime]);
+
+  useEffect(() => {
+    if (selectedTask?.project) setProject(selectedTask.project);
+  }, [selectedTask]);
 
   const submit = () => {
     const text = intention.trim() || selectedTask?.title || project.trim() || copy.defaultIntention;
@@ -637,7 +819,7 @@ function ManualLogSheet({ open, onClose, locale }: { open: boolean; onClose: () 
         task_id: taskId || null,
         project: project.trim() || selectedTask?.project || null,
         intention: text,
-        logged_at: datetimeInputToIso(loggedAt),
+        logged_at: localPartsToIso(logDate, logTime),
         duration_minutes: duration,
         accomplished_text: accomplished.trim() || null,
         distraction_text: distraction.trim() || null,
@@ -654,7 +836,8 @@ function ManualLogSheet({ open, onClose, locale }: { open: boolean; onClose: () 
           setDistraction('');
           setNextStep('');
           setScore(4);
-          setLoggedAt(datetimeInputValue(new Date()));
+          setLogDate(dateInputValue(new Date()));
+          setLogTime(timeInputValue(new Date()));
           onClose();
         },
         onError: () => show(copy.logError, 'error'),
@@ -670,17 +853,39 @@ function ManualLogSheet({ open, onClose, locale }: { open: boolean; onClose: () 
             <FieldLabel>{copy.intention}</FieldLabel>
             <Input value={intention} onChange={setIntention} placeholder={copy.logIntentPlaceholder} />
           </label>
-          <label>
+          <div className="space-y-3">
             <FieldLabel>{copy.startAt}</FieldLabel>
-            <input
-              aria-label={copy.startAt}
-              type="datetime-local"
-              value={loggedAt}
-              onChange={(event) => setLoggedAt(event.target.value)}
-              className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3.5 text-[15px] text-ink outline-none transition-shadow focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
-            />
-          </label>
-          <MinuteInput value={duration} onChange={setDuration} label={copy.durationMinutes} />
+            <div className="flex gap-2">
+              <Chip label={copy.todayChip} active={logDate === dayValue(0)} onClick={() => setLogDate(dayValue(0))} />
+              <Chip label={copy.yesterdayChip} active={logDate === dayValue(-1)} onClick={() => setLogDate(dayValue(-1))} />
+            </div>
+            <div className="grid grid-cols-2 gap-2.5">
+              <label>
+                <span className="sr-only">{copy.date}</span>
+                <input
+                  aria-label={copy.date}
+                  type="date"
+                  value={logDate}
+                  onChange={(event) => setLogDate(event.target.value)}
+                  className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3.5 text-[15px] text-ink outline-none transition-shadow focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+                />
+              </label>
+              <label>
+                <span className="sr-only">{copy.time}</span>
+                <input
+                  aria-label={copy.time}
+                  type="time"
+                  value={logTime}
+                  onChange={(event) => setLogTime(event.target.value)}
+                  className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3.5 text-[15px] text-ink outline-none transition-shadow focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+                />
+              </label>
+            </div>
+            <p className="tnum rounded-xl border border-hairline bg-[var(--surface)] px-3 py-2 text-[12.5px] text-hint">
+              {copy.startEndPreview}: <span className="text-ink">{preview}</span>
+            </p>
+          </div>
+          <DurationControl value={duration} onChange={setDuration} label={copy.customDuration} heading={copy.duration} />
           <div>
             <FieldLabel>{copy.task}</FieldLabel>
             <button
@@ -692,10 +897,17 @@ function ManualLogSheet({ open, onClose, locale }: { open: boolean; onClose: () 
               <span className="text-[12px] text-hint">{copy.chooseTask}</span>
             </button>
           </div>
-          <label>
+          <div>
             <FieldLabel>{copy.project}</FieldLabel>
-            <Input value={project} onChange={setProject} placeholder={copy.optionalProject} />
-          </label>
+            <button
+              type="button"
+              onClick={() => setProjectPickerOpen(true)}
+              className="flex h-11 w-full items-center justify-between rounded-xl border border-hairline bg-[var(--surface-strong)] px-3.5 text-left text-[15px] text-ink"
+            >
+              <span className="min-w-0 truncate">{project.trim() || copy.noProject}</span>
+              <span className="text-[12px] text-hint">{copy.chooseProject}</span>
+            </button>
+          </div>
           <label>
             <FieldLabel>{copy.whatDid}</FieldLabel>
             <Textarea value={accomplished} onChange={setAccomplished} rows={3} placeholder={copy.donePlaceholder} />
@@ -725,60 +937,59 @@ function ManualLogSheet({ open, onClose, locale }: { open: boolean; onClose: () 
           setProject(task?.project ?? project);
         }}
       />
+      <ProjectPickerSheet
+        open={projectPickerOpen}
+        onClose={() => setProjectPickerOpen(false)}
+        projects={projects}
+        selectedProject={project}
+        locale={locale}
+        onSelect={setProject}
+      />
     </>
   );
 }
 
-function FloatingDial({ session, now, locale }: { session: FocusSession; now: number; locale: AppLocale }) {
+function BreathingOrbTimer({ session, now, locale }: { session: FocusSession; now: number; locale: AppLocale }) {
   const copy = COPY[locale];
   const started = new Date(session.started_at).getTime();
   const target = new Date(session.target_end_at).getTime();
-  const { total, remaining, overtime, progress } = getDialMetrics({ started, target, now });
-  const radius = 103;
-  const circumference = 2 * Math.PI * radius;
-  const arcLength = circumference * 0.82;
-  const gap = circumference - arcLength;
-  const visibleArc = overtime > 0 ? arcLength : Math.max(0, arcLength * (1 - progress));
-  const arcStart = Math.PI * 0.59;
-  const arcSpan = Math.PI * 1.64;
-  const beadAngle = overtime > 0 ? arcStart + arcSpan : arcStart + arcSpan * (1 - progress);
-  const beadX = 130 + radius * Math.cos(beadAngle);
-  const beadY = 130 + radius * Math.sin(beadAngle);
+  const { total, remaining, overtime } = getDialMetrics({ started, target, now });
+  const over = overtime > 0;
+  const orbStyle = over
+    ? {
+        background:
+          'radial-gradient(circle at 50% 38%, rgba(114, 255, 190, 0.42) 0%, rgba(42, 142, 111, 0.26) 45%, rgba(8, 31, 28, 0.68) 72%, rgba(4, 12, 18, 0.22) 100%)',
+        boxShadow:
+          '0 0 46px rgba(76, 216, 158, 0.34), inset 0 0 56px rgba(147, 255, 208, 0.2), inset 0 -24px 54px rgba(31, 129, 105, 0.24)',
+      }
+    : {
+        background:
+          'radial-gradient(circle at 50% 38%, rgba(140, 171, 255, 0.48) 0%, rgba(64, 105, 213, 0.27) 43%, rgba(17, 31, 70, 0.7) 71%, rgba(7, 12, 26, 0.22) 100%)',
+        boxShadow:
+          '0 0 52px rgba(101, 139, 255, 0.42), inset 0 0 64px rgba(148, 176, 255, 0.22), inset 0 -26px 58px rgba(55, 88, 185, 0.28)',
+      };
 
   return (
-    <div className="relative mx-auto mt-5 flex h-[270px] w-[270px] items-center justify-center">
-      <svg aria-label={copy.progressLabel} viewBox="0 0 260 260" className="absolute inset-0 h-full w-full">
-        <circle
-          cx="130"
-          cy="130"
-          r={radius}
-          fill="none"
-          stroke="var(--hairline)"
-          strokeWidth="5"
-          strokeDasharray={`${arcLength} ${gap}`}
-          strokeLinecap="round"
-          transform="rotate(122 130 130)"
-        />
-        <circle
-          cx="130"
-          cy="130"
-          r={radius}
-          fill="none"
-          stroke={overtime > 0 ? 'var(--success)' : 'var(--accent)'}
-          strokeWidth="5"
-          strokeDasharray={`${visibleArc} ${circumference - visibleArc}`}
-          strokeLinecap="round"
-          transform="rotate(122 130 130)"
-          className="drop-shadow-[0_0_10px_rgba(46,99,231,0.22)]"
-        />
-        <circle cx={beadX} cy={beadY} r="5.2" fill={overtime > 0 ? 'var(--success)' : 'var(--accent)'} />
-      </svg>
+    <div
+      aria-label={copy.progressLabel}
+      className="relative mx-auto mt-5 flex aspect-square w-[min(64vw,286px)] max-w-[286px] items-center justify-center rounded-full"
+      style={orbStyle}
+    >
+      <div
+        aria-hidden
+        className="absolute inset-0 rounded-full border border-white/10"
+        style={{ boxShadow: 'inset 0 1px 18px rgba(255,255,255,0.18)' }}
+      />
+      <div aria-hidden className="absolute left-[18%] top-[14%] h-[30%] w-[44%] rounded-full bg-white/10 blur-2xl" />
+      <div aria-hidden className="absolute inset-[-7%] rounded-full bg-[radial-gradient(circle,rgba(105,139,255,0.20),transparent_68%)] blur-xl" />
       <div className="text-center">
-        <p className={`tnum text-[48px] font-semibold leading-none tracking-normal ${overtime > 0 ? 'text-success' : 'text-ink'}`}>
+        <p className={`tnum text-[clamp(52px,15vw,78px)] font-semibold leading-none tracking-normal ${overtime > 0 ? 'text-success' : 'text-ink'}`}>
           {overtime > 0 ? `+${timerLabel(overtime)}` : timerLabel(remaining)}
         </p>
-        <p className="mt-2 text-[12.5px] font-medium text-hint">{overtime > 0 ? copy.overtime : copy.remaining}</p>
-        <p className="tnum mt-1 text-[12px] text-hint">{secondsLabel(total, locale)} {copy.plan}</p>
+        <p className="mt-3 text-[14px] font-medium text-hint">
+          {overtime > 0 ? copy.overtime : copy.remaining} <span className="text-hint">·</span>{' '}
+          <span className={over ? 'text-success' : 'text-accent-text'}>{secondsLabel(total, locale)} {copy.plan}</span>
+        </p>
       </div>
     </div>
   );
@@ -802,11 +1013,12 @@ function ActiveSessionCard({ session, locale }: { session: FocusSession; locale:
 
   return (
     <>
-      <Card className="relative overflow-hidden px-5 py-5">
+      <Card className="relative overflow-hidden px-4 py-4 sm:px-5 sm:py-5">
         <div aria-hidden className="dawn-glow opacity-50" />
         <div className="relative">
           <div className="flex items-center justify-between gap-3">
-            <span className="rounded-full bg-[var(--accent-soft)] px-3 py-1 text-[12px] font-medium text-accent-text">
+            <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-hairline bg-[var(--accent-soft)] px-3 py-1 text-[12px] font-medium text-accent-text">
+              <Folder size={14} />
               {session.project ?? copy.noProject}
             </span>
             <span className={`inline-flex items-center gap-1.5 text-[12px] font-medium ${overtime ? 'text-success' : 'text-hint'}`}>
@@ -814,17 +1026,37 @@ function ActiveSessionCard({ session, locale }: { session: FocusSession; locale:
               {overtime ? copy.overtime : copy.active}
             </span>
           </div>
-          <h2 className="mt-5 text-[24px] font-semibold leading-tight tracking-normal text-ink">{session.intention}</h2>
-          <FloatingDial session={session} now={now} locale={locale} />
-          <p className="tnum text-center text-[12.5px] text-hint">
-            {formatTime(session.started_at)} — {formatTime(session.target_end_at)}
-            {session.task ? ` · ${session.task.title}` : ''}
+          <BreathingOrbTimer session={session} now={now} locale={locale} />
+          <p className={`mt-5 flex items-center justify-center gap-2 text-[14px] font-medium ${overtime ? 'text-success' : 'text-accent-text'}`}>
+            <CircleDot size={17} />
+            {overtime ? copy.overtime : copy.focusModeOn}
           </p>
-          <div className="mt-5 grid grid-cols-2 gap-2.5">
-            <Button onClick={() => setReflectionOpen(true)} icon={<Check size={16} />}>
-              {copy.finish}
+          <p className="tnum mt-2 text-center text-[13px] text-hint">
+            {formatTime(session.started_at)} — {formatTime(session.target_end_at)}
+          </p>
+          <div className="mt-5 border-t border-hairline pt-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="truncate text-[20px] font-semibold leading-tight tracking-normal text-ink">{session.intention}</h2>
+                <p className="mt-1 truncate text-[13px] text-hint">
+                  {session.task?.title ?? session.project ?? copy.session}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReflectionOpen(true)}
+                aria-label={copy.editSession}
+                className="flex h-11 w-16 shrink-0 items-center justify-center rounded-full border border-hairline text-hint"
+              >
+                <Pencil size={18} />
+              </button>
+            </div>
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            <Button onClick={() => setReflectionOpen(true)} icon={<Check size={16} />} className="min-w-0">
+              {copy.finishSession}
             </Button>
-            <Button variant="secondary" busy={abandon.isPending} onClick={() => abandon.mutate(session.id)} icon={<X size={16} />}>
+            <Button variant="ghost" busy={abandon.isPending} onClick={() => abandon.mutate(session.id)} icon={<X size={16} />} className="min-w-0">
               {copy.cancel}
             </Button>
           </div>
@@ -1011,9 +1243,10 @@ export default function FocusPage() {
   const today = state.data?.today;
   const daily = summary.data?.daily_activity ?? [];
   const activeDate = selectedDate ?? [...daily].reverse().find((item) => item.focus_seconds > 0)?.date ?? null;
+  const summaryProjects = useMemo(() => summary.data?.project_breakdown.map((item) => item.project) ?? [], [summary.data]);
 
   return (
-    <Stagger className={!active ? 'pb-24' : ''}>
+    <Stagger className="pb-32">
       {state.isPending ? (
         <SkeletonList count={4} lines={2} />
       ) : active ? (
@@ -1029,21 +1262,45 @@ export default function FocusPage() {
       <Rise>
         <div className="mt-4 grid grid-cols-3 gap-2.5">
           <Card className="px-3 py-3 text-center" strong>
-            <p className="tnum text-[16px] font-semibold text-ink">{secondsLabel(today?.focus_seconds ?? 0, locale)}</p>
-            <p className="mt-0.5 text-[11.5px] text-hint">{copy.today}</p>
+            <Clock3 size={18} className="mx-auto mb-1.5 text-accent-text" />
+            <p className="tnum text-[19px] font-semibold text-ink">{secondsLabel(today?.focus_seconds ?? 0, locale)}</p>
+            <p className="mt-0.5 text-[12px] text-hint">{copy.today}</p>
           </Card>
           <Card className="px-3 py-3 text-center" strong>
-            <p className="tnum text-[16px] font-semibold text-ink">{today?.completed_sessions ?? 0}</p>
-            <p className="mt-0.5 text-[11.5px] text-hint">{copy.countSessions}</p>
+            <BarChart3 size={18} className="mx-auto mb-1.5 text-accent-text" />
+            <p className="tnum text-[19px] font-semibold text-ink">{today?.completed_sessions ?? 0}</p>
+            <p className="mt-0.5 text-[12px] text-hint">{copy.countSessions}</p>
           </Card>
           <Card className="px-3 py-3 text-center" strong>
-            <p className="tnum text-[16px] font-semibold text-ink">{today?.streak_days ?? 0}</p>
-            <p className="mt-0.5 text-[11.5px] text-hint">{copy.streak}</p>
+            <Flame size={18} className="mx-auto mb-1.5 text-accent-text" />
+            <p className="tnum text-[19px] font-semibold text-ink">{today?.streak_days ?? 0}</p>
+            <p className="mt-0.5 text-[12px] text-hint">{copy.streak}</p>
           </Card>
         </div>
       </Rise>
 
-      <Rise>
+      {active ? (
+        <Rise>
+          <button
+            type="button"
+            onClick={() => setHistoryOpen(true)}
+            className="mt-4 flex w-full items-center justify-between rounded-2xl border border-hairline bg-[var(--surface-strong)] px-4 py-4 text-left shadow-card"
+          >
+            <span className="flex min-w-0 items-center gap-3">
+              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-accent-text">
+                <BarChart3 size={23} />
+              </span>
+              <span className="min-w-0">
+                <span className="block text-[16px] font-semibold text-ink">{copy.detailsHistory}</span>
+                <span className="mt-0.5 block truncate text-[13px] text-hint">{copy.detailsHistoryBody}</span>
+              </span>
+            </span>
+            <ChevronRight size={20} className="shrink-0 text-hint" />
+          </button>
+        </Rise>
+      ) : (
+        <>
+          <Rise>
         <SectionHeader
           title={copy.analytics}
           action={
@@ -1086,9 +1343,9 @@ export default function FocusPage() {
             <p className="mt-4 text-[13px] text-hint">{copy.projectsEmpty}</p>
           )}
         </Card>
-      </Rise>
+          </Rise>
 
-      <Rise>
+          <Rise>
         <SectionHeader
           title={copy.history}
           action={
@@ -1125,7 +1382,9 @@ export default function FocusPage() {
             <p className="px-4 py-4 text-[13px] text-hint">{copy.historyEmpty}</p>
           )}
         </Card>
-      </Rise>
+          </Rise>
+        </>
+      )}
 
       {!active && (
         <div className="fixed bottom-[calc(env(safe-area-inset-bottom)+88px)] left-1/2 z-40 grid w-[calc(100%-32px)] max-w-[420px] -translate-x-1/2 grid-cols-2 gap-2">
@@ -1138,8 +1397,8 @@ export default function FocusPage() {
         </div>
       )}
 
-      <StartSheet open={startOpen} onClose={() => setStartOpen(false)} locale={locale} />
-      <ManualLogSheet open={logOpen} onClose={() => setLogOpen(false)} locale={locale} />
+      <StartSheet open={startOpen} onClose={() => setStartOpen(false)} locale={locale} summaryProjects={summaryProjects} />
+      <ManualLogSheet open={logOpen} onClose={() => setLogOpen(false)} locale={locale} summaryProjects={summaryProjects} />
       <HistoryDetailsSheet
         open={historyOpen}
         onClose={() => setHistoryOpen(false)}
