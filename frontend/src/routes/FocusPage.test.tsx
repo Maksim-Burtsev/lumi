@@ -163,7 +163,7 @@ describe('FocusPage', () => {
     expect(metrics.progress).toBeCloseTo(0.02, 3);
   });
 
-  it('starts a task-linked session and shows the floating dial', async () => {
+  it('starts a task-linked session and shows the breathing orb', async () => {
     const user = userEvent.setup();
     vi.spyOn(api, 'getFocusState').mockResolvedValue(EMPTY_STATE);
     vi.spyOn(api, 'getFocusSummary').mockResolvedValue(SUMMARY);
@@ -207,6 +207,7 @@ describe('FocusPage', () => {
     });
     expect(await screen.findByText('Написать черновик спецификации')).toBeInTheDocument();
     expect(screen.getByLabelText('Прогресс сессии')).toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: /прогресс/i })).not.toBeInTheDocument();
   });
 
   it('starts with a custom duration and searchable task picker', async () => {
@@ -259,6 +260,47 @@ describe('FocusPage', () => {
     });
   });
 
+  it('lets project override task project in the start flow', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'getFocusState').mockResolvedValue(EMPTY_STATE);
+    vi.spyOn(api, 'getFocusSummary').mockResolvedValue({
+      ...SUMMARY,
+      project_breakdown: [{ project: 'QA Project', focus_seconds: 39 * 60, session_count: 1 }],
+    });
+    vi.spyOn(api, 'listTasks').mockResolvedValue(TASKS);
+    const start = vi.spyOn(api, 'startFocusSession').mockResolvedValue({
+      session: makeSession({
+        status: 'active',
+        task: TASKS.items[0],
+        project: 'QA Project',
+        started_at: new Date().toISOString(),
+        target_end_at: new Date(Date.now() + 45 * 60_000).toISOString(),
+        ended_at: null,
+        duration_seconds: null,
+      }),
+    });
+
+    renderFocusPage('en');
+
+    await user.click(await screen.findByRole('button', { name: /start session/i }));
+    fireEvent.change(screen.getByLabelText('Intent'), { target: { value: 'Override project' } });
+    await user.click(screen.getByRole('button', { name: /choose task/i }));
+    await user.click(screen.getByText('Focus timer v1'));
+    await user.click(screen.getByRole('button', { name: /choose project/i }));
+    const qaProjectOptions = screen.getAllByText('QA Project');
+    await user.click(qaProjectOptions[qaProjectOptions.length - 1]);
+    await user.click(screen.getByRole('button', { name: /start 45 min/i }));
+
+    await waitFor(() => {
+      expect(start).toHaveBeenCalledWith({
+        task_id: TASKS.items[0].id,
+        project: 'QA Project',
+        intention: 'Override project',
+        planned_minutes: 45,
+      });
+    });
+  });
+
   it('logs a completed focus block without starting an active timer', async () => {
     const user = userEvent.setup();
     vi.spyOn(api, 'getFocusState').mockResolvedValue(EMPTY_STATE);
@@ -289,8 +331,9 @@ describe('FocusPage', () => {
 
     await user.click(await screen.findByRole('button', { name: /залогировать/i }));
     fireEvent.change(screen.getByLabelText('Намерение'), { target: { value: 'Ретро блок' } });
-    fireEvent.change(screen.getByLabelText('Начало'), { target: { value: '2026-06-24T10:00' } });
-    fireEvent.change(screen.getByLabelText('Длительность, минут'), { target: { value: '37' } });
+    fireEvent.change(screen.getByLabelText('Дата'), { target: { value: '2026-06-24' } });
+    fireEvent.change(screen.getByLabelText('Время'), { target: { value: '10:00' } });
+    fireEvent.change(screen.getByLabelText('Своя длительность'), { target: { value: '37' } });
     fireEvent.change(screen.getByLabelText('Что сделал?'), { target: { value: 'Сделал' } });
     await user.click(screen.getByRole('button', { name: /сохранить блок/i }));
 
@@ -307,6 +350,67 @@ describe('FocusPage', () => {
         focus_score: 4,
       });
     });
+  });
+
+  it('renders active focus mode without inline analytics and opens details', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'getFocusState').mockResolvedValue({
+      active_session: makeSession({
+        status: 'active',
+        intention: 'Write product spec',
+        project: 'Lumi',
+        started_at: new Date(Date.now() - 60_000).toISOString(),
+        target_end_at: new Date(Date.now() + 24 * 60_000).toISOString(),
+        ended_at: null,
+        duration_seconds: null,
+      }),
+      today: { focus_seconds: 50 * 60, completed_sessions: 4, streak_days: 3 },
+      recent_sessions: [makeSession({ intention: 'Past block', started_at: '2026-06-24T10:00:00Z' })],
+    });
+    vi.spyOn(api, 'getFocusSummary').mockResolvedValue({
+      period: 'week',
+      total_focus_seconds: 50 * 60,
+      total_sessions: 1,
+      streak_days: 3,
+      average_focus_score: 4,
+      daily_activity: [{ date: '2026-06-24', focus_seconds: 50 * 60, session_count: 1 }],
+      project_breakdown: [{ project: 'Lumi', focus_seconds: 50 * 60, session_count: 1 }],
+      next_steps: [],
+    });
+    vi.spyOn(api, 'listTasks').mockResolvedValue(TASKS);
+
+    renderFocusPage('en');
+
+    expect(await screen.findByText('Focus mode is on')).toBeInTheDocument();
+    expect(screen.getByText('Details & History')).toBeInTheDocument();
+    expect(screen.queryByText('Analytics')).not.toBeInTheDocument();
+    expect(screen.queryByText('History')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /details & history/i }));
+
+    expect(await screen.findByText('Session history')).toBeInTheDocument();
+  });
+
+  it('renders overtime orb state', async () => {
+    vi.spyOn(api, 'getFocusState').mockResolvedValue({
+      active_session: makeSession({
+        status: 'active',
+        intention: 'Overtime session',
+        started_at: new Date(Date.now() - 30 * 60_000).toISOString(),
+        target_end_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+        ended_at: null,
+        duration_seconds: null,
+      }),
+      today: { focus_seconds: 0, completed_sessions: 0, streak_days: 0 },
+      recent_sessions: [],
+    });
+    vi.spyOn(api, 'getFocusSummary').mockResolvedValue(SUMMARY);
+    vi.spyOn(api, 'listTasks').mockResolvedValue(TASKS);
+
+    renderFocusPage('en');
+
+    expect((await screen.findAllByText('over plan')).length).toBeGreaterThan(0);
+    expect(screen.getByLabelText('Session progress')).toHaveTextContent('+');
   });
 
   it('uses the app locale and can start an untitled session', async () => {
