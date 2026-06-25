@@ -332,6 +332,21 @@ export default function TodayPage() {
   const locale = useAppLocale();
   const timeDisplay = useTimeDisplay();
   const copy = TODAY_COPY[locale];
+  const noteCopy = locale === 'en'
+    ? {
+        maxError: `Personal note is limited to ${PRIVATE_NOTE_MAX_CHARS} characters`,
+        deleted: 'Note deleted',
+        deleteFailed: 'Could not delete note',
+        saved: 'Note saved',
+        saveFailed: 'Could not save note',
+      }
+    : {
+        maxError: `Личная заметка — до ${PRIVATE_NOTE_MAX_CHARS} символов`,
+        deleted: 'Заметка удалена',
+        deleteFailed: 'Не удалось удалить заметку',
+        saved: 'Заметка сохранена',
+        saveFailed: 'Не удалось сохранить заметку',
+      };
   const todayQuery = useToday();
   const navigate = useNavigate();
   const { show } = useToast();
@@ -512,7 +527,7 @@ export default function TodayPage() {
   const savePrivateNote = () => {
     if (!selectedTimelineEvent) return;
     if (noteDraft.length > PRIVATE_NOTE_MAX_CHARS) {
-      setNoteError(`Личная заметка — до ${PRIVATE_NOTE_MAX_CHARS} символов`);
+      setNoteError(noteCopy.maxError);
       return;
     }
     const note = noteDraft.trim();
@@ -525,11 +540,11 @@ export default function TodayPage() {
       deletePrivateNote.mutate(selectedTimelineEvent.id, {
         onSuccess: ({ event }) => {
           haptic('success');
-          show('Заметка удалена', 'success');
+          show(noteCopy.deleted, 'success');
           patchSelectedEventNote(event);
           setNoteEditing(false);
         },
-        onError: () => show('Не удалось удалить заметку', 'error'),
+        onError: () => show(noteCopy.deleteFailed, 'error'),
       });
       return;
     }
@@ -538,12 +553,12 @@ export default function TodayPage() {
       {
         onSuccess: ({ event }) => {
           haptic('success');
-          show('Заметка сохранена', 'success');
+          show(noteCopy.saved, 'success');
           patchSelectedEventNote(event);
           setNoteEditing(false);
           setNoteExpanded(false);
         },
-        onError: () => show('Не удалось сохранить заметку', 'error'),
+        onError: () => show(noteCopy.saveFailed, 'error'),
       },
     );
   };
@@ -553,11 +568,11 @@ export default function TodayPage() {
     deletePrivateNote.mutate(selectedTimelineEvent.id, {
       onSuccess: ({ event }) => {
         haptic('success');
-        show('Заметка удалена', 'success');
+        show(noteCopy.deleted, 'success');
         patchSelectedEventNote(event);
         setNoteEditing(false);
       },
-      onError: () => show('Не удалось удалить заметку', 'error'),
+      onError: () => show(noteCopy.deleteFailed, 'error'),
     });
   };
 

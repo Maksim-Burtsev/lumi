@@ -41,6 +41,9 @@ import { SkeletonTimeline } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
 import { addDays, formatDateParam, formatDayLabel, formatRelative, formatTime, formatTimeRange, isSameDay, startOfDay } from '../lib/format';
+import type { AppLocale } from '../lib/i18n';
+import { pickLocaleText } from '../lib/i18n';
+import { useAppLocale } from '../lib/useAppLocale';
 import { useTimeDisplay } from '../lib/useTimeDisplay';
 import { haptic, openExternalLink } from '../telegram/webapp';
 
@@ -242,11 +245,13 @@ function CreateBlockSheet({
   onClose,
   day,
   prefill,
+  locale,
 }: {
   open: boolean;
   onClose: () => void;
   day: Date;
   prefill: SheetPrefill | null;
+  locale: AppLocale;
 }) {
   const [title, setTitle] = useState('');
   const [start, setStart] = useState('10:00');
@@ -259,6 +264,18 @@ function CreateBlockSheet({
   const createEvent = useCreateEvent();
   const { show } = useToast();
   const timeDisplay = useTimeDisplay();
+  const noteCopy = pickLocaleText(locale, {
+    en: {
+      label: 'Personal note (optional)',
+      placeholder: 'Context just for yourself',
+      maxError: `Personal note is limited to ${PRIVATE_NOTE_MAX_CHARS} characters`,
+    },
+    ru: {
+      label: 'Личная заметка (необязательно)',
+      placeholder: 'Контекст только для себя',
+      maxError: `Личная заметка — до ${PRIVATE_NOTE_MAX_CHARS} символов`,
+    },
+  });
 
   // Re-seed fields each time the sheet opens (keyed remount from parent)
   const [seeded, setSeeded] = useState(false);
@@ -295,7 +312,7 @@ function CreateBlockSheet({
       return;
     }
     if (privateNote.length > PRIVATE_NOTE_MAX_CHARS) {
-      setError(`Личная заметка — до ${PRIVATE_NOTE_MAX_CHARS} символов`);
+      setError(noteCopy.maxError);
       return;
     }
     setError(null);
@@ -343,8 +360,8 @@ function CreateBlockSheet({
         <Textarea value={description} onChange={setDescription} rows={2} placeholder="Что нужно сделать в этом блоке" />
       </label>
       <label className="mt-4 block">
-        <FieldLabel>Личная заметка (необязательно)</FieldLabel>
-        <Textarea value={privateNote} onChange={setPrivateNote} rows={3} placeholder="Контекст только для себя" />
+        <FieldLabel>{noteCopy.label}</FieldLabel>
+        <Textarea value={privateNote} onChange={setPrivateNote} rows={3} placeholder={noteCopy.placeholder} />
       </label>
       <label className="mt-4 block">
         <FieldLabel>Место (необязательно)</FieldLabel>
@@ -371,6 +388,23 @@ export default function CalendarPage() {
   const { show } = useToast();
   const reduceMotion = useReducedMotion();
   const timeDisplay = useTimeDisplay();
+  const locale = useAppLocale();
+  const noteCopy = pickLocaleText(locale, {
+    en: {
+      maxError: `Personal note is limited to ${PRIVATE_NOTE_MAX_CHARS} characters`,
+      deleted: 'Note deleted',
+      deleteFailed: 'Could not delete note',
+      saved: 'Note saved',
+      saveFailed: 'Could not save note',
+    },
+    ru: {
+      maxError: `Личная заметка — до ${PRIVATE_NOTE_MAX_CHARS} символов`,
+      deleted: 'Заметка удалена',
+      deleteFailed: 'Не удалось удалить заметку',
+      saved: 'Заметка сохранена',
+      saveFailed: 'Не удалось сохранить заметку',
+    },
+  });
 
   const rangeStart = day.toISOString();
   const rangeEnd = addDays(day, 1).toISOString();
@@ -444,7 +478,7 @@ export default function CalendarPage() {
   const savePrivateNote = () => {
     if (!selectedEvent) return;
     if (noteDraft.length > PRIVATE_NOTE_MAX_CHARS) {
-      setNoteError(`Личная заметка — до ${PRIVATE_NOTE_MAX_CHARS} символов`);
+      setNoteError(noteCopy.maxError);
       return;
     }
     const note = noteDraft.trim();
@@ -457,11 +491,11 @@ export default function CalendarPage() {
       deletePrivateNote.mutate(selectedEvent.id, {
         onSuccess: ({ event }) => {
           haptic('success');
-          show('Заметка удалена', 'success');
+          show(noteCopy.deleted, 'success');
           setSelectedEvent(event);
           setNoteEditing(false);
         },
-        onError: () => show('Не удалось удалить заметку', 'error'),
+        onError: () => show(noteCopy.deleteFailed, 'error'),
       });
       return;
     }
@@ -470,12 +504,12 @@ export default function CalendarPage() {
       {
         onSuccess: ({ event }) => {
           haptic('success');
-          show('Заметка сохранена', 'success');
+          show(noteCopy.saved, 'success');
           setSelectedEvent(event);
           setNoteEditing(false);
           setNoteExpanded(false);
         },
-        onError: () => show('Не удалось сохранить заметку', 'error'),
+        onError: () => show(noteCopy.saveFailed, 'error'),
       },
     );
   };
@@ -485,11 +519,11 @@ export default function CalendarPage() {
     deletePrivateNote.mutate(selectedEvent.id, {
       onSuccess: ({ event }) => {
         haptic('success');
-        show('Заметка удалена', 'success');
+        show(noteCopy.deleted, 'success');
         setSelectedEvent(event);
         setNoteEditing(false);
       },
-      onError: () => show('Не удалось удалить заметку', 'error'),
+      onError: () => show(noteCopy.deleteFailed, 'error'),
     });
   };
 
@@ -798,7 +832,7 @@ export default function CalendarPage() {
         <Plus size={24} />
       </motion.button>
 
-      <CreateBlockSheet open={sheetOpen} onClose={() => setSheetOpen(false)} day={day} prefill={prefill} />
+      <CreateBlockSheet open={sheetOpen} onClose={() => setSheetOpen(false)} day={day} prefill={prefill} locale={locale} />
       <ContactActionSheet
         contact={contactAction}
         onClose={() => setContactAction(null)}

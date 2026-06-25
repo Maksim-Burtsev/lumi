@@ -1,6 +1,8 @@
 import { Pencil, Save, Sparkles, StickyNote, Trash2 } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { Textarea } from '../ui/Field';
+import { useAppLocale } from '../../lib/useAppLocale';
+import { pickLocaleText } from '../../lib/i18n';
 
 export const PRIVATE_NOTE_SUMMARY_THRESHOLD_CHARS = 600;
 export const PRIVATE_NOTE_MAX_CHARS = 4000;
@@ -19,6 +21,10 @@ function normalizedPrivateNoteLength(value: string): number {
 function truncatePrivateNote(value: string, limit = 560): string {
   const normalized = value.replace(/\s+/g, ' ').trim();
   return normalized.length > limit ? `${normalized.slice(0, limit).trimEnd()}...` : normalized;
+}
+
+function stripSummaryPrefix(value: string): string {
+  return value.replace(/^\s*(?:ai\s+summary|summary|резюме)\s*[:—-]\s*/i, '').trim();
 }
 
 export function PrivateNoteSection({
@@ -50,25 +56,54 @@ export function PrivateNoteSection({
   onExpandedChange: (value: boolean) => void;
   onSave: () => void;
 }) {
+  const locale = useAppLocale();
+  const copy = pickLocaleText(locale, {
+    en: {
+      label: 'Personal note',
+      edit: 'Edit personal note',
+      delete: 'Delete personal note',
+      placeholder: 'Context just for yourself',
+      cancel: 'Cancel',
+      save: 'Save',
+      expand: 'Show full note',
+      collapse: 'Collapse',
+      pending: 'Summary is updating',
+      failed: 'Summary failed to update',
+      add: 'Add note',
+    },
+    ru: {
+      label: 'Личная заметка',
+      edit: 'Редактировать личную заметку',
+      delete: 'Удалить личную заметку',
+      placeholder: 'Короткий личный контекст',
+      cancel: 'Отмена',
+      save: 'Сохранить',
+      expand: 'Показать полностью',
+      collapse: 'Свернуть',
+      pending: 'Summary обновляется',
+      failed: 'Summary не обновился',
+      add: 'Добавить заметку',
+    },
+  });
   const note = event.private_note ?? '';
   const hasNote = note.trim().length > 0;
   const isLong = normalizedPrivateNoteLength(note) >= PRIVATE_NOTE_SUMMARY_THRESHOLD_CHARS;
   const hasReadySummary = Boolean(event.private_note_summary_status === 'ready' && event.private_note_summary);
   const showSummary = hasNote && isLong && hasReadySummary && !expanded;
   const showPreview = hasNote && isLong && !hasReadySummary && !expanded;
-  const body = showSummary ? event.private_note_summary! : showPreview ? truncatePrivateNote(note) : note;
+  const body = showSummary ? stripSummaryPrefix(event.private_note_summary!) : showPreview ? truncatePrivateNote(note) : note;
   const canExpand = hasNote && isLong;
 
   return (
     <section className="space-y-3 rounded-xl bg-[var(--secondary-bg)] px-3.5 py-3">
       <div className="flex items-center gap-2">
         <StickyNote size={15} className="shrink-0 text-hint" />
-        <p className="min-w-0 flex-1 text-[13px] font-medium text-hint">Личная заметка</p>
+        <p className="min-w-0 flex-1 text-[13px] font-medium text-hint">{copy.label}</p>
         {!editing && hasNote && (
           <div className="flex shrink-0 gap-1.5">
             <button
               type="button"
-              aria-label="Редактировать личную заметку"
+              aria-label={copy.edit}
               onClick={onEdit}
               className="flex h-8 w-8 items-center justify-center rounded-full text-hint transition active:bg-[var(--surface-strong)]"
             >
@@ -76,7 +111,7 @@ export function PrivateNoteSection({
             </button>
             <button
               type="button"
-              aria-label="Удалить личную заметку"
+              aria-label={copy.delete}
               onClick={onDelete}
               disabled={deleting}
               className="flex h-8 w-8 items-center justify-center rounded-full text-danger transition active:bg-[var(--danger-soft)] disabled:opacity-50"
@@ -89,17 +124,17 @@ export function PrivateNoteSection({
 
       {editing ? (
         <div className="space-y-3">
-          <Textarea value={draft} onChange={onDraftChange} rows={5} placeholder="Короткий личный контекст" />
+          <Textarea value={draft} onChange={onDraftChange} rows={5} placeholder={copy.placeholder} />
           <div className="flex items-center justify-between gap-3">
             <span className={`text-[12px] ${draft.length > PRIVATE_NOTE_MAX_CHARS ? 'text-danger' : 'text-hint'}`}>
               {draft.length}/{PRIVATE_NOTE_MAX_CHARS}
             </span>
             <div className="flex shrink-0 gap-2">
               <Button variant="ghost" size="sm" onClick={onCancel}>
-                Отмена
+                {copy.cancel}
               </Button>
               <Button size="sm" icon={<Save size={14} />} busy={saving} onClick={onSave}>
-                Сохранить
+                {copy.save}
               </Button>
             </div>
           </div>
@@ -120,14 +155,14 @@ export function PrivateNoteSection({
               onClick={() => onExpandedChange(!expanded)}
               className="text-[13px] font-medium text-accent-text"
             >
-              {expanded ? 'Свернуть' : 'Показать полностью'}
+              {expanded ? copy.collapse : copy.expand}
             </button>
           )}
           {event.private_note_summary_status === 'pending' && (
-            <p className="text-[12px] text-hint">Summary обновляется</p>
+            <p className="text-[12px] text-hint">{copy.pending}</p>
           )}
           {event.private_note_summary_status === 'failed' && (
-            <p className="text-[12px] text-hint">Summary не обновился</p>
+            <p className="text-[12px] text-hint">{copy.failed}</p>
           )}
         </div>
       ) : (
@@ -136,7 +171,7 @@ export function PrivateNoteSection({
           onClick={onEdit}
           className="flex min-h-10 w-full items-center justify-center rounded-xl border border-dashed border-hairline text-[13.5px] font-medium text-accent-text"
         >
-          Добавить заметку
+          {copy.add}
         </button>
       )}
     </section>

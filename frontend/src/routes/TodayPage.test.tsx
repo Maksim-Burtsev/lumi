@@ -315,6 +315,24 @@ describe('TodayPage personal notes', () => {
     expect(screen.getByRole('button', { name: 'Добавить заметку' })).toBeInTheDocument();
   });
 
+  it('uses English personal-note copy when app language is English', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'getToday').mockResolvedValue(
+      makeTodayResponse({
+        timeline: [makeTimelineEvent()],
+        needs_attention: [],
+      }),
+    );
+
+    renderTodayPage('en');
+
+    await user.click(await screen.findByRole('button', { name: /Product sync/ }));
+
+    expect(await screen.findByText('Personal note')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add note' })).toBeInTheDocument();
+    expect(screen.queryByText('Личная заметка')).not.toBeInTheDocument();
+  });
+
   it('labels long ready summaries as AI summaries', async () => {
     const user = userEvent.setup();
     vi.spyOn(api, 'getToday').mockResolvedValue(
@@ -322,7 +340,7 @@ describe('TodayPage personal notes', () => {
         timeline: [
           makeTimelineEvent({
             private_note: 'Long private note. '.repeat(60),
-            private_note_summary: 'Short AI-generated summary.',
+            private_note_summary: 'AI summary: Short generated summary.',
             private_note_summary_status: 'ready',
             private_note_updated_at: '2026-06-12T06:00:00Z',
             private_note_summary_updated_at: '2026-06-12T06:01:00Z',
@@ -337,7 +355,8 @@ describe('TodayPage personal notes', () => {
     await user.click(await screen.findByRole('button', { name: /Product sync/ }));
 
     expect(await screen.findByText('AI summary')).toBeInTheDocument();
-    expect(screen.getByText('Short AI-generated summary.')).toBeInTheDocument();
+    expect(screen.getByText('Short generated summary.')).toBeInTheDocument();
+    expect(screen.queryByText('AI summary: Short generated summary.')).not.toBeInTheDocument();
   });
 
   it('adds a personal note from the Today event sheet', async () => {
