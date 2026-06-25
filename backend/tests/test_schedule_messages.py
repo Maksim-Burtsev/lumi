@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from lumi.bot.schedule_messages import ScheduleMessageItem, render_schedule_message
+from lumi.bot.schedule_messages import (
+    ScheduleMessageItem,
+    render_schedule_message,
+    render_today_schedule,
+    schedule_window_title,
+)
 from lumi.utils.time import local_to_utc
 
 
@@ -50,7 +55,7 @@ def test_render_schedule_message_groups_week_and_escapes_rich_links():
 
     assert rendered.plain_text.startswith("📅 24.06 - 25.06")
     assert rendered.rich_html.startswith("<h4>📅 24.06 - 25.06</h4>")
-    assert "<table bordered striped><caption><b>24.06</b></caption>" in rendered.rich_html
+    assert "<table bordered striped><caption><b>Ср, 24.06</b></caption>" in rendered.rich_html
     assert "<th>" not in rendered.rich_html
     assert not any(icon in rendered.rich_html for icon in ("🟦", "🟩", "🟪", "⬜"))
     assert "13:00  Тутория <2.0> \"стендап\" · 15м  ↗" in rendered.plain_text
@@ -64,8 +69,72 @@ def test_render_schedule_message_groups_week_and_escapes_rich_links():
     assert (
         '<tr><td><b>13:30</b></td><td><i>Свободно · 1ч 30м</i></td></tr>'
     ) in rendered.rich_html
-    assert "<table bordered striped><caption><b>25.06</b></caption>" in rendered.rich_html
+    assert "<table bordered striped><caption><b>Чт, 25.06</b></caption>" in rendered.rich_html
     assert "\n" not in rendered.rich_html
+
+
+def test_schedule_window_title_includes_localized_weekday():
+    tz = "Europe/Moscow"
+    start = local_to_utc(datetime(2026, 6, 29), tz)
+    end = local_to_utc(datetime(2026, 6, 30), tz)
+
+    assert schedule_window_title(language="ru", start=start, end=end, timezone=tz) == "📅 Пн, 29.06"
+    assert schedule_window_title(language="en", start=start, end=end, timezone=tz) == "📅 Mon, 29 Jun"
+
+    week_end = local_to_utc(datetime(2026, 7, 6), tz)
+    assert schedule_window_title(language="en", start=start, end=week_end, timezone=tz) == (
+        "📅 Mon, 29 Jun - Sun, 5 Jul"
+    )
+
+
+def test_render_schedule_message_day_captions_include_localized_weekdays():
+    tz = "Europe/Moscow"
+    start = local_to_utc(datetime(2026, 6, 24, 13, 0), tz)
+    rendered = render_schedule_message(
+        title=schedule_window_title(language="en", start=start, end=start + timedelta(days=2), timezone=tz),
+        items=[
+            ScheduleMessageItem(
+                title="Standup",
+                start_at=start,
+                end_at=start + timedelta(minutes=15),
+            ),
+            ScheduleMessageItem(
+                title="Planning",
+                start_at=start + timedelta(days=1),
+                end_at=start + timedelta(days=1, minutes=30),
+            ),
+        ],
+        timezone=tz,
+        language="en",
+        window_start=start,
+        window_end=start + timedelta(days=2),
+    )
+
+    assert "<caption><b>Wed, 24 Jun</b></caption>" in rendered.rich_html
+    assert "<caption><b>Thu, 25 Jun</b></caption>" in rendered.rich_html
+    assert "\nWed, 24 Jun\n" in rendered.plain_text
+    assert "\nThu, 25 Jun\n" in rendered.plain_text
+
+
+def test_render_today_schedule_uses_localized_weekday_title():
+    tz = "Europe/Moscow"
+    start = local_to_utc(datetime(2026, 6, 26, 13, 0), tz)
+    rendered = render_today_schedule(
+        {
+            "date": "2026-06-26",
+            "timeline": [{
+                "title": "Standup",
+                "start_at": start.isoformat(),
+                "end_at": (start + timedelta(minutes=15)).isoformat(),
+            }],
+        },
+        timezone=tz,
+        language="en",
+    )
+
+    assert rendered is not None
+    assert rendered.plain_text.startswith("📅 Today, Fri, 26 Jun")
+    assert rendered.rich_html.startswith("<h4>📅 Today, Fri, 26 Jun</h4>")
 
 
 def test_render_schedule_message_limits_rows_and_reports_hidden_count():
@@ -144,5 +213,5 @@ def test_render_schedule_message_uses_week_limit_for_multi_day_window():
 
     assert "Event 11" in rendered.plain_text
     assert "+ ещё" not in rendered.plain_text
-    assert "<table bordered striped><caption><b>22.06</b></caption>" in rendered.rich_html
-    assert "<table bordered striped><caption><b>23.06</b></caption>" in rendered.rich_html
+    assert "<table bordered striped><caption><b>Пн, 22.06</b></caption>" in rendered.rich_html
+    assert "<table bordered striped><caption><b>Вт, 23.06</b></caption>" in rendered.rich_html

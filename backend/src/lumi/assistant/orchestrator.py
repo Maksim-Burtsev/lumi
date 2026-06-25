@@ -6,10 +6,11 @@ final LLM reply -> save reply -> (maybe) compaction flag.
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from difflib import SequenceMatcher
 from html import escape
 from typing import Any
@@ -43,7 +44,11 @@ from lumi.assistant.schemas import (
     TaskPatchRequest,
     TaskUpdate,
 )
-from lumi.bot.schedule_messages import render_schedule_message, schedule_items_from_calendar_events
+from lumi.bot.schedule_messages import (
+    render_schedule_message,
+    schedule_items_from_calendar_events,
+    schedule_window_title,
+)
 from lumi.db.models import (
     AgentRunType,
     CalendarEventStatus,
@@ -79,7 +84,7 @@ from lumi.services.task_update_replies import (
 from lumi.services.tasks import TaskService
 from lumi.services.users import UserService
 from lumi.utils.text import truncate
-from lumi.utils.time import fmt_local, local_to_utc, utc_now, utc_to_local
+from lumi.utils.time import fmt_local, local_now, local_to_utc, utc_now, utc_to_local
 from lumi.worker.queue import enqueue_job
 
 log = get_logger(__name__)
@@ -133,6 +138,45 @@ MULTI_STEP_INTENT_MARKERS = (
     "finché",
     "finche",
 )
+SCHEDULE_READ_KEYWORDS = (
+    r"\bschedule\b",
+    r"\bcalendar\b",
+    r"\bagenda\b",
+    r"\bmeetings?\b",
+    r"\bevents?\b",
+    r"распис",
+    r"календар",
+    r"встреч",
+    r"событ",
+)
+SCHEDULE_DATE_REF_KEYWORDS = (
+    r"\btoday\b",
+    r"\btomorrow\b",
+    r"\bweek\b",
+    r"сегодня",
+    r"завтра",
+    r"недел",
+)
+SCHEDULE_MUTATION_KEYWORDS = (
+    r"\bschedule\s+(?:a|an|the|my|our)?\s*(?:meeting|call|event|block|focus|task|appointment)\b",
+    r"\bbook\s+(?:a|an|the)?\s*(?:meeting|call|event|appointment)\b",
+    r"\bcreate\s+(?:a|an|the)?\s*(?:meeting|call|event|block|focus|task|appointment)\b",
+    r"\badd\s+(?:a|an|the)?\s*(?:meeting|call|event|block|focus|task|appointment)\b",
+    r"заплан",
+    r"созд",
+    r"добав",
+    r"назнач",
+    r"заброни",
+)
+WEEKDAY_ALIASES = {
+    0: (r"\bmonday\b", r"\bmon\b", r"понедельник", r"\bпн\b"),
+    1: (r"\btuesday\b", r"\btue\b", r"вторник", r"\bвт\b"),
+    2: (r"\bwednesday\b", r"\bwed\b", r"сред", r"\bср\b"),
+    3: (r"\bthursday\b", r"\bthu\b", r"четверг", r"\bчт\b"),
+    4: (r"\bfriday\b", r"\bfri\b", r"пятниц", r"\bпт\b"),
+    5: (r"\bsaturday\b", r"\bsat\b", r"суббот", r"\bсб\b"),
+    6: (r"\bsunday\b", r"\bsun\b", r"воскрес", r"\bвс\b"),
+}
 FLEXIBLE_CALENDAR_SLOT_MARKERS = (
     "after",
     "first free",
@@ -362,6 +406,106 @@ def _with_reply_language(user: User, text: str, plan: AgentPlan) -> AgentPlan:
     return plan if plan.language == language else plan.model_copy(update={"language": language})
 
 
+def _with_schedule_read_guard(user: User, text: str, plan: AgentPlan) -> AgentPlan:
+    if plan.tool_calls or plan.visual_intent != "none" or plan.needs_media_understanding:
+        return plan
+    if plan.mode not in {"final_answer", "ask_user"}:
+        return plan
+    request = _schedule_read_request_from_text(text, user)
+    if request is None:
+        return plan
+    return plan.model_copy(update={
+        "mode": "tool_calls",
+        "tool_calls": [
+            PlannedToolCall(
+                name="read_calendar_events",
+                args=request.model_dump(mode="json"),
+                confidence=0.9,
+                requires_confirmation=False,
+                evidence=["backend_guard:schedule_read"],
+            )
+        ],
+        "final_answer": None,
+        "should_answer_normally": False,
+        "user_visible_status": _text_for_language(
+            plan.language,
+            en="Checking your calendar...",
+            ru="Смотрю календарь...",
+            it="Controllo il calendario...",
+        ),
+        "progress_kind": "reading_calendar",
+    })
+
+
+def _is_schedule_read_guard_plan(plan: AgentPlan) -> bool:
+    return any(
+        call.name == "read_calendar_events" and "backend_guard:schedule_read" in call.evidence
+        for call in plan.tool_calls
+    )
+
+
+def _is_user_visible_schedule_read_plan(plan: AgentPlan, text: str, user: User) -> bool:
+    return (
+        plan.mode == "tool_calls"
+        and bool(plan.tool_calls)
+        and all(call.name == "read_calendar_events" for call in plan.tool_calls)
+        and (_is_schedule_read_guard_plan(plan) or _schedule_read_request_from_text(text, user) is not None)
+    )
+
+
+def _schedule_read_request_from_text(text: str, user: User) -> CalendarEventsRequest | None:
+    lowered = text.lower()
+    if not lowered.strip():
+        return None
+    if _matches_any(lowered, SCHEDULE_MUTATION_KEYWORDS):
+        return None
+    if not _matches_any(lowered, SCHEDULE_READ_KEYWORDS):
+        return None
+
+    today = local_now(user.timezone).date()
+    if _matches_any(lowered, (r"\bweek\b", r"недел")):
+        start_day = today
+        end_day = today + timedelta(days=7)
+    else:
+        day = None
+        if _matches_any(lowered, (r"\btomorrow\b", r"завтра")):
+            day = today + timedelta(days=1)
+        elif _matches_any(lowered, (r"\btoday\b", r"сегодня")):
+            day = today
+        else:
+            weekday = _requested_weekday(lowered)
+            if weekday is not None:
+                days_until = (weekday - today.weekday()) % 7
+                if days_until == 0 or _matches_any(lowered, (r"\bnext\b", r"следующ")):
+                    days_until = days_until or 7
+                day = today + timedelta(days=days_until)
+        if day is None:
+            return None
+        start_day = day
+        end_day = day + timedelta(days=1)
+
+    if not (_matches_any(lowered, SCHEDULE_DATE_REF_KEYWORDS) or _requested_weekday(lowered) is not None):
+        return None
+
+    return CalendarEventsRequest(
+        start_at_local=datetime.combine(start_day, time.min),
+        end_at_local=datetime.combine(end_day, time.min),
+        include_details=True,
+        sync_if_needed=True,
+    )
+
+
+def _requested_weekday(text: str) -> int | None:
+    for weekday, patterns in WEEKDAY_ALIASES.items():
+        if _matches_any(text, patterns):
+            return weekday
+    return None
+
+
+def _matches_any(text: str, patterns: tuple[str, ...]) -> bool:
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+
 def _safe_action_failure_reply(language: str | None, reason: str) -> str:
     if reason == "low_confidence":
         return "Did not perform the action: planner confidence was too low."
@@ -521,20 +665,16 @@ def _calendar_window_title(language: str | None, *, start: datetime, end: dateti
     start_local = utc_to_local(start, tz)
     end_local = utc_to_local(end - timedelta(seconds=1), tz) if end > start else start_local
     same_day = start_local.date() == end_local.date()
-    if same_day:
-        label = start_local.strftime("%b %d") if normalize_reply_language(language) == "en" else start_local.strftime("%d.%m")
-        today = utc_to_local(utc_now(), tz).date() == start_local.date()
-        if today:
-            return _text_for_language(
-                language,
-                en=f"📅 Today, {label}",
-                ru=f"📅 Сегодня, {label}",
-                it=f"📅 Oggi, {label}",
-            )
-        return f"📅 {label}"
-    if normalize_reply_language(language) == "en":
-        return f"📅 {start_local.strftime('%b %d')} - {end_local.strftime('%b %d')}"
-    return f"📅 {start_local.strftime('%d.%m')} - {end_local.strftime('%d.%m')}"
+    title = schedule_window_title(language=language, start=start, end=end, timezone=tz)
+    if same_day and utc_to_local(utc_now(), tz).date() == start_local.date():
+        label = title.removeprefix("📅 ").strip()
+        return _text_for_language(
+            language,
+            en=f"📅 Today, {label}",
+            ru=f"📅 Сегодня, {label}",
+            it=f"📅 Oggi, {label}",
+        )
+    return title
 
 
 def _calendar_event_when(event, tz: str) -> str:
@@ -871,6 +1011,7 @@ class AssistantOrchestrator:
             planner_context=planner_context,
         )
         plan = _with_reply_language(user, text, plan)
+        plan = _with_schedule_read_guard(user, text, plan)
         selected_media = _selected_or_current_media(plan, available_media, current_media)
         focused_question_override: str | None = None
         if selected_media is None and available_media and text.strip():
@@ -954,6 +1095,7 @@ class AssistantOrchestrator:
                 planner_context=planner_context,
             )
             plan = _with_reply_language(user, text, plan)
+            plan = _with_schedule_read_guard(user, text, plan)
             selected_media = _selected_or_current_media(plan, available_media, selected_media)
             if selected_media is not None:
                 selected_image = selected_media.image or selected_image
@@ -1571,6 +1713,7 @@ class AssistantOrchestrator:
                 plan.mode == "tool_calls"
                 and all(call.name in READ_ONLY_LOOP_TOOLS for call in plan.tool_calls)
                 and _looks_like_multi_step_request(text)
+                and not _is_user_visible_schedule_read_plan(plan, text, user)
             )
             if not should_continue:
                 stop_reason = "completed"
@@ -1652,6 +1795,7 @@ class AssistantOrchestrator:
             plan.mode == "tool_calls"
             and all(call.name in READ_ONLY_LOOP_TOOLS for call in plan.tool_calls)
             and _looks_like_multi_step_request(text)
+            and not _is_user_visible_schedule_read_plan(plan, text, user)
         )
 
         for call in plan.tool_calls:

@@ -1,10 +1,10 @@
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 
 from lumi.assistant.media import ImageInput
-from lumi.assistant.orchestrator import AssistantOrchestrator
+from lumi.assistant.orchestrator import AssistantOrchestrator, _schedule_read_request_from_text
 from lumi.db.models import (
     AgentRun,
     AgentRunType,
@@ -29,7 +29,7 @@ from lumi.services.confirmation_executor import ConfirmationExecutor
 from lumi.services.runs import RunService
 from lumi.services.tasks import TaskService
 from lumi.services.users import UserService
-from lumi.utils.time import local_to_utc
+from lumi.utils.time import local_now, local_to_utc
 
 from .conftest import TEST_TELEGRAM_ID
 
@@ -2122,6 +2122,201 @@ async def test_agent_planner_keeps_calendar_rich_message_when_final_chat_runs(mo
     assert "Lumi weekly planning" in result.reply_rich_html
     assert 'href="https://meet.example/lumi"' in result.reply_rich_html
     assert result.open_app_button is True
+
+
+async def test_agent_planner_forces_english_schedule_final_answer_into_calendar_tool(monkeypatch):
+    async def fake_sync_all_calendars(
+        self,
+        user,
+        *,
+        start_at=None,
+        end_at=None,
+        days_ahead: int | None = None,
+        days_back: int | None = None,
+    ):
+        return {"yandex": 0}
+
+    monkeypatch.setattr(
+        "lumi.services.planning.CalendarSyncService.sync_all_calendars",
+        fake_sync_all_calendars,
+    )
+    provider = AgentPlannerProvider({
+        "mode": "final_answer",
+        "tool_calls": [],
+        "final_answer": "Here's your schedule with https://meet.example/lumi",
+        "should_answer_normally": True,
+        "language": "en",
+    })
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID, language_code="en")
+        user.locale = "ru"
+        user.settings = {"locale_source": "manual", "reply_language_mode": "auto"}
+        tomorrow = (local_now(user.timezone) + timedelta(days=1)).date()
+        start_local = datetime(tomorrow.year, tomorrow.month, tomorrow.day, 13, 0)
+        await CalendarService(session).upsert_external_event(
+            user,
+            source=CalendarSource.YANDEX,
+            external_calendar_id="work",
+            external_event_id="english-schedule-guard",
+            title="Lumi weekly planning",
+            start_at=local_to_utc(start_local, user.timezone),
+            end_at=local_to_utc(start_local + timedelta(minutes=30), user.timezone),
+            meeting_url="https://meet.example/lumi",
+        )
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=45,
+            text="what schedule i have for tomorrow?",
+        )
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+
+    assert provider.final_chat_calls == 0
+    assert provider.planner_prompts
+    assert any(c.tool_name == "read_calendar_events" and c.status == "completed" for c in tool_calls)
+    assert result.reply_text.startswith("📅")
+    assert tomorrow.strftime("%b") in result.reply_text
+    assert "13:00  Lumi weekly planning · 30m  ↗" in result.reply_text
+    assert "https://meet.example/lumi" not in result.reply_text
+    assert result.reply_rich_html is not None
+    assert '<a href="https://meet.example/lumi">↗</a>' in result.reply_rich_html
+    assert result.open_app_button is True
+
+
+async def test_agent_planner_keeps_english_calendar_tool_read_user_visible(monkeypatch):
+    async def fake_sync_all_calendars(
+        self,
+        user,
+        *,
+        start_at=None,
+        end_at=None,
+        days_ahead: int | None = None,
+        days_back: int | None = None,
+    ):
+        return {"yandex": 0}
+
+    monkeypatch.setattr(
+        "lumi.services.planning.CalendarSyncService.sync_all_calendars",
+        fake_sync_all_calendars,
+    )
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID, language_code="en")
+        user.locale = "en"
+        user.settings = {"locale_source": "manual", "reply_language_mode": "auto"}
+        tomorrow = (local_now(user.timezone) + timedelta(days=1)).date()
+        start_local = datetime(tomorrow.year, tomorrow.month, tomorrow.day, 13, 0)
+        await CalendarService(session).upsert_external_event(
+            user,
+            source=CalendarSource.YANDEX,
+            external_calendar_id="work",
+            external_event_id="english-direct-calendar-read",
+            title="Lumi weekly planning",
+            start_at=local_to_utc(start_local, user.timezone),
+            end_at=local_to_utc(start_local + timedelta(minutes=30), user.timezone),
+            meeting_url="https://meet.example/lumi",
+        )
+
+        provider = AgentPlannerProvider({
+            "mode": "tool_calls",
+            "tool_calls": [
+                {
+                    "name": "read_calendar_events",
+                    "args": {
+                        "start_at_local": f"{tomorrow.isoformat()}T00:00:00",
+                        "end_at_local": f"{(tomorrow + timedelta(days=1)).isoformat()}T00:00:00",
+                        "sync_if_needed": True,
+                        "include_details": True,
+                    },
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                }
+            ],
+            "should_answer_normally": False,
+            "language": "en",
+        })
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=47,
+            text="what schedule i have for tomorrow?",
+        )
+
+    assert provider.final_chat_calls == 0
+    assert result.reply_text.startswith("📅")
+    assert "13:00  Lumi weekly planning · 30m  ↗" in result.reply_text
+    assert "https://meet.example/lumi" not in result.reply_text
+    assert result.reply_rich_html is not None
+    assert '<a href="https://meet.example/lumi">↗</a>' in result.reply_rich_html
+    assert result.open_app_button is True
+
+
+async def test_agent_schedule_guard_respects_app_locale_reply_language(monkeypatch):
+    async def fake_sync_all_calendars(
+        self,
+        user,
+        *,
+        start_at=None,
+        end_at=None,
+        days_ahead: int | None = None,
+        days_back: int | None = None,
+    ):
+        return {"yandex": 0}
+
+    monkeypatch.setattr(
+        "lumi.services.planning.CalendarSyncService.sync_all_calendars",
+        fake_sync_all_calendars,
+    )
+    provider = AgentPlannerProvider({
+        "mode": "final_answer",
+        "tool_calls": [],
+        "final_answer": "Here's your schedule.",
+        "should_answer_normally": True,
+        "language": "en",
+    })
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID, language_code="en")
+        user.locale = "ru"
+        user.settings = {"locale_source": "manual", "reply_language_mode": "app_locale"}
+        tomorrow = (local_now(user.timezone) + timedelta(days=1)).date()
+        start_local = datetime(tomorrow.year, tomorrow.month, tomorrow.day, 13, 0)
+        await CalendarService(session).upsert_external_event(
+            user,
+            source=CalendarSource.YANDEX,
+            external_calendar_id="work",
+            external_event_id="app-locale-schedule-guard",
+            title="Lumi weekly planning",
+            start_at=local_to_utc(start_local, user.timezone),
+            end_at=local_to_utc(start_local + timedelta(minutes=30), user.timezone),
+        )
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=46,
+            text="what schedule i have for tomorrow?",
+        )
+
+    assert result.reply_text.startswith("📅")
+    assert tomorrow.strftime("%b") not in result.reply_text
+    assert "13:00  Lumi weekly planning · 30м" in result.reply_text
+    assert "30m" not in result.reply_text
+    assert result.reply_rich_html is not None
+
+
+async def test_agent_schedule_guard_ignores_schedule_mutation_text():
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID, language_code="en")
+
+        request = _schedule_read_request_from_text("schedule a meeting tomorrow", user)
+
+    assert request is None
 
 
 async def test_agent_loop_reads_calendar_then_creates_block_with_localized_progress():

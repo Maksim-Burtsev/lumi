@@ -257,10 +257,12 @@ async def test_today_command_sends_rich_schedule_card(monkeypatch):
     monkeypatch.setattr(handlers, "_check_allowed", fake_check_allowed)
     monkeypatch.setattr("lumi.services.notifier.send_telegram_message", fake_send_telegram_message)
 
-    today = local_now("Europe/Moscow")
-    start = local_to_utc(datetime(today.year, today.month, today.day, 13, 0), "Europe/Moscow")
+    timezone = "Europe/Moscow"
+    today = local_now(timezone)
+    start = local_to_utc(datetime(today.year, today.month, today.day, 13, 0), timezone)
     async with session_scope() as session:
         user = await UserService(session).ensure_user(TEST_TELEGRAM_ID, language_code="ru")
+        user.timezone = timezone
         user.locale = "en"
         user.settings = {"locale_source": "manual", "reply_language_mode": "auto"}
         await CalendarService(session).create_internal_block(
@@ -277,11 +279,14 @@ async def test_today_command_sends_rich_schedule_card(monkeypatch):
 
     assert message.answers == []
     assert sent
-    assert sent[0]["text"].startswith("📅 Сегодня")
+    first_line = sent[0]["text"].splitlines()[0]
+    assert first_line.startswith("📅 Сегодня, ")
+    assert f", {today.strftime('%d.%m')}" in first_line
+    assert first_line.count(",") == 2
     assert "13:00  Standup · 15м" in sent[0]["text"]
     assert "🟦" not in sent[0]["text"]
     assert "Today" not in sent[0]["text"]
-    assert sent[0]["rich_html"].startswith("<h4>📅 Сегодня")
+    assert sent[0]["rich_html"].startswith("<h4>📅 Сегодня, ")
     assert sent[0]["open_app_button"] is True
 
 

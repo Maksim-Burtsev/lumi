@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from html import escape
 from typing import Any
 
@@ -14,6 +14,9 @@ FREE_GAP_MINUTES = 15
 DEFAULT_MAX_ITEMS = 8
 WEEK_MAX_ITEMS = 24
 MAX_TITLE_CHARS = 64
+RU_WEEKDAYS = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
+EN_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+EN_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
 @dataclass(frozen=True)
@@ -58,13 +61,15 @@ def render_schedule_message(
     visible_limit = max_items if max_items is not None else _default_limit(window_start, window_end, timezone)
     visible_items = sorted_items[:visible_limit]
     hidden_count = max(0, len(sorted_items) - len(visible_items))
-    grouped = _spans_multiple_days(visible_items, timezone)
+    grouped = _window_spans_multiple_days(window_start, window_end, timezone) or _spans_multiple_days(
+        visible_items, timezone
+    )
 
     plain_lines = [title]
     rich_parts = [_rich_heading(title)]
     buttons: list[list[ScheduleMessageButton]] = []
     busy_cursor: datetime | None = None
-    current_day: str | None = None
+    current_day: date | None = None
     current_table_caption: str | None = None
     current_table_rows: list[str] = []
 
@@ -79,13 +84,14 @@ def render_schedule_message(
             current_table_rows = []
 
     for item in visible_items:
-        item_day = utc_to_local(item.start_at, timezone).strftime("%d.%m")
+        item_local = utc_to_local(item.start_at, timezone)
+        item_day = item_local.date()
         if grouped and item_day != current_day:
             flush_table()
             current_day = item_day
-            current_table_caption = item_day
+            current_table_caption = schedule_day_label(item_local, language)
             plain_lines.append("")
-            plain_lines.append(item_day)
+            plain_lines.append(current_table_caption)
             busy_cursor = None
 
         if include_free_gaps and busy_cursor is not None and item.start_at > busy_cursor:
@@ -171,6 +177,45 @@ def render_today_schedule(
         include_free_gaps=True,
         max_items=max_items,
     )
+
+
+def schedule_day_label(day: date | datetime, language: str | None = None) -> str:
+    day_date = day.date() if isinstance(day, datetime) else day
+    if _normalized_language(language) == "en":
+        return f"{EN_WEEKDAYS[day_date.weekday()]}, {day_date.day} {EN_MONTHS[day_date.month - 1]}"
+    return f"{RU_WEEKDAYS[day_date.weekday()]}, {day_date.strftime('%d.%m')}"
+
+
+def schedule_window_title(
+    *,
+    language: str | None,
+    start: datetime,
+    end: datetime,
+    timezone: str,
+) -> str:
+    start_local = utc_to_local(start, timezone)
+    end_local = utc_to_local(end - timedelta(seconds=1), timezone) if end > start else start_local
+    if start_local.date() == end_local.date():
+        return f"📅 {schedule_day_label(start_local, language)}"
+    return f"📅 {schedule_day_label(start_local, language)} - {schedule_day_label(end_local, language)}"
+
+
+def schedule_today_title(payload: dict[str, Any], language: str | None) -> str:
+    date_raw = str(payload.get("date") or "").strip()
+    try:
+        label = schedule_day_label(datetime.fromisoformat(date_raw), language)
+    except ValueError:
+        label = date_raw
+    if _normalized_language(language) == "en":
+        return f"📅 Today, {label}" if label else "📅 Today"
+    return f"📅 Сегодня, {label}" if label else "📅 Сегодня"
+
+
+def schedule_plan_title(*, language: str | None, start_at: datetime, timezone: str) -> str:
+    label = schedule_day_label(utc_to_local(start_at, timezone), language)
+    if _normalized_language(language) == "en":
+        return f"📅 Day plan, {label}"
+    return f"📅 План дня, {label}"
 
 
 def schedule_items_from_calendar_events(events: list[Any]) -> list[ScheduleMessageItem]:
@@ -267,6 +312,17 @@ def _spans_multiple_days(items: list[ScheduleMessageItem], timezone: str) -> boo
     return len(days) > 1
 
 
+def _window_spans_multiple_days(
+    window_start: datetime | None,
+    window_end: datetime | None,
+    timezone: str,
+) -> bool:
+    if not window_start or not window_end:
+        return False
+    end = window_end - timedelta(seconds=1) if window_end > window_start else window_start
+    return utc_to_local(window_start, timezone).date() != utc_to_local(end, timezone).date()
+
+
 def _normalized_language(language: str | None) -> str:
     return (language or "").split("-", 1)[0].lower()
 
@@ -282,12 +338,4 @@ def _metadata_value(entry: dict[str, Any], key: str) -> str | None:
 
 
 def _today_title(payload: dict[str, Any], language: str | None) -> str:
-    date_raw = str(payload.get("date") or "").strip()
-    try:
-        day = datetime.fromisoformat(date_raw)
-        label = day.strftime("%d.%m")
-    except ValueError:
-        label = date_raw or ""
-    if _normalized_language(language) == "en":
-        return f"📅 Today, {label}" if label else "📅 Today"
-    return f"📅 Сегодня, {label}" if label else "📅 Сегодня"
+    return schedule_today_title(payload, language)

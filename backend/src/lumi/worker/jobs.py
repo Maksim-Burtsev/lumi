@@ -19,6 +19,7 @@ from lumi.bot.schedule_messages import (
     ScheduleMessageItem,
     render_schedule_message,
     render_today_schedule,
+    schedule_plan_title,
 )
 from lumi.config import get_settings
 from lumi.db.models import (
@@ -702,8 +703,13 @@ async def run_daily_planning(*, session, user: User, run: AgentRun, notify: bool
     if notify:
         reply_markup = None
         if created:
+            language = _run_reply_language(run, user)
             rendered = render_schedule_message(
-                title="📅 План дня",
+                title=schedule_plan_title(
+                    language=language,
+                    start_at=created[0].start_at,
+                    timezone=user.timezone,
+                ),
                 items=[
                     ScheduleMessageItem(
                         title=e.title,
@@ -715,7 +721,7 @@ async def run_daily_planning(*, session, user: User, run: AgentRun, notify: bool
                     for e in created
                 ],
                 timezone=user.timezone,
-                language=_run_reply_language(run, user),
+                language=language,
             )
             await send_telegram_message(
                 user,

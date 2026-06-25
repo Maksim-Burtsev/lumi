@@ -146,8 +146,8 @@ async def test_run_daily_planning_sends_rich_schedule_for_proposed_blocks(monkey
 
     assert result == "plan: 1 blocks proposed"
     assert sent
-    assert sent[0]["text"].startswith("📅 План дня")
-    assert sent[0]["rich_html"].startswith("<h4>📅 План дня</h4>")
+    assert sent[0]["text"].startswith("📅 План дня, Ср, 24.06")
+    assert sent[0]["rich_html"].startswith("<h4>📅 План дня, Ср, 24.06</h4>")
     assert "15:00  Deep work · 1ч" in sent[0]["text"]
     assert "1h" not in sent[0]["text"]
     assert "🟪" not in sent[0]["text"]
@@ -164,6 +164,7 @@ async def test_run_morning_brief_sends_rich_schedule_section(monkeypatch, user):
 
     async def fake_build_payload(self, user_arg):
         return {
+            "date": "2026-06-24",
             "greeting": "Добрый день",
             "summary": {
                 "meetings_today": 1,
@@ -202,10 +203,10 @@ async def test_run_morning_brief_sends_rich_schedule_section(monkeypatch, user):
 
     assert result == "brief: 1 sections"
     assert sent
-    assert sent[0]["text"].startswith("📅 Сегодня")
+    assert sent[0]["text"].startswith("📅 Сегодня, Ср, 24.06")
     assert "13:00  Standup · 15м  ↗" in sent[0]["text"]
     assert "🟦" not in sent[0]["text"]
     assert "🟦" not in sent[0]["rich_html"]
-    assert sent[0]["rich_html"].startswith("<h4>📅 Сегодня")
+    assert sent[0]["rich_html"].startswith("<h4>📅 Сегодня, Ср, 24.06")
     assert 'href="https://meet.example/standup"' in sent[0]["rich_html"]
     assert sent[0]["open_app_button"] is True
