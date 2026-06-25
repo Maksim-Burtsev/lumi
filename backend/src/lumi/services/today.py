@@ -47,6 +47,7 @@ class TodayService:
                 "source": e.source.value,
                 "status": e.status.value,
                 "busy": e.busy,
+                "meeting_url": e.metadata_.get("meeting_url"),
             }
             for e in events
         ]

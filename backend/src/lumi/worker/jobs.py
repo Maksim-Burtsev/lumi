@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import timedelta
+from html import escape
 from time import monotonic
 from typing import Any
 
@@ -11,9 +12,14 @@ import httpx
 from sqlalchemy import select
 
 from lumi.assistant.orchestrator import AssistantOrchestrator
-from lumi.bot.formatting import telegram_plain_text
+from lumi.bot.formatting import rich_html_requires_rich_message, telegram_plain_text
 from lumi.bot.keyboards import markup_from_buttons
 from lumi.bot.media import ImageDownloadError, download_image_input, ref_from_metadata
+from lumi.bot.schedule_messages import (
+    ScheduleMessageItem,
+    render_schedule_message,
+    render_today_schedule,
+)
 from lumi.config import get_settings
 from lumi.db.models import (
     AgentRun,
@@ -24,6 +30,7 @@ from lumi.db.models import (
     User,
 )
 from lumi.db.session import session_scope
+from lumi.i18n import normalize_reply_language
 from lumi.llm.base import LLMMessage
 from lumi.llm.gateway import LLMGateway
 from lumi.logging import agent_run_id_var, get_logger
@@ -83,6 +90,19 @@ def _without_none(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if value is not None}
 
 
+def _plain_text_rich_html(text: str) -> str:
+    return "".join(f"<p>{escape(line)}</p>" for line in text.splitlines() if line.strip())
+
+
+def _join_rich_sections(parts: list[str]) -> str:
+    return "<hr/>".join(part for part in parts if part)
+
+
+def _run_reply_language(run: AgentRun, user: User) -> str:
+    metadata = run.metadata_ or {}
+    return normalize_reply_language(str(metadata.get("reply_language") or user.locale))
+
+
 async def send_turn_reply(
     *,
     user: User,
@@ -128,14 +148,16 @@ async def send_turn_reply(
                     )
                     return True
                 if rich_html:
-                    await bot.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=turn.status_message_id,
-                        text=rich_html,
-                        parse_mode="HTML",
-                        link_preview_options=link_preview_options,
-                        reply_markup=markup,
-                    )
+                    edit_kwargs = {
+                        "chat_id": chat_id,
+                        "message_id": turn.status_message_id,
+                        "text": chunks[0] if rich_html_requires_rich_message(rich_html) else rich_html,
+                        "link_preview_options": link_preview_options,
+                        "reply_markup": markup,
+                    }
+                    if not rich_html_requires_rich_message(rich_html):
+                        edit_kwargs["parse_mode"] = "HTML"
+                    await bot.edit_message_text(**edit_kwargs)
                     return True
                 else:
                     await bot.edit_message_text(
@@ -168,13 +190,15 @@ async def send_turn_reply(
                     return True
                 except Exception:  # noqa: BLE001 — rich messages are new; plain fallback must work
                     log.exception("telegram rich turn reply failed; falling back to send_message")
-            await bot.send_message(
-                chat_id=chat_id,
-                text=rich_html,
-                parse_mode="HTML",
-                link_preview_options=link_preview_options,
-                reply_markup=markup,
-            )
+            message_kwargs = {
+                "chat_id": chat_id,
+                "text": chunks[0] if rich_html_requires_rich_message(rich_html) else rich_html,
+                "link_preview_options": link_preview_options,
+                "reply_markup": markup,
+            }
+            if not rich_html_requires_rich_message(rich_html):
+                message_kwargs["parse_mode"] = "HTML"
+            await bot.send_message(**message_kwargs)
             if turn.status_message_id:
                 try:
                     await bot.delete_message(chat_id=chat_id, message_id=turn.status_message_id)
@@ -562,14 +586,24 @@ async def run_morning_brief(*, session, user: User, run: AgentRun, notify: bool)
     from lumi.services.today import TodayService
 
     parts: list[str] = []
+    rich_parts: list[str] = []
     payload = await TodayService(session).build_payload(user)
-    parts.append(format_today(payload, user.timezone))
+    today_schedule = render_today_schedule(payload, timezone=user.timezone, language=user.locale)
+    if today_schedule is not None:
+        parts.append(today_schedule.plain_text)
+        rich_parts.append(today_schedule.rich_html)
+    else:
+        today_text = format_today(payload, user.timezone)
+        parts.append(today_text)
+        rich_parts.append(_plain_text_rich_html(today_text))
 
     if token_file_exists():
         try:
             triage, _threads = await EmailService(session).triage_inbox(user, agent_run_id=run.id)
             if triage.telegram_digest:
-                parts.append("📬 Почта\n" + triage.telegram_digest)
+                mail_text = "📬 Почта\n" + triage.telegram_digest
+                parts.append(mail_text)
+                rich_parts.append(_plain_text_rich_html(mail_text))
         except GoogleNotConnectedError:
             pass
         except Exception:  # noqa: BLE001 — почта не должна валить весь бриф
@@ -578,13 +612,20 @@ async def run_morning_brief(*, session, user: User, run: AgentRun, notify: bool)
     try:
         digest = await NewsService(session).generate_digest(user, agent_run_id=run.id)
         if digest is not None:
-            parts.append("📰 Новости\n" + digest.digest_text)
+            news_text = "📰 Новости\n" + digest.digest_text
+            parts.append(news_text)
+            rich_parts.append(_plain_text_rich_html(news_text))
     except Exception:  # noqa: BLE001
         log.exception("morning brief: news failed")
 
     text = "\n\n———\n\n".join(parts)
     if notify:
-        await send_telegram_message(user, text)
+        await send_telegram_message(
+            user,
+            text,
+            rich_html=_join_rich_sections(rich_parts) if rich_parts else None,
+            open_app_button=today_schedule is not None,
+        )
     return f"brief: {len(parts)} sections"
 
 
@@ -645,7 +686,7 @@ async def run_daily_planning(*, session, user: User, run: AgentRun, notify: bool
 
     from lumi.services.notifier import send_telegram_message
     from lumi.services.planning import PlanningService
-    from lumi.utils.time import get_zone, utc_to_local
+    from lumi.utils.time import get_zone
 
     day = None
     if plan_date:
@@ -661,20 +702,30 @@ async def run_daily_planning(*, session, user: User, run: AgentRun, notify: bool
     if notify:
         reply_markup = None
         if created:
-            from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-
-            rows = [
-                [InlineKeyboardButton(
-                    text=(
-                        f"✓ Принять {utc_to_local(e.start_at, user.timezone).strftime('%H:%M')}"
-                        f" {e.title[:24]}"
-                    ),
-                    callback_data=f"block_confirm:{e.id}",
-                )]
-                for e in created[:3]
-            ]
-            reply_markup = InlineKeyboardMarkup(inline_keyboard=rows)
-        await send_telegram_message(user, summary, reply_markup=reply_markup)
+            rendered = render_schedule_message(
+                title="📅 План дня",
+                items=[
+                    ScheduleMessageItem(
+                        title=e.title,
+                        start_at=e.start_at,
+                        end_at=e.end_at,
+                        kind="proposed",
+                        action_id=str(e.id),
+                    )
+                    for e in created
+                ],
+                timezone=user.timezone,
+                language=_run_reply_language(run, user),
+            )
+            await send_telegram_message(
+                user,
+                rendered.plain_text,
+                rich_html=rendered.rich_html,
+                reply_markup=reply_markup,
+                open_app_button=True,
+            )
+        else:
+            await send_telegram_message(user, summary)
     return f"plan: {len(created)} blocks proposed"
 
 

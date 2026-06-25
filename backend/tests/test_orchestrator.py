@@ -2039,21 +2039,89 @@ async def test_agent_planner_read_calendar_events_syncs_requested_range_without_
     assert result.open_app_button_label == "✨ Открыть Lumi"
     assert result.reply_text.startswith("📅")
     assert "Lumi weekly planning" in result.reply_text
-    assert "\n🟦 10:00  Lumi weekly planning · 30м" in result.reply_text
-    assert "\n⬜ 10:30  Свободно · 30м" in result.reply_text
+    assert "\n10:00  Lumi weekly planning · 30м" in result.reply_text
+    assert "\n10:30  Свободно · 30м" in result.reply_text
+    assert "🟦" not in result.reply_text
+    assert "⬜" not in result.reply_text
     assert "Planning follow-up 5" not in result.reply_text
     assert "\n+ ещё 2 в календаре" in result.reply_text
     assert "https://meet.example/lumi" not in result.reply_text
     assert "Calendar events:" not in result.reply_text
     assert result.reply_rich_html is not None
-    assert result.reply_rich_html.startswith("<b>📅")
+    assert result.reply_rich_html.startswith("<h4>📅")
     assert "Lumi weekly planning" in result.reply_rich_html
+    assert "<th>" not in result.reply_rich_html
+    assert "🟦" not in result.reply_rich_html
+    assert "⬜" not in result.reply_rich_html
     assert 'href="https://meet.example/lumi"' in result.reply_rich_html
     assert "↗" in result.reply_rich_html
     assert "https://meet.example/lumi" not in result.reply_rich_html.replace(
         'href="https://meet.example/lumi"', ""
     )
     assert any(c.tool_name == "read_calendar_events" and c.status == "completed" for c in tool_calls)
+
+
+async def test_agent_planner_keeps_calendar_rich_message_when_final_chat_runs(monkeypatch):
+    async def fake_sync_all_calendars(
+        self,
+        user,
+        *,
+        start_at=None,
+        end_at=None,
+        days_ahead: int | None = None,
+        days_back: int | None = None,
+    ):
+        await CalendarService(self.session).upsert_external_event(
+            user,
+            source=CalendarSource.YANDEX,
+            external_calendar_id="work",
+            external_event_id="daily-standup-2026-07-13",
+            title="Lumi weekly planning",
+            start_at=local_to_utc(datetime(2026, 7, 13, 10, 0), user.timezone),
+            end_at=local_to_utc(datetime(2026, 7, 13, 10, 30), user.timezone),
+            meeting_url="https://meet.example/lumi",
+        )
+        return {"yandex": 1}
+
+    monkeypatch.setattr(
+        "lumi.services.planning.CalendarSyncService.sync_all_calendars",
+        fake_sync_all_calendars,
+    )
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "tool_calls": [
+            {
+                "name": "read_calendar_events",
+                "args": {
+                    "start_at_local": "2026-07-13T00:00:00",
+                    "end_at_local": "2026-07-14T00:00:00",
+                    "sync_if_needed": True,
+                    "include_details": True,
+                },
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": True,
+    }, final_text="Коротко: одна встреча в 10:00.")
+
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=44,
+            text="Покажи расписание на сегодня красиво и компактно.",
+    )
+
+    assert provider.final_chat_calls == 1
+    assert result.reply_text.startswith("📅")
+    assert "Lumi weekly planning" in result.reply_text
+    assert result.reply_rich_html is not None
+    assert result.reply_rich_html.startswith("<h4>📅")
+    assert "Lumi weekly planning" in result.reply_rich_html
+    assert 'href="https://meet.example/lumi"' in result.reply_rich_html
+    assert result.open_app_button is True
 
 
 async def test_agent_loop_reads_calendar_then_creates_block_with_localized_progress():

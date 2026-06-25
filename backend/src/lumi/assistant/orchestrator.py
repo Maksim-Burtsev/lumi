@@ -43,6 +43,7 @@ from lumi.assistant.schemas import (
     TaskPatchRequest,
     TaskUpdate,
 )
+from lumi.bot.schedule_messages import render_schedule_message, schedule_items_from_calendar_events
 from lumi.db.models import (
     AgentRunType,
     CalendarEventStatus,
@@ -1333,6 +1334,8 @@ class AssistantOrchestrator:
                 reply_text = f"Done:\n{done}\n\nThe model is unavailable, so I could not write a richer reply."
             else:
                 reply_text = FALLBACK_REPLY
+            if reply_rich_html and len(action_results) == 1:
+                reply_text = action_results[0]
             outbound = Message(
                 conversation_id=conversation.id,
                 user_id=user.id,
@@ -1341,9 +1344,18 @@ class AssistantOrchestrator:
                 char_count=len(reply_text),
             )
             self.session.add(outbound)
-            return AssistantResult(reply_text=reply_text, buttons=buttons, agent_run_id=run.id)
+            return AssistantResult(
+                reply_text=reply_text,
+                buttons=buttons,
+                agent_run_id=run.id,
+                open_app_button=open_app_button,
+                open_app_button_label=open_app_button_label,
+                reply_rich_html=reply_rich_html if len(action_results) == 1 else None,
+            )
 
         # 8. Save assistant message
+        if reply_rich_html and len(action_results) == 1:
+            reply_text = action_results[0]
         outbound = Message(
             conversation_id=conversation.id,
             user_id=user.id,
@@ -1366,6 +1378,9 @@ class AssistantOrchestrator:
             buttons=buttons,
             agent_run_id=run.id,
             needs_compaction=needs_compaction,
+            open_app_button=open_app_button,
+            open_app_button_label=open_app_button_label,
+            reply_rich_html=reply_rich_html if len(action_results) == 1 else None,
         )
 
     # ------------------------------------------------------------------
@@ -2859,13 +2874,32 @@ class AssistantOrchestrator:
             )
 
         lines = ["Calendar events:"]
-        reply_lines, rich_lines = _calendar_timeline_reply(
-            events=events,
+        schedule_items = schedule_items_from_calendar_events(events)
+        if not request.include_details:
+            schedule_items = [
+                item.__class__(
+                    title=item.title,
+                    start_at=item.start_at,
+                    end_at=item.end_at,
+                    kind=item.kind,
+                    action_id=item.action_id,
+                    busy=item.busy,
+                )
+                for item in schedule_items
+            ]
+        schedule_window_end = end - timedelta(seconds=1) if end > start else start
+        is_single_day = utc_to_local(start, user.timezone).date() == utc_to_local(
+            schedule_window_end, user.timezone
+        ).date()
+        rendered_schedule = render_schedule_message(
+            title=_calendar_window_title(language, start=start, end=end, tz=user.timezone),
+            items=schedule_items,
+            timezone=user.timezone,
             language=language,
-            start=start,
-            end=end,
-            tz=user.timezone,
-            include_details=request.include_details,
+            window_start=start,
+            window_end=end,
+            include_free_gaps=True,
+            max_items=CALENDAR_TELEGRAM_EVENT_LIMIT if is_single_day else None,
         )
         for event in events[:20]:
             when = _calendar_event_when(event, user.timezone)
@@ -2879,15 +2913,11 @@ class AssistantOrchestrator:
             lines.append(line)
         if len(events) > 20:
             lines.append(f"{len(events) - 20} more events not shown.")
-        if len(events) > CALENDAR_TELEGRAM_EVENT_LIMIT:
-            more = _calendar_more_text(language, len(events) - CALENDAR_TELEGRAM_EVENT_LIMIT)
-            reply_lines.append(more)
-            rich_lines.append(f"<i>{escape(more)}</i>")
         if user_visible:
-            results.append("\n".join(reply_lines))
+            results.append(rendered_schedule.plain_text)
         return CalendarReadResult(
             observation_summary="\n".join(lines),
-            reply_rich_html="\n\n".join(rich_lines) if user_visible else None,
+            reply_rich_html=rendered_schedule.rich_html if user_visible else None,
             open_app_button=user_visible,
         )
 
