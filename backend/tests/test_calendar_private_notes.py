@@ -12,6 +12,7 @@ from lumi.db.session import session_scope
 from lumi.llm.gateway import LLMGateway
 from lumi.main import app
 from lumi.services.calendar import (
+    PRIVATE_NOTE_SUMMARY_MAX_CHARS,
     PRIVATE_NOTE_SUMMARY_THRESHOLD_CHARS,
     CalendarService,
 )
@@ -97,6 +98,61 @@ async def test_calendar_service_long_note_marks_summary_pending_then_worker_writ
     assert event.metadata_["private_note_summary_status"] == "ready"
     assert event.metadata_["private_note_summary"]
     assert len(event.metadata_["private_note_summary"]) <= 160
+
+
+async def test_calendar_service_duplicate_summary_write_does_not_overwrite_ready_summary(db_session):
+    user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID)
+    calendar = CalendarService(db_session)
+    event = await calendar.create_internal_block(
+        user,
+        title="Launch notes",
+        start_at=local_to_utc(datetime(2026, 6, 24, 13, 0), user.timezone),
+        end_at=local_to_utc(datetime(2026, 6, 24, 14, 0), user.timezone),
+        created_by="test",
+    )
+    updated = await calendar.set_private_note(user, event, _long_note())
+    note_hash = updated.metadata_["private_note_hash"]
+
+    await calendar.write_private_note_summary(
+        user,
+        event,
+        note_hash=note_hash,
+        summary="Keep this good summary.",
+    )
+    await calendar.write_private_note_summary(
+        user,
+        event,
+        note_hash=note_hash,
+        summary="Late duplicate should not win.",
+    )
+
+    assert event.metadata_["private_note_summary_status"] == "ready"
+    assert event.metadata_["private_note_summary"] == "Keep this good summary."
+
+
+async def test_calendar_service_summary_truncates_on_word_boundary(db_session):
+    user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID)
+    calendar = CalendarService(db_session)
+    event = await calendar.create_internal_block(
+        user,
+        title="Summary shape",
+        start_at=local_to_utc(datetime(2026, 6, 24, 15, 0), user.timezone),
+        end_at=local_to_utc(datetime(2026, 6, 24, 16, 0), user.timezone),
+        created_by="test",
+    )
+    updated = await calendar.set_private_note(user, event, _long_note())
+
+    await calendar.write_private_note_summary(
+        user,
+        event,
+        note_hash=updated.metadata_["private_note_hash"],
+        summary=("summary word " * 30).strip(),
+    )
+
+    summary = event.metadata_["private_note_summary"]
+    assert len(summary) <= PRIVATE_NOTE_SUMMARY_MAX_CHARS
+    assert summary.endswith("…")
+    assert summary[:-1].endswith("word")
 
 
 async def test_calendar_service_shortening_note_removes_stale_summary(db_session):

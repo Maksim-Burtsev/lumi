@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, time
 
 import httpx
 import pytest
@@ -10,7 +10,7 @@ from lumi.main import app
 from lumi.services.calendar import CalendarService
 from lumi.services.confirmations import ConfirmationService
 from lumi.services.users import UserService
-from lumi.utils.time import local_to_utc
+from lumi.utils.time import local_now, local_to_utc
 
 from .conftest import TEST_TELEGRAM_ID
 
@@ -177,11 +177,12 @@ async def test_today_shape(client):
 async def test_today_timeline_includes_personal_note_fields(client, db_session):
     user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID)
     calendar = CalendarService(db_session)
+    today = local_now(user.timezone).date()
     event = await calendar.create_internal_block(
         user,
         title="Board prep",
-        start_at=local_to_utc(datetime(2026, 6, 24, 10, 0), user.timezone),
-        end_at=local_to_utc(datetime(2026, 6, 24, 10, 30), user.timezone),
+        start_at=local_to_utc(datetime.combine(today, time(10, 0)), user.timezone),
+        end_at=local_to_utc(datetime.combine(today, time(10, 30)), user.timezone),
         created_by="test",
     )
     await calendar.set_private_note(user, event, "Ask about launch risk.")

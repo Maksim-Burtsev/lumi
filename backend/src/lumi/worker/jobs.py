@@ -734,6 +734,8 @@ async def summarize_calendar_private_note(
         return "stale personal note hash"
     if not isinstance(note, str) or not note.strip():
         return "personal note missing"
+    if metadata.get("private_note_summary_status") == "ready" and metadata.get("private_note_summary"):
+        return "summary already ready"
     calendar = CalendarService(session)
     if not private_note_needs_summary(note):
         await calendar.set_private_note(user, event, note)
@@ -743,7 +745,7 @@ async def summarize_calendar_private_note(
             messages=[LLMMessage(role="user", content=f"Personal note:\n{note}")],
             system=CALENDAR_PRIVATE_NOTE_SUMMARY_SYSTEM,
             temperature=0.1,
-            max_tokens=80,
+            max_tokens=1024,
             request_kind="calendar_private_note_summary",
             user_id=user.id,
             agent_run_id=run.id,

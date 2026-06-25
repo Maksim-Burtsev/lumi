@@ -71,6 +71,17 @@ def private_note_needs_summary(note: str) -> bool:
     return len(normalize_private_note_for_threshold(note)) >= PRIVATE_NOTE_SUMMARY_THRESHOLD_CHARS
 
 
+def truncate_private_note_summary(summary: str, limit: int = PRIVATE_NOTE_SUMMARY_MAX_CHARS) -> str:
+    normalized = normalize_private_note_for_threshold(summary)
+    if len(normalized) <= limit:
+        return normalized
+    head = normalized[: limit - 1].rstrip()
+    boundary = head.rfind(" ")
+    if boundary >= limit // 2:
+        head = head[:boundary].rstrip()
+    return f"{head}…" if head else normalized[:limit]
+
+
 def clean_private_note(note: str | None) -> str | None:
     if note is None:
         return None
@@ -92,7 +103,7 @@ def calendar_private_note_summary_text(event: CalendarEvent) -> str | None:
     summary = metadata.get("private_note_summary")
     if metadata.get("private_note_summary_status") == "ready" and isinstance(summary, str) and summary.strip():
         return summary.strip()
-    return normalize_private_note_for_threshold(note)[:180].rstrip() + "…"
+    return truncate_private_note_summary(note)
 
 
 def merge_busy_intervals(intervals: list[tuple[datetime, datetime]]) -> list[tuple[datetime, datetime]]:
@@ -245,12 +256,19 @@ class CalendarService:
             or not isinstance(note, str)
         ):
             return event
+        existing_summary = metadata.get("private_note_summary")
+        if (
+            metadata.get("private_note_summary_status") == "ready"
+            and isinstance(existing_summary, str)
+            and existing_summary.strip()
+        ):
+            return event
         if not private_note_needs_summary(note):
             metadata["private_note_summary_status"] = "not_needed"
             metadata.pop("private_note_summary", None)
             metadata.pop("private_note_summary_updated_at", None)
         else:
-            clean_summary = normalize_private_note_for_threshold(summary)[:PRIVATE_NOTE_SUMMARY_MAX_CHARS]
+            clean_summary = truncate_private_note_summary(summary)
             metadata["private_note_summary"] = clean_summary or calendar_private_note_summary_text(event)
             metadata["private_note_summary_status"] = "ready"
             metadata["private_note_summary_updated_at"] = utc_now().isoformat()
