@@ -315,6 +315,31 @@ describe('TodayPage personal notes', () => {
     expect(screen.getByRole('button', { name: 'Добавить заметку' })).toBeInTheDocument();
   });
 
+  it('labels long ready summaries as AI summaries', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'getToday').mockResolvedValue(
+      makeTodayResponse({
+        timeline: [
+          makeTimelineEvent({
+            private_note: 'Long private note. '.repeat(60),
+            private_note_summary: 'Short AI-generated summary.',
+            private_note_summary_status: 'ready',
+            private_note_updated_at: '2026-06-12T06:00:00Z',
+            private_note_summary_updated_at: '2026-06-12T06:01:00Z',
+          } as Partial<TodayResponse['timeline'][number]>),
+        ],
+        needs_attention: [],
+      }),
+    );
+
+    renderTodayPage();
+
+    await user.click(await screen.findByRole('button', { name: /Product sync/ }));
+
+    expect(await screen.findByText('AI summary')).toBeInTheDocument();
+    expect(screen.getByText('Short AI-generated summary.')).toBeInTheDocument();
+  });
+
   it('adds a personal note from the Today event sheet', async () => {
     const user = userEvent.setup();
     vi.spyOn(api, 'getToday').mockResolvedValue(

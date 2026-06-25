@@ -1,4 +1,4 @@
-import { Pencil, Save, StickyNote, Trash2 } from 'lucide-react';
+import { Pencil, Save, Sparkles, StickyNote, Trash2 } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { Textarea } from '../ui/Field';
 
@@ -107,6 +107,12 @@ export function PrivateNoteSection({
         </div>
       ) : hasNote ? (
         <div className="space-y-2">
+          {showSummary && (
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-[var(--accent-border)] bg-[var(--accent-soft)] px-2.5 py-1 text-[11px] font-medium text-accent-text">
+              <Sparkles size={12} aria-hidden="true" />
+              <span>AI summary</span>
+            </div>
+          )}
           <p className="whitespace-pre-wrap text-[14px] leading-relaxed text-ink">{body}</p>
           {canExpand && (
             <button
