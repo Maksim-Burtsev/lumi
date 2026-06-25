@@ -483,9 +483,14 @@ export default function TodayPage() {
 
   const data = todayQuery.data;
   const date = new Date(`${data.date}T00:00:00`);
+  const nowMs = Date.now();
+  const isTodayPayload = date.toDateString() === new Date().toDateString();
 
   const rawEntries: TimelineEntry[] = data.timeline
     .filter((item: TimelineItem) => item.status !== 'cancelled')
+    .filter((item: TimelineItem) => !(
+      isTodayPayload && item.kind === 'proposed' && new Date(item.end_at).getTime() <= nowMs
+    ))
     .map((item) => ({
       id: item.id,
       kind: item.kind,
@@ -519,8 +524,9 @@ export default function TodayPage() {
     if (i > 0) {
       const prevEnd = new Date(rawEntries[i - 1].end_at).getTime();
       const start = new Date(entry.start_at).getTime();
+      const end = new Date(entry.end_at).getTime();
       const gapMin = Math.round((start - prevEnd) / 60000);
-      if (gapMin >= 30) {
+      if (gapMin >= 30 && (!isTodayPayload || (start > nowMs && end > nowMs))) {
         timelineEntries.push({
           id: `gap-${i}`,
           kind: 'free',

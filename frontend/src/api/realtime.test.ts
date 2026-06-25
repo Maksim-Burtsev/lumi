@@ -33,6 +33,8 @@ describe('getRealtimeInvalidationKeys', () => {
       }),
     ).toEqual([
       ['tasks'],
+      ['projects'],
+      ['assistant-suggestions'],
       ['today'],
       ['calendar-events'],
       ['free-slots'],
@@ -45,6 +47,8 @@ describe('getRealtimeInvalidationKeys', () => {
     expect(getRealtimeInvalidationKeys({ event_type: 'resync', topics: ['*'], payload: {} })).toEqual([
       ['today'],
       ['tasks'],
+      ['projects'],
+      ['assistant-suggestions'],
       ['calendar-events'],
       ['free-slots'],
       ['inbox-summary'],

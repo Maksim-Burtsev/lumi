@@ -20,6 +20,7 @@ from lumi.i18n import (
     validate_app_locale,
     validate_time_format,
 )
+from lumi.services.planning_settings import merge_planning_settings
 from lumi.services.realtime import RealtimeEventService
 from lumi.utils.time import selectable_timezone_names, validate_timezone_name
 
@@ -117,6 +118,8 @@ async def patch_settings(
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail="invalid_time_format") from exc
+        if "planning" in payload.settings:
+            merged_settings = merge_planning_settings(merged_settings, payload.settings)
         user.settings = ensure_language_settings(merged_settings)
     session.add(user)
     await RealtimeEventService(session).emit(

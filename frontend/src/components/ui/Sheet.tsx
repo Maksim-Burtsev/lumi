@@ -9,11 +9,12 @@ interface SheetProps {
   onClose: () => void;
   onClosed?: () => void;
   title?: string;
+  closeLabel?: string;
   children: ReactNode;
 }
 
 /** Bottom sheet for forms and detail views. */
-export function Sheet({ open, onClose, onClosed, title, children }: SheetProps) {
+export function Sheet({ open, onClose, onClosed, title, closeLabel = 'Закрыть', children }: SheetProps) {
   const reduceMotion = useReducedMotion();
   const lockRef = useRef<{
     scrollY: number;
@@ -113,7 +114,7 @@ export function Sheet({ open, onClose, onClosed, title, children }: SheetProps) 
                 <button
                   type="button"
                   onClick={onClose}
-                  aria-label="Закрыть"
+                  aria-label={closeLabel}
                   className="-mr-2 flex h-11 w-11 items-center justify-center rounded-full text-hint"
                 >
                   <X size={20} />

@@ -13,6 +13,7 @@ from lumi.worker.jobs import (
     compact_conversation,
     enqueue_due_assistant_turns,
     process_assistant_turn,
+    process_due_opportunity_jobs,
     run_calendar_sync,
     run_custom_prompt,
     run_daily_planning,
@@ -50,6 +51,7 @@ class WorkerSettings:
         run_custom_prompt,
         compact_conversation,
         process_assistant_turn,
+        process_due_opportunity_jobs,
         cleanup_ui_events,
     ]
     cron_jobs = [
@@ -57,6 +59,8 @@ class WorkerSettings:
         cron(send_due_reminders, second=15, unique=True),
         # Recovery for saved chat turns when enqueue failed or a process restarted.
         cron(enqueue_due_assistant_turns, second=45, unique=True),
+        # Low-latency proactive task/project opportunities.
+        cron(process_due_opportunity_jobs, second=35, unique=True),
         # Realtime outbox retention: durable catch-up is 72h.
         cron(cleanup_ui_events, hour=3, minute=20, unique=True),
     ]

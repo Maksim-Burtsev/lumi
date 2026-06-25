@@ -33,7 +33,10 @@ class TodayService:
         now_local = local_now(user.timezone)
         day_start, day_end = local_day_bounds(now, user.timezone)
 
-        events = await self.calendar.list_events(user, day_start, day_end)
+        events = [
+            event for event in await self.calendar.list_events(user, day_start, day_end)
+            if not (event.status == CalendarEventStatus.PROPOSED and event.end_at <= now)
+        ]
         timeline = [
             {
                 "id": str(e.id),
@@ -131,18 +134,7 @@ class TodayService:
 
         # --- suggestions ------------------------------------------------------
         suggestions: list[dict] = []
-        proposed = [e for e in events if e.status == CalendarEventStatus.PROPOSED]
-        for event in proposed[:2]:
-            suggestions.append({
-                "id": f"confirm-block-{event.id}",
-                "kind": "focus_block",
-                "title": _text(locale, f"Accept focus block \"{event.title}\"", f"Принять фокус-блок «{event.title}»"),
-                "description": (
-                    f"{fmt_local(event.start_at, user.timezone, '%H:%M')}–"
-                    f"{fmt_local(event.end_at, user.timezone, '%H:%M')}"
-                ),
-                "action": {"type": "confirm_block", "payload": {"block_id": str(event.id)}},
-            })
+        proposed = [e for e in events if e.status == CalendarEventStatus.PROPOSED and e.end_at > now]
         unplanned = [t for t in active_tasks if t.priority.value in ("high", "urgent")]
         if unplanned and not proposed:
             suggestions.append({

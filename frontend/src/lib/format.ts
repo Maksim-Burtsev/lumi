@@ -16,7 +16,6 @@ export function countLabel(n: number, forms: [string, string, string]): string {
   return `${n} ${plural(n, forms)}`;
 }
 
-const dayMonthFmt = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short' });
 const headingFmt = new Intl.DateTimeFormat('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' });
 const weekdayShortFmt = new Intl.DateTimeFormat('ru-RU', { weekday: 'short', day: 'numeric', month: 'long' });
 
@@ -193,6 +192,7 @@ export function formatRelative(ts: string | null | undefined, options: TimeDispl
   if (!ts) return '—';
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return '—';
+  const en = options.locale === 'en';
   const now = new Date();
   const diffMs = now.getTime() - d.getTime();
   const future = diffMs < 0;
@@ -201,19 +201,31 @@ export function formatRelative(ts: string | null | undefined, options: TimeDispl
   const min = Math.round(abs / 60_000);
   const hours = Math.round(abs / 3_600_000);
 
-  if (abs < 45_000) return future ? 'через минуту' : 'только что';
-  if (min < 60) return future ? `через ${min} мин` : `${min} мин назад`;
-  if (hours < 24 && isSameDay(d, now, options.timezone)) return future ? `через ${countLabel(hours, ['час', 'часа', 'часов'])}` : `${hours} ч назад`;
+  if (en) {
+    if (abs < 45_000) return future ? 'in a minute' : 'just now';
+    if (min < 60) return future ? `in ${min} min` : `${min} min ago`;
+    if (hours < 24 && isSameDay(d, now, options.timezone)) {
+      return future ? `in ${hours} ${hours === 1 ? 'hr' : 'hrs'}` : `${hours} ${hours === 1 ? 'hr' : 'hrs'} ago`;
+    }
+  } else {
+    if (abs < 45_000) return future ? 'через минуту' : 'только что';
+    if (min < 60) return future ? `через ${min} мин` : `${min} мин назад`;
+    if (hours < 24 && isSameDay(d, now, options.timezone)) return future ? `через ${countLabel(hours, ['час', 'часа', 'часов'])}` : `${hours} ч назад`;
+  }
 
   const today = startOfDay(now);
-  if (isSameDay(d, addDays(today, -1), options.timezone)) return 'вчера';
-  if (isSameDay(d, addDays(today, 1), options.timezone)) return `завтра в ${formatTime(d, options)}`;
+  if (isSameDay(d, addDays(today, -1), options.timezone)) return en ? 'yesterday' : 'вчера';
+  if (isSameDay(d, addDays(today, 1), options.timezone)) {
+    return en ? `tomorrow at ${formatTime(d, options)}` : `завтра в ${formatTime(d, options)}`;
+  }
 
   const days = Math.round(abs / 86_400_000);
+  if (en && !future && days < 7) return `${days} ${days === 1 ? 'day' : 'days'} ago`;
+  if (en && future && days < 7) return `in ${days} ${days === 1 ? 'day' : 'days'}`;
   if (!future && days < 7) return `${countLabel(days, ['день', 'дня', 'дней'])} назад`;
   if (future && days < 7) return `через ${countLabel(days, ['день', 'дня', 'дней'])}`;
 
-  return dayMonthFmt.format(d);
+  return safeDateTimeFormat(localeTag(options), { day: 'numeric', month: 'short' }).format(d);
 }
 
 /** Due label for tasks: "Сегодня 14:00", "Завтра 09:00", "10 июн 09:00" */

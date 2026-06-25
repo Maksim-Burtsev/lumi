@@ -5,15 +5,56 @@ import { Button } from '../ui/Button';
 import { FieldLabel, Input, Select, Textarea } from '../ui/Field';
 import { Sheet } from '../ui/Sheet';
 import { useToast } from '../ui/Toast';
+import { useAppLocale } from '../../lib/useAppLocale';
 
 /** Full task editor: title, priority, project, due date with quick chips. */
 
-const PRIORITY_OPTIONS: { value: TaskPriority; label: string }[] = [
-  { value: 'low', label: 'Низкий' },
-  { value: 'medium', label: 'Средний' },
-  { value: 'high', label: 'Высокий' },
-  { value: 'urgent', label: 'Срочно' },
-];
+const COPY = {
+  en: {
+    task: 'Task',
+    title: 'Title',
+    note: 'Note',
+    notePlaceholder: 'Details, links...',
+    priority: 'Priority',
+    project: 'Project',
+    due: 'Due date',
+    remind: 'Remind at this time',
+    save: 'Save',
+    close: 'Close',
+    saved: 'Saved',
+    saveFailed: 'Could not save',
+    undoCompletion: 'Undo completion',
+    reopened: 'Task reopened',
+    reopenFailed: 'Could not reopen task',
+    todayEvening: 'Today 18:00',
+    tomorrowMorning: 'Tomorrow 09:00',
+    saturday: 'Saturday',
+    noDue: 'No due date',
+    priorities: { low: 'Low', medium: 'Medium', high: 'High', urgent: 'Urgent' },
+  },
+  ru: {
+    task: 'Задача',
+    title: 'Название',
+    note: 'Заметка',
+    notePlaceholder: 'Детали, ссылки...',
+    priority: 'Приоритет',
+    project: 'Проект',
+    due: 'Срок',
+    remind: 'Напомнить в это время',
+    save: 'Сохранить',
+    close: 'Закрыть',
+    saved: 'Сохранено',
+    saveFailed: 'Не удалось сохранить',
+    undoCompletion: 'Вернуть задачу',
+    reopened: 'Задача возвращена',
+    reopenFailed: 'Не удалось вернуть задачу',
+    todayEvening: 'Сегодня 18:00',
+    tomorrowMorning: 'Завтра 09:00',
+    saturday: 'Суббота',
+    noDue: 'Без срока',
+    priorities: { low: 'Низкий', medium: 'Средний', high: 'Высокий', urgent: 'Срочно' },
+  },
+};
 
 function toLocalInput(ts: string | null): string {
   if (!ts) return '';
@@ -53,6 +94,8 @@ export function TaskEditSheet({
   const [remind, setRemind] = useState(true);
   const patchTask = usePatchTask();
   const { show } = useToast();
+  const locale = useAppLocale();
+  const copy = COPY[locale];
 
   useEffect(() => {
     if (task) {
@@ -83,47 +126,65 @@ export function TaskEditSheet({
       },
       {
         onSuccess: () => {
-          show('Сохранено', 'success');
+          show(copy.saved, 'success');
           onClose();
         },
-        onError: () => show('Не удалось сохранить', 'error'),
+        onError: () => show(copy.saveFailed, 'error'),
+      },
+    );
+  };
+  const undoCompletion = () => {
+    patchTask.mutate(
+      { id: task.id, input: { status: 'active' } },
+      {
+        onSuccess: () => {
+          show(copy.reopened, 'success');
+          onClose();
+        },
+        onError: () => show(copy.reopenFailed, 'error'),
       },
     );
   };
 
   const CHIPS: { label: string; value: string }[] = [
-    { label: 'Сегодня 18:00', value: quickDate('today-evening') },
-    { label: 'Завтра 09:00', value: quickDate('tomorrow-morning') },
-    { label: 'Суббота', value: quickDate('weekend') },
-    { label: 'Без срока', value: '' },
+    { label: copy.todayEvening, value: quickDate('today-evening') },
+    { label: copy.tomorrowMorning, value: quickDate('tomorrow-morning') },
+    { label: copy.saturday, value: quickDate('weekend') },
+    { label: copy.noDue, value: '' },
+  ];
+  const priorityOptions: { value: TaskPriority; label: string }[] = [
+    { value: 'low', label: copy.priorities.low },
+    { value: 'medium', label: copy.priorities.medium },
+    { value: 'high', label: copy.priorities.high },
+    { value: 'urgent', label: copy.priorities.urgent },
   ];
 
   return (
-    <Sheet open onClose={onClose} title="Задача">
+    <Sheet open onClose={onClose} title={copy.task} closeLabel={copy.close}>
       <label className="block">
-        <FieldLabel>Название</FieldLabel>
+        <FieldLabel>{copy.title}</FieldLabel>
         <Input value={title} onChange={setTitle} />
       </label>
       <label className="mt-4 block">
-        <FieldLabel>Заметка</FieldLabel>
-        <Textarea value={description} onChange={setDescription} rows={2} placeholder="Детали, ссылки…" />
+        <FieldLabel>{copy.note}</FieldLabel>
+        <Textarea value={description} onChange={setDescription} rows={2} placeholder={copy.notePlaceholder} />
       </label>
       <div className="mt-4 grid grid-cols-2 gap-3">
         <label className="block">
-          <FieldLabel>Приоритет</FieldLabel>
+          <FieldLabel>{copy.priority}</FieldLabel>
           <Select
             value={priority}
             onChange={(v) => setPriority(v as TaskPriority)}
-            options={PRIORITY_OPTIONS}
+            options={priorityOptions}
           />
         </label>
         <label className="block">
-          <FieldLabel>Проект</FieldLabel>
+          <FieldLabel>{copy.project}</FieldLabel>
           <Input value={project} onChange={setProject} placeholder="lumi" />
         </label>
       </div>
       <div className="mt-4">
-        <FieldLabel>Срок</FieldLabel>
+        <FieldLabel>{copy.due}</FieldLabel>
         <div className="mb-2 flex flex-wrap gap-1.5">
           {CHIPS.map((chip) => (
             <button
@@ -154,13 +215,18 @@ export function TaskEditSheet({
               onChange={(e) => setRemind(e.target.checked)}
               className="h-4 w-4 accent-[var(--accent)]"
             />
-            Напомнить в это время
+            {copy.remind}
           </label>
         )}
       </div>
       <Button fullWidth className="mt-5" busy={patchTask.isPending} onClick={save}>
-        Сохранить
+        {copy.save}
       </Button>
+      {task.status === 'done' && (
+        <Button fullWidth variant="secondary" className="mt-2" busy={patchTask.isPending} onClick={undoCompletion}>
+          {copy.undoCompletion}
+        </Button>
+      )}
     </Sheet>
   );
 }

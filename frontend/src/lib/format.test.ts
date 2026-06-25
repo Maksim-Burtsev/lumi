@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   formatDateHeading,
   formatDueLabel,
+  formatRelative,
   formatTime,
   formatTimeRange,
   resolveTimeFormat,
@@ -50,5 +51,12 @@ describe('time formatting preferences', () => {
       timeFormat: '24h',
       timezone: 'UTC',
     })).toBe('19 Aug, 14:30');
+  });
+
+  it('formats relative time in English when locale is English', () => {
+    const now = new Date();
+    const threeMinutesAgo = new Date(now.getTime() - 3 * 60_000).toISOString();
+
+    expect(formatRelative(threeMinutesAgo, { locale: 'en' })).toBe('3 min ago');
   });
 });

@@ -17,18 +17,23 @@ from lumi.config import get_settings
 from lumi.db.models import (
     AgentRun,
     AgentRunType,
+    AssistantOpportunityJob,
     AssistantTurn,
     Conversation,
     ScheduledTask,
+    Task,
+    TaskStatus,
     User,
 )
 from lumi.db.session import session_scope
 from lumi.llm.base import LLMMessage
 from lumi.llm.gateway import LLMGateway
 from lumi.logging import agent_run_id_var, get_logger
+from lumi.services.assistant_suggestions import AssistantSuggestionService
+from lumi.services.planning_settings import normalize_planning_settings
 from lumi.services.runs import RunService
 from lumi.services.turns import TurnService
-from lumi.utils.text import chunk_telegram
+from lumi.utils.text import chunk_telegram, ru_plural
 from lumi.utils.time import fmt_local, utc_now
 from lumi.worker.queue import enqueue_job
 
@@ -805,6 +810,103 @@ async def cleanup_ui_events(ctx: dict[str, Any]) -> str:
             utc_now() - timedelta(hours=72)
         )
     return f"deleted {deleted}"
+
+
+async def process_due_opportunity_jobs(ctx: dict[str, Any]) -> str:
+    """arq cron job: precompute low-latency task suggestions for due users."""
+    processed = 0
+    now = utc_now()
+    async with session_scope() as session:
+        result = await session.execute(
+            select(AssistantOpportunityJob)
+            .where(
+                AssistantOpportunityJob.next_check_at <= now,
+                (
+                    AssistantOpportunityJob.locked_until.is_(None)
+                    | (AssistantOpportunityJob.locked_until <= now)
+                ),
+            )
+            .order_by(AssistantOpportunityJob.next_check_at.asc())
+            .limit(20)
+            .with_for_update(skip_locked=True)
+        )
+        jobs = list(result.scalars())
+        for job in jobs:
+            job.locked_until = now + timedelta(seconds=60)
+        await session.flush()
+
+        for job in jobs:
+            user = await _load_user(session, str(job.user_id))
+            if user is None:
+                job.locked_until = None
+                job.next_check_at = now + timedelta(hours=1)
+                continue
+            created = await _precompute_task_suggestion(session, user)
+            job.last_run_at = now
+            job.locked_until = None
+            job.next_check_at = now + timedelta(hours=1)
+            if created:
+                processed += 1
+    if processed:
+        log.info("opportunity jobs processed", fields={"count": processed})
+    return f"processed {processed}"
+
+
+async def _precompute_task_suggestion(session, user: User) -> bool:
+    planning = normalize_planning_settings(user.settings)
+    if not planning["micro_slots_enabled"]:
+        return False
+
+    result = await session.execute(
+        select(Task)
+        .where(
+            Task.user_id == user.id,
+            Task.status.in_([TaskStatus.ACTIVE, TaskStatus.INBOX]),
+        )
+        .order_by(
+            Task.due_at.asc().nulls_last(),
+            Task.priority.desc(),
+            Task.created_at.desc(),
+        )
+        .limit(200)
+    )
+    tasks = [
+        task for task in result.scalars()
+        if task.estimated_minutes is not None and task.estimated_minutes <= 30
+    ]
+    if not tasks:
+        return False
+
+    tasks.sort(key=lambda task: (task.estimated_minutes or 999, task.due_at is None, -task.created_at.timestamp()))
+    picked = tasks[:3]
+    total = sum(task.estimated_minutes or 0 for task in picked)
+    context_hash = "task_suggestions:" + "|".join(
+        f"{task.id}:{task.updated_at.isoformat()}:{task.estimated_minutes}" for task in picked
+    )
+    first_project = picked[0].project
+    await AssistantSuggestionService(session).create(
+        user,
+        kind="micro_slot",
+        title=f"Окно от {planning['micro_slots']['min_minutes']} минут",
+        description=f"Lumi уже подобрала {len(picked)} {ru_plural(len(picked), 'задачу', 'задачи', 'задач')} на {total} мин",
+        payload={
+            "tasks": [
+                {
+                    "id": str(task.id),
+                    "title": task.title,
+                    "project": task.project,
+                    "estimated_minutes": task.estimated_minutes,
+                    "priority": task.priority.value,
+                }
+                for task in picked
+            ],
+            "project": first_project,
+        },
+        context_hash=context_hash,
+        affected_task_ids=[str(task.id) for task in picked],
+        expires_at=utc_now() + timedelta(hours=4),
+    )
+    return True
 
 
 JOB_BY_AUTOMATION_TYPE = {

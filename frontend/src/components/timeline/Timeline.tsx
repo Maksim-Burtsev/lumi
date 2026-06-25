@@ -69,7 +69,7 @@ function EntryRow({ entry }: { entry: TimelineEntry }) {
             </p>
             <p className="tnum mt-0.5 text-[12px] text-hint">
               {entry.kind === 'task'
-                ? `к ${formatTime(entry.start_at, timeDisplay)}`
+                ? `${timeDisplay.locale === 'en' ? 'by' : 'к'} ${formatTime(entry.start_at, timeDisplay)}`
                 : formatTimeRange(entry.start_at, entry.end_at, timeDisplay)}
               {entry.subtitle ? ` · ${entry.subtitle}` : ''}
             </p>
