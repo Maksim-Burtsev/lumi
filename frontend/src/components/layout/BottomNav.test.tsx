@@ -4,8 +4,8 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { BottomNav } from './BottomNav';
 
-describe('BottomNav focus tab', () => {
-  it('promotes Focus to primary nav and moves Inbox out', () => {
+describe('BottomNav sessions tab', () => {
+  it('promotes Sessions to primary nav and moves Inbox out', () => {
     const queryClient = new QueryClient({
       defaultOptions: {
         queries: { retry: false },
@@ -20,7 +20,7 @@ describe('BottomNav focus tab', () => {
       </QueryClientProvider>,
     );
 
-    expect(screen.getByRole('button', { name: 'Focus' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('button', { name: 'Sessions' })).toHaveAttribute('aria-current', 'page');
     expect(screen.queryByRole('button', { name: 'Inbox' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Today' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Tasks' })).toBeInTheDocument();

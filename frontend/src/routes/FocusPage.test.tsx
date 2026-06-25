@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
-import type { FocusStateResponse, FocusSummaryResponse, TasksResponse } from '../api/types';
+import type { FocusSession, FocusStateResponse, FocusSummaryResponse, SettingsResponse, TasksResponse, User } from '../api/types';
 import { ToastProvider } from '../components/ui/Toast';
 import FocusPage, { getDialMetrics } from './FocusPage';
 
@@ -78,7 +78,63 @@ const SUMMARY: FocusSummaryResponse = {
   next_steps: [],
 };
 
-function renderFocusPage() {
+function makeUser(locale = 'en'): User {
+  return {
+    id: '99999999-9999-4999-8999-999999999999',
+    telegram_user_id: 777000,
+    username: 'tester',
+    first_name: 'Test',
+    last_name: 'User',
+    timezone: 'Asia/Yerevan',
+    locale,
+    settings: {},
+    created_at: '2026-06-24T10:00:00Z',
+    last_seen_at: null,
+  };
+}
+
+function makeSettings(locale = 'en'): SettingsResponse {
+  return {
+    user: makeUser(locale),
+    llm: { provider: 'mock', model: 'mock-1', configured: true },
+    google: {
+      status: 'disconnected',
+      gmail_available: false,
+      calendar_available: false,
+      scopes: [],
+      last_sync_at: null,
+      last_error: null,
+    },
+    yandex: { status: 'disconnected', username: null, last_sync_at: null, last_error: null },
+    flags: { store_email_bodies: false, store_llm_debug_payloads: false, dev_auth: true },
+    app: { public_url: null, env: 'local' },
+  };
+}
+
+function makeSession(overrides: Partial<FocusSession> = {}): FocusSession {
+  return {
+    id: '22222222-2222-4222-8222-222222222222',
+    status: 'completed',
+    task: null,
+    project: 'Lumi',
+    intention: 'Написать черновик спецификации',
+    planned_minutes: 45,
+    started_at: '2026-06-24T10:00:00Z',
+    target_end_at: '2026-06-24T10:45:00Z',
+    ended_at: '2026-06-24T10:45:00Z',
+    duration_seconds: 45 * 60,
+    reflection: {
+      accomplished_text: null,
+      distraction_text: null,
+      next_step_text: null,
+      focus_score: null,
+    },
+    ...overrides,
+  };
+}
+
+function renderFocusPage(locale = 'en') {
+  vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettings(locale));
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -133,9 +189,9 @@ describe('FocusPage', () => {
       },
     });
 
-    renderFocusPage();
+    renderFocusPage('ru');
 
-    await user.click(await screen.findByRole('button', { name: /начать фокус/i }));
+    await user.click(await screen.findByRole('button', { name: /начать сессию/i }));
     fireEvent.change(screen.getByLabelText('Намерение'), { target: { value: 'Написать черновик спецификации' } });
     await user.click(screen.getByRole('button', { name: /выбрать задачу/i }));
     await user.click(screen.getByText('Focus timer v1'));
@@ -150,7 +206,7 @@ describe('FocusPage', () => {
       });
     });
     expect(await screen.findByText('Написать черновик спецификации')).toBeInTheDocument();
-    expect(screen.getByLabelText('Прогресс фокус-сессии')).toBeInTheDocument();
+    expect(screen.getByLabelText('Прогресс сессии')).toBeInTheDocument();
   });
 
   it('starts with a custom duration and searchable task picker', async () => {
@@ -179,9 +235,9 @@ describe('FocusPage', () => {
       },
     });
 
-    renderFocusPage();
+    renderFocusPage('ru');
 
-    await user.click(await screen.findByRole('button', { name: /начать фокус/i }));
+    await user.click(await screen.findByRole('button', { name: /начать сессию/i }));
     fireEvent.change(screen.getByLabelText('Намерение'), { target: { value: 'Пишу текст' } });
     fireEvent.change(screen.getByLabelText('Своя длительность'), { target: { value: '37' } });
     await user.click(screen.getByRole('button', { name: /выбрать задачу/i }));
@@ -229,7 +285,7 @@ describe('FocusPage', () => {
       },
     });
 
-    renderFocusPage();
+    renderFocusPage('ru');
 
     await user.click(await screen.findByRole('button', { name: /залогировать/i }));
     fireEvent.change(screen.getByLabelText('Намерение'), { target: { value: 'Ретро блок' } });
@@ -251,5 +307,86 @@ describe('FocusPage', () => {
         focus_score: 4,
       });
     });
+  });
+
+  it('uses the app locale and can start an untitled session', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'getFocusState').mockResolvedValue(EMPTY_STATE);
+    vi.spyOn(api, 'getFocusSummary').mockResolvedValue(SUMMARY);
+    vi.spyOn(api, 'listTasks').mockResolvedValue(TASKS);
+    const start = vi.spyOn(api, 'startFocusSession').mockResolvedValue({
+      session: makeSession({
+        status: 'active',
+        intention: 'Session',
+        started_at: new Date().toISOString(),
+        target_end_at: new Date(Date.now() + 45 * 60_000).toISOString(),
+        ended_at: null,
+        duration_seconds: null,
+      }),
+    });
+
+    renderFocusPage('en');
+
+    expect(await screen.findByText('Ready for a session?')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /start session/i })).toBeInTheDocument();
+    expect(screen.queryByText('Готов к сессии?')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /start session/i }));
+    await user.click(screen.getByRole('button', { name: /start 45 min/i }));
+
+    await waitFor(() => {
+      expect(start).toHaveBeenCalledWith({
+        task_id: null,
+        project: null,
+        intention: 'Session',
+        planned_minutes: 45,
+      });
+    });
+  });
+
+  it('opens history details with clickable days, project split, and sessions', async () => {
+    const user = userEvent.setup();
+    const recentSession = makeSession({
+      id: '77777777-7777-4777-8777-777777777777',
+      project: 'QA Project',
+      intention: 'QA custom session',
+      duration_seconds: 39 * 60,
+      reflection: {
+        accomplished_text: 'Checked timer start and history',
+        distraction_text: null,
+        next_step_text: null,
+        focus_score: 4,
+      },
+    });
+    vi.spyOn(api, 'getFocusState').mockResolvedValue({
+      ...EMPTY_STATE,
+      recent_sessions: [recentSession],
+    });
+    vi.spyOn(api, 'getFocusSummary').mockResolvedValue({
+      period: 'week',
+      total_focus_seconds: 39 * 60,
+      total_sessions: 1,
+      streak_days: 1,
+      average_focus_score: 4,
+      daily_activity: [
+        { date: '2026-06-23', focus_seconds: 0, session_count: 0 },
+        { date: '2026-06-24', focus_seconds: 39 * 60, session_count: 1 },
+        { date: '2026-06-25', focus_seconds: 0, session_count: 0 },
+      ],
+      project_breakdown: [{ project: 'QA Project', focus_seconds: 39 * 60, session_count: 1 }],
+      next_steps: [],
+    });
+    vi.spyOn(api, 'listTasks').mockResolvedValue(TASKS);
+
+    renderFocusPage('en');
+
+    await user.click(await screen.findByRole('button', { name: /details/i }));
+
+    expect(await screen.findByText('Session history')).toBeInTheDocument();
+    expect(screen.getByText('Days')).toBeInTheDocument();
+    expect(screen.getAllByText('QA Project').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('QA custom session').length).toBeGreaterThan(0);
+    expect(screen.getByText('Checked timer start and history')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /2026-06-24: 39m/i }).length).toBeGreaterThan(0);
   });
 });
