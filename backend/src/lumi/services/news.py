@@ -116,7 +116,7 @@ class NewsService:
         for topic in topics:
             items = await self.collect_news(user, topic)
             if not items:
-                sections.append(f"Тема: {topic.title}\n(новых материалов не найдено)")
+                sections.append(f"Topic: {topic.title}\n(no new items found)")
                 continue
             lines = []
             for item in items:
@@ -130,12 +130,13 @@ class NewsService:
                     "id": str(item.id), "title": item.title, "url": item.url,
                     "source": item.source_name, "topic": topic.title,
                 })
-            sections.append(f"Тема: {topic.title}\n" + "\n".join(lines))
+            sections.append(f"Topic: {topic.title}\n" + "\n".join(lines))
 
         now_local = local_now(user.timezone)
         user_content = (
-            f"Дата: {now_local.strftime('%Y-%m-%d %H:%M')}\n"
-            f"Темы пользователя: {', '.join(t.title for t in topics)}\n\n"
+            f"Target language: {user.locale or 'en'}\n"
+            f"Date: {now_local.strftime('%Y-%m-%d %H:%M')}\n"
+            f"User topics: {', '.join(t.title for t in topics)}\n\n"
             + "\n\n".join(sections)
         )
         try:
@@ -155,7 +156,7 @@ class NewsService:
                         fields={"error": str(exc)})
             if not all_items:
                 raise
-            digest_text = "Свежие материалы по вашим темам:\n\n" + "\n".join(
+            digest_text = "Fresh items for your topics:\n\n" + "\n".join(
                 f"• {i['title']}" + (f" ({i['source']})" if i["source"] else "")
                 for i in all_items[:15]
             )
@@ -163,7 +164,7 @@ class NewsService:
         digest = NewsDigestRun(
             user_id=user.id,
             agent_run_id=agent_run_id,
-            title=f"Дайджест {fmt_local(now_local, user.timezone, '%d.%m %H:%M')}",
+            title=f"Digest {fmt_local(now_local, user.timezone, '%d.%m %H:%M')}",
             digest_text=digest_text,
             items_json=all_items,
         )

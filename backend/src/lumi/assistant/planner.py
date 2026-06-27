@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
@@ -36,6 +37,9 @@ class AgentPlanner:
         known_context: str | None = None,
         media_context: MediaUnderstanding | None = None,
         available_media: list[MediaCandidate] | None = None,
+        tool_observations: list[dict[str, Any]] | None = None,
+        loop_step: int = 1,
+        remaining_steps: int | None = None,
         agent_run_id: uuid.UUID | None = None,
         session=None,
     ) -> AgentPlan:
@@ -63,12 +67,30 @@ class AgentPlanner:
                 "If the file is needed, set mode=needs_media_understanding or mode=needs_focused_vision.\n"
                 f"{media_lines}"
             )
+        observations_block = ""
+        if tool_observations:
+            bounded_observations = tool_observations[-8:]
+            observations_block = (
+                "\n\ntool_observations:\n"
+                f"{json.dumps(bounded_observations, ensure_ascii=False, indent=2)[:6000]}\n"
+                "Use these observations as the current backend state. Choose the next valid tool "
+                "or a final/ask_user answer. Do not repeat a read-only tool unless it is still needed. "
+                "If the user requested creating or scheduling something and the observations contain "
+                "enough local times/title/duration to do it, choose the write tool next. Use ask_user "
+                "only when a required detail is still missing or the write would be unsafe."
+            )
+        loop_block = (
+            f"\nLoop step: {max(1, loop_step)}"
+            + (f"\nRemaining model steps: {remaining_steps}" if remaining_steps is not None else "")
+        )
         user_content = (
             f"Current datetime: {now_local.strftime('%Y-%m-%dT%H:%M:%S')}\n"
             f"Timezone: {user.timezone}\n"
             f"Known user context: {known_context or '—'}\n\n"
             f"{TOOL_CATALOG}\n\n"
             f"Message: {text}\n"
+            f"{loop_block}"
+            f"{observations_block}"
             f"{media_block}"
             f"{available_media_block}\n\n"
             "Return JSON matching the schema."
@@ -201,6 +223,9 @@ def _planner_trace(
         "tool_names": [call.name for call in plan.tool_calls],
         "tool_count": len(plan.tool_calls),
         "final_answer_present": bool(plan.final_answer),
+        "user_visible_status": _short_text(plan.user_visible_status, limit=120)
+        if plan.user_visible_status else None,
+        "progress_kind": plan.progress_kind,
         "raw_plan_sanitized": _sanitize_raw_plan(raw),
     }
 

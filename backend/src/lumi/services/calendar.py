@@ -132,6 +132,7 @@ class CalendarService:
         organizer: dict[str, Any] | None = None,
         attendees: list[dict[str, Any]] | None = None,
         user_response_status: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> CalendarEvent:
         detail_links = _clean_links(
             links if links is not None else extract_links(description, meeting_url, external_url),
@@ -154,6 +155,7 @@ class CalendarService:
             metadata_={
                 key: value
                 for key, value in {
+                    **(metadata or {}),
                     "location": location,
                     "meeting_url": meeting_url,
                     "external_url": external_url,

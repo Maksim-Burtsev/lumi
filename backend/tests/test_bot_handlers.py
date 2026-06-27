@@ -1,11 +1,14 @@
 import asyncio
+from datetime import datetime
 from types import SimpleNamespace
 
 from sqlalchemy import select
 
 from lumi.bot import handlers
-from lumi.db.models import AssistantTurn, Message, MessageRole
+from lumi.db.models import AssistantTurn, CalendarEventStatus, Message, MessageRole
 from lumi.db.session import session_scope
+from lumi.services.calendar import CalendarService
+from lumi.utils.time import local_to_utc
 
 from .conftest import TEST_TELEGRAM_ID
 
@@ -61,6 +64,25 @@ class FakeBot:
 
     async def send_chat_action(self, *, chat_id: int, action: str) -> None:
         self.actions.append((chat_id, action))
+
+
+class FakeCallbackMessage:
+    def __init__(self) -> None:
+        self.answers: list[str] = []
+
+    async def answer(self, text: str, **kwargs) -> None:
+        self.answers.append(text)
+
+
+class FakeCallback:
+    def __init__(self, data: str, *, language_code: str | None = None) -> None:
+        self.data = data
+        self.from_user = SimpleNamespace(id=TEST_TELEGRAM_ID, language_code=language_code)
+        self.message = FakeCallbackMessage()
+        self.answers: list[str | None] = []
+
+    async def answer(self, text: str | None = None, **kwargs) -> None:
+        self.answers.append(text)
 
 
 async def test_rejected_unsupported_attachment_with_caption_does_not_call_llm_or_download(monkeypatch):
@@ -207,7 +229,7 @@ async def test_chat_message_enqueues_turn_without_inline_orchestrator(monkeypatc
 
     await handlers.on_chat_message(message, FakeBot())
 
-    assert message.answers == ["🧠 Думаю…"]
+    assert message.answers == ["⏳"]
     assert len(enqueued) == 1
     assert enqueued[0][0] == "process_assistant_turn"
 
@@ -234,4 +256,43 @@ async def test_duplicate_enqueue_does_not_show_queue_unavailable(monkeypatch):
 
     await handlers.on_chat_message(message, FakeBot())
 
-    assert message.answers == ["🧠 Думаю…"]
+    assert message.answers == ["⏳"]
+
+
+async def test_block_confirm_uses_event_reply_language(monkeypatch):
+    async def fake_check_allowed(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(handlers, "_check_allowed", fake_check_allowed)
+
+    async with session_scope() as session:
+        user = await handlers.UserService(session).ensure_user(
+            TEST_TELEGRAM_ID,
+            language_code="ru",
+        )
+        event = await CalendarService(session).create_internal_block(
+            user,
+            title="QA conferma italiana",
+            start_at=local_to_utc(datetime(2026, 6, 22, 21, 30), user.timezone),
+            end_at=local_to_utc(datetime(2026, 6, 22, 22, 0), user.timezone),
+            status=CalendarEventStatus.PROPOSED,
+            created_by="agent",
+            metadata={"reply_language": "it"},
+        )
+        event_id = event.id
+
+    callback = FakeCallback(f"block_confirm:{event_id}", language_code="ru")
+
+    await handlers.on_block_confirm(callback)
+
+    assert callback.answers == ["Accettato"]
+    assert callback.message.answers == [
+        "✓ Blocco focus in calendario: QA conferma italiana, 22.06 21:30–22:00"
+    ]
+
+    async with session_scope() as session:
+        user = await handlers.UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        confirmed = await CalendarService(session).get_event(user, event_id)
+
+    assert confirmed is not None
+    assert confirmed.status == CalendarEventStatus.CONFIRMED

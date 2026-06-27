@@ -274,12 +274,23 @@ class TimeWindow(BaseModel):
 class CalendarRequest(BaseModel):
     kind: Literal["find_focus_slot", "create_internal_block", "create_external_event", "plan_day"]
     title: str | None = None
+    description: str | None = None
     duration_minutes: int = 60
     start_at_local: datetime | None = None
     end_at_local: datetime | None = None
     time_window_local: TimeWindow | None = None
     requires_confirmation: bool = True
     confidence: float = 0.0
+
+    @field_validator("description")
+    @classmethod
+    def clean_optional_description(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        return v[:2000]
 
 
 class CalendarEventsRequest(BaseModel):
@@ -508,12 +519,28 @@ class AgentPlan(BaseModel):
     tool_calls: list[PlannedToolCall] = Field(default_factory=list)
     focused_vision: FocusedVisionRequest | None = None
     final_answer: str | None = None
+    user_visible_status: str | None = None
+    progress_kind: Literal[
+        "understanding",
+        "reading_calendar",
+        "resolving",
+        "writing",
+        "answering",
+    ] | None = None
     should_answer_normally: bool = True
     language: str = "en"
 
     @field_validator("referenced_media_id")
     @classmethod
     def clean_media_id(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = " ".join(v.split()).strip()
+        return v[:200] or None
+
+    @field_validator("user_visible_status")
+    @classmethod
+    def clean_user_visible_status(cls, v: str | None) -> str | None:
         if v is None:
             return None
         v = " ".join(v.split()).strip()

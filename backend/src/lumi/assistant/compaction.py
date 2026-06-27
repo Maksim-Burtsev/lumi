@@ -73,19 +73,20 @@ class CompactionService:
 
         settings = get_settings()
         parts: list[str] = []
+        parts.append(f"Target language: {user.locale or 'en'}")
         if previous_summary:
-            parts.append("Предыдущее summary:\n" + previous_summary.summary_text)
+            parts.append("Previous summary:\n" + previous_summary.summary_text)
         history_lines = []
         for msg in to_compact:
-            speaker = "Пользователь" if msg.role == MessageRole.USER else "Lumi"
+            speaker = "User" if msg.role == MessageRole.USER else "Lumi"
             history_lines.append(f"{speaker}: {msg.content}")
         history = "\n".join(history_lines)
         # Stay within a sane input budget.
         max_history = settings.llm_context_max_chars - 6000
         if len(history) > max_history:
             history = history[-max_history:]
-        parts.append("История для сжатия:\n" + history)
-        parts.append(f"Целевая длина summary: до {settings.summary_target_chars} символов.")
+        parts.append("History to compact:\n" + history)
+        parts.append(f"Target summary length: up to {settings.summary_target_chars} characters.")
 
         response = await self.llm.complete(
             messages=[LLMMessage(role="user", content="\n\n".join(parts))],

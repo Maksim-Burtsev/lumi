@@ -353,7 +353,9 @@ class ContextBuilder:
             f"Timezone: {user.timezone}\n"
             f"App locale: {user.locale}\n"
             f"Reply language mode: {language_settings['reply_language_mode']}\n"
+            f"Fixed reply language: {language_settings.get('reply_language') or 'en'}\n"
             "Reply policy: if mode=auto, answer in the latest user message language; "
+            "if mode=fixed, answer in fixed reply language; "
             "if mode=app_locale, answer in the app locale.\n"
             "Channel: telegram_private_chat"
         )
@@ -372,7 +374,8 @@ class ContextBuilder:
             "Permissions:\n"
             "- Can create internal Lumi tasks automatically when user intent is clear.\n"
             "- Can create internal reminders automatically when user intent is clear.\n"
-            "- Can store non-sensitive memory when user explicitly says «запомни» or intent is very clear.\n"
+            "- Can store non-sensitive memory when user explicitly asks to remember something "
+            "(for example says \"remember\" or \"запомни\") or intent is very clear.\n"
             "- Must ask confirmation before writing to external Google Calendar.\n"
             "- Must ask confirmation before sending, deleting, archiving, or modifying email.\n"
             "- Must never access local filesystem/shell as a tool."
@@ -384,7 +387,7 @@ class ContextBuilder:
             t.project for t in await self.tasks.list_active(user, limit=200) if t.project
         })
         if all_projects:
-            sections.append("Projects (области задач пользователя): " + ", ".join(all_projects))
+            sections.append("Projects (user task areas): " + ", ".join(all_projects))
         if active_tasks:
             lines = ["Existing active tasks (state, not actions performed now):"]
             now = utc_now()
@@ -393,15 +396,15 @@ class ContextBuilder:
                 if t.project:
                     line += f" project={t.project}"
                 if t.due_at:
-                    overdue = " (ПРОСРОЧЕНО)" if t.due_at < now else ""
-                    line += f" — срок {fmt_local(t.due_at, user.timezone)}{overdue}"
+                    overdue = " (OVERDUE)" if t.due_at < now else ""
+                    line += f" due {fmt_local(t.due_at, user.timezone)}{overdue}"
                 if t.reminder_at:
-                    line += f", напоминание {fmt_local(t.reminder_at, user.timezone)}"
+                    line += f", reminder {fmt_local(t.reminder_at, user.timezone)}"
                 lines.append(line)
             sections.append("\n".join(lines))
         else:
             sections.append(
-                "Existing active tasks (state, not actions performed now): нет активных задач."
+                "Existing active tasks (state, not actions performed now): no active tasks."
             )
 
         # 6-7. Calendar today
@@ -410,7 +413,7 @@ class ContextBuilder:
         if events:
             lines = ["Calendar today:"]
             for e in events:
-                marker = {"proposed": " (предложено, не подтверждено)"}.get(e.status.value, "")
+                marker = {"proposed": " (proposed, not confirmed)"}.get(e.status.value, "")
                 metadata = e.metadata_ or {}
                 line = (
                     f"- {fmt_local(e.start_at, user.timezone, '%H:%M')}–"
@@ -430,11 +433,11 @@ class ContextBuilder:
                     line += " links=" + ", ".join(links)
                 if e.description:
                     one_line = " ".join(e.description.split())
-                    line += f" — {one_line[:180]}"
+                    line += f" - {one_line[:180]}"
                 lines.append(line)
             sections.append("\n".join(lines))
         else:
-            sections.append("Calendar today: встреч нет.")
+            sections.append("Calendar today: no meetings.")
 
         # Email snapshot (counts only — cheap and useful)
         needs_reply = await self.session.execute(
@@ -445,7 +448,7 @@ class ContextBuilder:
         )
         needs_reply_count = needs_reply.scalar_one()
         if needs_reply_count:
-            sections.append(f"Recent email triage: {needs_reply_count} писем ждут ответа.")
+            sections.append(f"Recent email triage: {needs_reply_count} emails need a reply.")
 
         # Automations
         automations = await self.session.execute(
@@ -507,7 +510,7 @@ class ContextBuilder:
         messages: list[LLMMessage] = [LLMMessage(role="user", content=context_block)]
         messages.append(LLMMessage(
             role="assistant",
-            content="Принял контекст. Готов отвечать как Lumi с учетом этого состояния.",
+            content="Context received. Ready to answer as Lumi using this state.",
         ))
         for msg in recent:
             role = "assistant" if msg.role == MessageRole.ASSISTANT else "user"

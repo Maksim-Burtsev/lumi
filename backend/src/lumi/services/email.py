@@ -111,8 +111,8 @@ class EmailService:
         threads = await self.sync_recent_threads(user)
         if not threads:
             return TriageResult(
-                summary="Новых писем нет.",
-                telegram_digest="Почта: новых писем за последние 36 часов нет.",
+                summary="No new email.",
+                telegram_digest="Email: no new messages in the last 36 hours.",
             ), []
 
         lines = []
@@ -123,7 +123,7 @@ class EmailService:
                     {
                         "external_thread_id": t.external_thread_id,
                         "from": sender,
-                        "subject": t.subject or "(без темы)",
+                        "subject": t.subject or "(no subject)",
                         "snippet": (t.snippet or "")[:300],
                         "labels": t.labels[:5],
                     },
@@ -131,7 +131,8 @@ class EmailService:
                 )
             )
         user_content = (
-            f"Писем/тредов: {len(threads)}. Каждый тред — JSON-строка:\n" + "\n".join(lines)
+            f"Target language: {user.locale or 'en'}\n"
+            f"Email threads: {len(threads)}. Each thread is one JSON line:\n" + "\n".join(lines)
         )
 
         raw = await self.llm.complete_json(
@@ -147,8 +148,8 @@ class EmailService:
         except Exception:  # noqa: BLE001 — malformed LLM output must not kill the run
             log.warning("triage result failed validation, using fallback")
             triage = TriageResult(
-                summary="Не удалось разобрать почту автоматически.",
-                telegram_digest="Почта синхронизирована, но классификация не удалась. Попробуй ещё раз.",
+                summary="Could not triage email automatically.",
+                telegram_digest="Email was synced, but classification failed. Try again.",
             )
 
         by_external = {t.external_thread_id: t for t in threads}

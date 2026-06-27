@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 import json
 from datetime import datetime, timedelta
+from time import monotonic
 from typing import Any
 
 import httpx
@@ -97,6 +98,8 @@ async def send_turn_reply(
     reply_text: str,
     buttons,
     reply_rich_html: str | None = None,
+    open_app_button: bool = False,
+    open_app_button_label: str | None = None,
 ) -> bool:
     settings = get_settings()
     if not settings.telegram_bot_token:
@@ -108,7 +111,11 @@ async def send_turn_reply(
     bot = Bot(token=settings.telegram_bot_token)
     chat_id = turn.telegram_chat_id or user.telegram_chat_id or user.telegram_user_id
     chunks = chunk_telegram(telegram_plain_text(reply_text))
-    markup = markup_from_buttons(buttons)
+    markup = markup_from_buttons(
+        buttons,
+        with_app_button=open_app_button,
+        app_button_text=open_app_button_label,
+    )
     markup_payload = _telegram_json(markup)
     link_preview_options = LinkPreviewOptions(is_disabled=True)
     rich_html = reply_rich_html if reply_rich_html and len(chunks) == 1 else None
@@ -192,6 +199,35 @@ async def send_turn_reply(
         return True
     except Exception:  # noqa: BLE001
         log.exception("telegram turn reply failed")
+        return False
+    finally:
+        await bot.session.close()
+
+
+async def edit_turn_status_message(
+    *,
+    user: User,
+    turn: AssistantTurn,
+    status_text: str,
+) -> bool:
+    settings = get_settings()
+    if not settings.telegram_bot_token or not turn.status_message_id:
+        return False
+    from aiogram import Bot
+    from aiogram.types import LinkPreviewOptions
+
+    bot = Bot(token=settings.telegram_bot_token)
+    chat_id = turn.telegram_chat_id or user.telegram_chat_id or user.telegram_user_id
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=turn.status_message_id,
+            text=telegram_plain_text(status_text),
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+        )
+        return True
+    except Exception:  # noqa: BLE001 — progress edits are best-effort
+        log.info("telegram progress status edit skipped")
         return False
     finally:
         await bot.session.close()
@@ -407,6 +443,23 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
     async def image_loader(metadata: dict):
         return await _download_turn_image(metadata, source="recent")
 
+    last_progress_text: str | None = None
+    last_progress_at = 0.0
+
+    async def on_progress(status_text: str) -> None:
+        nonlocal last_progress_at, last_progress_text
+        status_text = telegram_plain_text(status_text).strip()
+        if not status_text:
+            return
+        now = monotonic()
+        if status_text == last_progress_text:
+            return
+        if last_progress_text is not None and now - last_progress_at < 1.0:
+            return
+        last_progress_text = status_text
+        last_progress_at = now
+        await edit_turn_status_message(user=user, turn=turn, status_text=status_text)
+
     try:
         async with session_scope() as session:
             result = await AssistantOrchestrator(session).handle_user_message(
@@ -420,6 +473,7 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
                 image=image,
                 ignored_attachments=list(payload.get("ignored_attachments") or []),
                 image_loader=image_loader,
+                on_progress=on_progress,
                 touch_last_seen=False,
             )
     except Exception as exc:  # noqa: BLE001
@@ -445,6 +499,10 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
     }
     if result.reply_rich_html:
         reply_kwargs["reply_rich_html"] = result.reply_rich_html
+    if result.open_app_button:
+        reply_kwargs["open_app_button"] = result.open_app_button
+    if result.open_app_button_label:
+        reply_kwargs["open_app_button_label"] = result.open_app_button_label
     delivered = await send_turn_reply(**reply_kwargs)
     if not delivered:
         next_turn = None
@@ -665,18 +723,23 @@ async def run_task_review(*, session, user: User, run: AgentRun, notify: bool) -
     tasks = await TaskService(session).list_active(user, limit=50)
     if not tasks:
         if notify:
-            await send_telegram_message(user, "Активных задач нет — обзор не нужен. Чистый горизонт.")
+            await send_telegram_message(user, "No active tasks; no review needed. Clear horizon.")
         return "no tasks"
     now = utc_now()
     lines = []
     for t in tasks:
         line = f"- [{t.priority.value}] {t.title}"
         if t.due_at:
-            line += f" (срок {fmt_local(t.due_at, user.timezone)}"
-            line += ", ПРОСРОЧЕНО)" if t.due_at < now else ")"
+            line += f" (due {fmt_local(t.due_at, user.timezone)}"
+            line += ", OVERDUE)" if t.due_at < now else ")"
         lines.append(line)
     response = await LLMGateway().complete(
-        messages=[LLMMessage(role="user", content="Задачи:\n" + "\n".join(lines))],
+        messages=[
+            LLMMessage(
+                role="user",
+                content=f"Target language: {user.locale or 'en'}\nTasks:\n" + "\n".join(lines),
+            )
+        ],
         system=TASK_REVIEW_SYSTEM,
         request_kind="task_review",
         user_id=user.id,
@@ -715,11 +778,11 @@ async def run_custom_prompt(*, session, user: User, run: AgentRun, notify: bool,
 
     format_hint = ""
     if output_format == "md":
-        format_hint = "\n\nОформи результат как структурированный Markdown-документ с заголовками."
+        format_hint = "\n\nFormat the result as a structured Markdown document with headings."
     elif output_format == "html":
         format_hint = (
-            "\n\nОформи результат как полный самодостаточный HTML-документ "
-            "(один файл, аккуратная типографика, без внешних зависимостей)."
+            "\n\nFormat the result as a complete self-contained HTML document "
+            "(one file, polished typography, no external dependencies)."
         )
     response = await LLMGateway().complete(
         messages=[LLMMessage(role="user", content=prompt + format_hint)],

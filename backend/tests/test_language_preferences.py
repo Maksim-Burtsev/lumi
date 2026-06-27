@@ -44,6 +44,7 @@ async def test_new_user_locale_comes_from_telegram_or_defaults_to_english(db_ses
     assert english.locale == "en"
     assert english.settings["locale_source"] == "telegram"
     assert english.settings["reply_language_mode"] == DEFAULT_REPLY_LANGUAGE_MODE
+    assert english.settings["reply_language"] == DEFAULT_APP_LOCALE
     assert english.settings["time_format"] == DEFAULT_TIME_FORMAT
     assert russian.locale == "ru"
     assert unsupported.locale == "en"
@@ -73,14 +74,15 @@ async def test_patch_settings_validates_locale_and_reply_mode(db_session):
     user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID, language_code="en-US")
 
     response = await patch_settings(
-        SettingsPatch(locale="ru", reply_language_mode="app_locale"),
+        SettingsPatch(locale="ru", reply_language_mode="fixed", reply_language="it-IT"),
         user=user,
         session=db_session,
     )
 
     assert response["user"]["locale"] == "ru"
     assert response["user"]["settings"]["locale_source"] == "manual"
-    assert response["user"]["settings"]["reply_language_mode"] == "app_locale"
+    assert response["user"]["settings"]["reply_language_mode"] == "fixed"
+    assert response["user"]["settings"]["reply_language"] == "it"
 
     with pytest.raises(ValidationError):
         SettingsPatch(locale="es")

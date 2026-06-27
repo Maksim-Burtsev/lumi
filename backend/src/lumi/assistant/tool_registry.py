@@ -38,18 +38,25 @@ TOOL_CATALOG = """Available backend tools:
 - plan_day()
 - find_focus_slot(title?, duration_minutes?, time_window_local?)
 - read_calendar_events(start_at_local, end_at_local, include_details?, sync_if_needed?)
-- create_internal_calendar_block(title, start_at_local, end_at_local)
+- create_internal_calendar_block(title, start_at_local, end_at_local, description?)
 - create_external_calendar_event(title, start_at_local, end_at_local)
 - create_automation(type, title, cron_expression, timezone?, config?)
 - email_triage(time_window?)
 - news_digest(topics?)
-- set_language(app_locale?: en|ru, reply_language_mode?: auto|app_locale)
+- set_language(app_locale?: en|ru, reply_language_mode?: auto|fixed|app_locale, reply_language?: language tag)
 
 Rules:
 - Return tool calls as JSON only. Do not claim that a tool was executed.
+- Set user_visible_status on every non-final step: one short line in the user's language,
+  max 80 chars, no links, no markdown, no success/completion claims before tools succeed.
+- user_visible_status must use the same language as the language field; ignore older chat history language.
+- progress_kind is for logs only: understanding, reading_calendar, resolving, writing, or answering.
 - Do not request domain lists up front. The backend loads relevant data after a tool call.
 - Any user request to create, read, update, complete, or snooze Lumi-managed state must use mode=tool_calls.
 - For task project/tags/priority/description changes, use update_task. Do not use rename_task to set a project.
+- For create_task, if the user explicitly says to add/create the task in/to/into/a/en/zu a named project
+  in any language, set project to that exact project name. Project names are user data; "Lumi" can be
+  a project even though it is also the app name.
 - For reopening a completed task ("open again", "not done", "верни статус открыто", "она не выполнена"), use update_task with updates.status="active".
 - For changes to several tasks at once (all tasks matching a query, all tasks in a project/tag, move everything related to a project), use bulk_update_tasks. Backend will ask for confirmation before changing multiple tasks.
 - Delete/remove task requests should set updates.status="cancelled"; never physically delete tasks.
@@ -64,7 +71,8 @@ Rules:
 - If the user asks to change the app language, interface language, bot language,
   reply language, or to return replies to automatic language matching, use set_language.
   app_locale controls Mini App UI. reply_language_mode=auto means match each message;
-  reply_language_mode=app_locale means always reply using the app language.
+  reply_language_mode=fixed means always reply using reply_language; reply_language may be any normalized
+  language tag like it, es, de; reply_language_mode=app_locale means always reply using the app language.
 - If the user refers to media, set referenced_media_id to one available_media id.
 - available_media is listed newest-first. For an elliptical follow-up, prefer the first matching media item.
 - Use visual_intent=read_only for visual questions. Use visual_intent=action_evidence only for explicit backend actions based on media.
@@ -73,6 +81,8 @@ Rules:
 
 Examples:
 - User asks to create a task with title "Webhook для Lumi на проде" -> mode=tool_calls, create_task(title="Webhook для Lumi на проде"), should_answer_normally=false.
+- User asks "Aggiungi a Lumi la task scrivere proposta" -> mode=tool_calls, create_task(title="scrivere proposta", project="Lumi"), should_answer_normally=false.
+- User asks "E nello stesso progetto aggiungi preparare materiali marketing" -> mode=tool_calls, create_task(title="preparare materiali marketing", project_ref="last_task_project"), should_answer_normally=false.
 - User asks "И в тот же проект добавь проработать задачи с маркетингом" -> mode=tool_calls, create_task(title="проработать задачи с маркетингом", project_ref="last_task_project"), should_answer_normally=false.
 - User asks to attach the recently created task to project "Lumi" -> mode=tool_calls, update_task(recency_hint="last_created_task", updates={"project":"Lumi"}), should_answer_normally=false.
 - User asks "Move the notes task to project Lumi" and several active notes tasks exist -> mode=tool_calls, update_task(task_query="notes", updates={"project":"Lumi"}), should_answer_normally=false. Do not ask_user with your own candidate list.
@@ -82,6 +92,8 @@ Examples:
 - User asks to show/open/list Lumi tasks -> mode=tool_calls, read_tasks(...), should_answer_normally=false.
 - User asks "Always answer in Russian and switch the app to Russian" -> mode=tool_calls,
   set_language(app_locale="ru", reply_language_mode="app_locale"), should_answer_normally=false.
+- User asks "Always answer in Italian" -> mode=tool_calls,
+  set_language(reply_language_mode="fixed", reply_language="it"), should_answer_normally=false.
 - User asks "ответы снова авто" -> mode=tool_calls,
   set_language(reply_language_mode="auto"), should_answer_normally=false.
 """
@@ -104,6 +116,8 @@ AGENT_PLANNER_SCHEMA_HINT = {
     ],
     "focused_vision": "null unless mode=needs_focused_vision; then object with non-empty question, reason, confidence",
     "final_answer": "string|null",
+    "user_visible_status": "short user-language progress line, max 80 chars, no links/markdown/success claims",
+    "progress_kind": "understanding|reading_calendar|resolving|writing|answering|null",
     "should_answer_normally": "boolean",
-    "language": "ru|en|other",
+    "language": "latest user message language tag, e.g. en|ru|it|es|de",
 }

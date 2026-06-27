@@ -16,6 +16,7 @@ from lumi.db.models import Message, MessageRole, User
 from lumi.i18n import (
     ReplyLanguageMode,
     ensure_language_settings,
+    normalize_reply_language,
     normalize_reply_language_mode,
     validate_app_locale,
     validate_time_format,
@@ -71,6 +72,7 @@ class SettingsPatch(BaseModel):
     timezone: str | None = None
     locale: str | None = None
     reply_language_mode: ReplyLanguageMode | None = None
+    reply_language: str | None = None
     time_format: str | None = None
     settings: dict | None = None
 
@@ -101,6 +103,11 @@ async def patch_settings(
             **ensure_language_settings(user.settings),
             "reply_language_mode": normalize_reply_language_mode(payload.reply_language_mode),
         }
+    if payload.reply_language:
+        user.settings = {
+            **ensure_language_settings(user.settings),
+            "reply_language": normalize_reply_language(payload.reply_language),
+        }
     if payload.time_format is not None:
         try:
             user.settings = {
@@ -120,6 +127,10 @@ async def patch_settings(
                 raise HTTPException(status_code=422, detail="invalid_time_format") from exc
         if "planning" in payload.settings:
             merged_settings = merge_planning_settings(merged_settings, payload.settings)
+        if "reply_language" in payload.settings:
+            merged_settings["reply_language"] = normalize_reply_language(
+                str(payload.settings["reply_language"] or "")
+            )
         user.settings = ensure_language_settings(merged_settings)
     session.add(user)
     await RealtimeEventService(session).emit(

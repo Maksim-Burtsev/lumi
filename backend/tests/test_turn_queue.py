@@ -151,6 +151,68 @@ async def test_send_turn_reply_falls_back_to_html_when_rich_send_fails(monkeypat
     assert fallback["link_preview_options"].is_disabled is True
 
 
+async def test_send_turn_reply_can_attach_mini_app_button(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+
+    class FakeBot:
+        def __init__(self, token: str) -> None:
+            self.token = token
+            self.session = SimpleNamespace(close=self._close)
+
+        async def _close(self) -> None:
+            calls.append(("close", {}))
+
+        async def send_message(self, **kwargs):
+            calls.append(("send_message", kwargs))
+            return SimpleNamespace(message_id=11)
+
+    def fake_markup_from_buttons(
+        buttons,
+        *,
+        with_app_button: bool = False,
+        app_button_text: str | None = None,
+    ):
+        calls.append((
+            "markup",
+            {
+                "buttons": buttons,
+                "with_app_button": with_app_button,
+                "app_button_text": app_button_text,
+            },
+        ))
+        return "MARKUP"
+
+    monkeypatch.setattr("aiogram.Bot", FakeBot)
+    monkeypatch.setattr(jobs, "markup_from_buttons", fake_markup_from_buttons)
+    monkeypatch.setattr(
+        jobs,
+        "get_settings",
+        lambda: SimpleNamespace(telegram_bot_token="123:test"),
+    )
+
+    delivered = await jobs.send_turn_reply(
+        user=SimpleNamespace(telegram_chat_id=777, telegram_user_id=777),
+        turn=SimpleNamespace(telegram_chat_id=777, status_message_id=None),
+        reply_text="📅 Today\n10:00-10:30 Standup",
+        buttons=[],
+        open_app_button=True,
+        open_app_button_label="✨ Open Lumi",
+    )
+
+    assert delivered is True
+    assert calls[0] == (
+        "markup",
+        {
+            "buttons": [],
+            "with_app_button": True,
+            "app_button_text": "✨ Open Lumi",
+        },
+    )
+    assert calls[1][0] == "send_message"
+    assert calls[1][1]["reply_markup"] == "MARKUP"
+    assert calls[-1] == ("close", {})
+
+
 async def test_intake_debounces_fast_messages_into_one_turn():
     async with session_scope() as session:
         intake = TelegramIntakeService(session, now=lambda: BASE_NOW)
@@ -570,6 +632,46 @@ async def test_process_assistant_turn_runs_orchestrator_and_completes(monkeypatc
     async with session_scope() as session:
         turn = await session.get(AssistantTurn, turn_id)
         assert turn.status == "completed"
+
+
+async def test_process_assistant_turn_edits_progress_status(monkeypatch):
+    started = utc_now() - timedelta(seconds=10)
+    edits: list[tuple[int, str]] = []
+
+    async with session_scope() as session:
+        result = await TelegramIntakeService(session, now=lambda: started).ingest_chat_message(
+            update_id=1451,
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=911,
+            text="add a calendar block",
+            status_message_id=9101,
+        )
+        turn_id = result.turn.id
+
+    class FakeOrchestrator:
+        def __init__(self, session) -> None:
+            self.session = session
+
+        async def handle_user_message(self, **kwargs):
+            await kwargs["on_progress"]("Checking your calendar...")
+            return AssistantResult(reply_text="done", buttons=[], needs_compaction=False)
+
+    async def fake_edit_turn_status_message(*, user, turn, status_text):
+        edits.append((turn.status_message_id, status_text))
+        return True
+
+    async def fake_send_turn_reply(*, user, turn, reply_text, buttons):
+        return True
+
+    monkeypatch.setattr(jobs, "AssistantOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(jobs, "edit_turn_status_message", fake_edit_turn_status_message)
+    monkeypatch.setattr(jobs, "send_turn_reply", fake_send_turn_reply)
+
+    summary = await jobs.process_assistant_turn({}, str(turn_id))
+
+    assert summary == "turn completed"
+    assert edits == [(9101, "Checking your calendar...")]
 
 
 async def test_delivery_failure_retries_and_does_not_complete(monkeypatch):
