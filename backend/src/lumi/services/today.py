@@ -47,6 +47,7 @@ class TodayService:
                 "source": e.source.value,
                 "status": e.status.value,
                 "busy": e.busy,
+                **_private_note_fields(e.metadata_ or {}),
             }
             for e in events
         ]
@@ -224,6 +225,18 @@ class TodayService:
 
 def _text(locale: str, en: str, ru: str) -> str:
     return en if locale == "en" else ru
+
+
+def _private_note_fields(metadata: dict) -> dict:
+    private_note = metadata.get("private_note")
+    private_note_summary = metadata.get("private_note_summary")
+    return {
+        "private_note": private_note if isinstance(private_note, str) else None,
+        "private_note_summary": private_note_summary if isinstance(private_note_summary, str) else None,
+        "private_note_summary_status": metadata.get("private_note_summary_status"),
+        "private_note_updated_at": metadata.get("private_note_updated_at"),
+        "private_note_summary_updated_at": metadata.get("private_note_summary_updated_at"),
+    }
 
 
 def _en_plural(n: int, singular: str, plural: str) -> str:

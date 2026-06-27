@@ -32,6 +32,7 @@ from lumi.assistant.schemas import (
     AutomationRequest,
     BulkTaskPatchRequest,
     CalendarEventsRequest,
+    CalendarPrivateNoteRequest,
     CalendarRequest,
     EmailRequest,
     ExtractedTask,
@@ -61,7 +62,12 @@ from lumi.i18n import (
 )
 from lumi.llm.gateway import LLMGateway
 from lumi.logging import agent_run_id_var, get_logger
-from lumi.services.calendar import CalendarService, merge_busy_intervals
+from lumi.services.calendar import (
+    CalendarService,
+    calendar_private_note_summary_text,
+    merge_busy_intervals,
+    private_note_needs_summary,
+)
 from lumi.services.confirmations import ConfirmationService
 from lumi.services.planning import CalendarSyncService, PlanningService
 from lumi.services.realtime import RealtimeEventService, commit_with_realtime
@@ -77,7 +83,7 @@ from lumi.services.task_update_replies import (
 )
 from lumi.services.tasks import TaskService
 from lumi.services.users import UserService
-from lumi.utils.text import truncate
+from lumi.utils.text import normalize_for_match, truncate
 from lumi.utils.time import fmt_local, local_to_utc, utc_now, utc_to_local
 from lumi.worker.queue import enqueue_job
 
@@ -103,6 +109,8 @@ IMAGE_SOURCED_CONFIRM_TOOLS = {
     "snooze_task",
     "store_memory",
     "create_internal_calendar_block",
+    "update_calendar_private_note",
+    "delete_calendar_private_note",
     "create_external_calendar_event",
     "create_automation",
 }
@@ -117,7 +125,6 @@ MULTI_STEP_INTENT_MARKERS = (
     "after",
     "block",
     "create",
-    "schedule",
     "until",
     "добав",
     "созд",
@@ -251,6 +258,48 @@ def _calendar_request_from_tool_call(call: PlannedToolCall) -> CalendarRequest:
         "kind": kind,
         **_args_with_call_defaults(call),
     })
+
+
+def _calendar_private_note_label(language: str | None) -> str:
+    return _text_for_language(language, en="Personal note", ru="Личная заметка", it="Nota personale")
+
+
+def _calendar_private_note_open_app_text(language: str | None) -> str:
+    return _text_for_language(
+        language,
+        en="open Lumi for full note",
+        ru="полная заметка в Lumi",
+        it="apri Lumi per la nota completa",
+    )
+
+
+def _calendar_private_note_line(event, language: str | None) -> str | None:
+    metadata = event.metadata_ or {}
+    note = metadata.get("private_note")
+    if not isinstance(note, str) or not note.strip():
+        return None
+    summary = calendar_private_note_summary_text(event)
+    if summary is None:
+        return None
+    if private_note_needs_summary(note) and metadata.get("private_note_summary_status") != "ready":
+        summary = f"{summary} ({_calendar_private_note_open_app_text(language)})"
+    return f"🔒 {_calendar_private_note_label(language)}: {summary}"
+
+
+async def _enqueue_private_note_summary(user: User, event) -> None:
+    metadata = event.metadata_ or {}
+    if metadata.get("private_note_summary_status") != "pending":
+        return
+    note_hash = metadata.get("private_note_hash")
+    if not note_hash:
+        return
+    await enqueue_job(
+        "summarize_calendar_private_note",
+        str(user.id),
+        event_id=str(event.id),
+        private_note_hash=note_hash,
+        notify=False,
+    )
 
 
 def _task_query_from_call(call: PlannedToolCall) -> str:
@@ -482,6 +531,33 @@ def _calendar_added_text(language: str | None, *, title: str, start_label: str) 
     )
 
 
+def _calendar_private_note_updated_text(language: str | None, *, title: str) -> str:
+    return _text_for_language(
+        language,
+        en=f"Updated personal note for: {title}",
+        ru=f"Обновил личную заметку: {title}",
+        it=f"Nota personale aggiornata: {title}",
+    )
+
+
+def _calendar_private_note_deleted_text(language: str | None, *, title: str) -> str:
+    return _text_for_language(
+        language,
+        en=f"Deleted personal note for: {title}",
+        ru=f"Удалил личную заметку: {title}",
+        it=f"Nota personale eliminata: {title}",
+    )
+
+
+def _calendar_private_note_not_found_text(language: str | None) -> str:
+    return _text_for_language(
+        language,
+        en="I could not find one matching calendar event.",
+        ru="Не нашёл одну подходящую встречу в календаре.",
+        it="Non ho trovato un solo evento corrispondente nel calendario.",
+    )
+
+
 def _calendar_proposed_text(language: str | None, *, title: str, start_label: str) -> str:
     return _text_for_language(
         language,
@@ -634,11 +710,16 @@ def _calendar_timeline_reply(
         title = truncate(event.title, 64)
         reply_line = f"🟦 {start_label}  {title} · {duration}"
         reply_lines.append(reply_line)
+        private_note_line = _calendar_private_note_line(event, language)
+        if private_note_line:
+            reply_lines.append("   " + private_note_line)
 
         rich_item = f"<b>🟦 {escape(start_label)}</b>  {escape(title)} · {escape(duration)}"
         meeting_url = event.metadata_.get("meeting_url")
         if include_details and meeting_url:
             rich_item += f'  <a href="{escape(str(meeting_url), quote=True)}">↗</a>'
+        if private_note_line:
+            rich_item += f"<br/><i>{escape(private_note_line)}</i>"
         rich_lines.append(rich_item)
 
         busy_cursor = max(busy_cursor or event.end_at, event.end_at)
@@ -1741,6 +1822,26 @@ class AssistantOrchestrator:
                 open_app_button = open_app_button or calendar_read.open_app_button
                 if calendar_read.open_app_button:
                     use_action_reply_renderer = False
+            elif call.name == "update_calendar_private_note":
+                request = CalendarPrivateNoteRequest.model_validate(_args_with_call_defaults(call))
+                await self._apply_update_calendar_private_note_tool(
+                    user=user,
+                    run=run,
+                    call=call,
+                    request=request,
+                    results=results,
+                    language=plan.language,
+                )
+            elif call.name == "delete_calendar_private_note":
+                request = CalendarPrivateNoteRequest.model_validate(_args_with_call_defaults(call))
+                await self._apply_delete_calendar_private_note_tool(
+                    user=user,
+                    run=run,
+                    call=call,
+                    request=request,
+                    results=results,
+                    language=plan.language,
+                )
             elif call.name == "create_automation":
                 automation = AutomationRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_create_automation_tool(user=user, run=run,
@@ -2805,6 +2906,97 @@ class AssistantOrchestrator:
             Button(text="✗ No", callback_data=f"reject:{confirmation.id}", key="reject"),
         ])
 
+    async def _resolve_calendar_event_for_private_note(
+        self,
+        user: User,
+        request: CalendarPrivateNoteRequest,
+    ):
+        if request.event_id:
+            return await self.calendar.get_event(user, request.event_id)
+        if not request.event_query:
+            return None
+        start = utc_now() - timedelta(days=1)
+        end = utc_now() + timedelta(days=30)
+        events = await self.calendar.list_events(user, start, end)
+        needle = normalize_for_match(request.event_query)
+        matches = [
+            event for event in events
+            if needle and needle in normalize_for_match(event.title)
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    async def _apply_update_calendar_private_note_tool(
+        self,
+        *,
+        user: User,
+        run,
+        call: PlannedToolCall,
+        request: CalendarPrivateNoteRequest,
+        results: list[str],
+        language: str | None,
+    ) -> None:
+        if request.confidence < 0.6 or request.private_note is None:
+            return
+        event = await self._resolve_calendar_event_for_private_note(user, request)
+        if event is None:
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name="update_calendar_private_note",
+                status="skipped",
+                args={**request.model_dump(mode="json"), **_call_source_payload(call)},
+                result={"reason": "event_not_found_or_ambiguous"},
+            )
+            results.append(_calendar_private_note_not_found_text(language))
+            return
+        event = await self.calendar.set_private_note(user, event, request.private_note)
+        await _enqueue_private_note_summary(user, event)
+        await self.runs.log_tool_call(
+            run=run,
+            tool_name="update_calendar_private_note",
+            status="completed",
+            args={**request.model_dump(mode="json"), **_call_source_payload(call)},
+            result={
+                "event_id": str(event.id),
+                "private_note_summary_status": (event.metadata_ or {}).get("private_note_summary_status"),
+            },
+        )
+        results.append(_calendar_private_note_updated_text(language, title=event.title))
+
+    async def _apply_delete_calendar_private_note_tool(
+        self,
+        *,
+        user: User,
+        run,
+        call: PlannedToolCall,
+        request: CalendarPrivateNoteRequest,
+        results: list[str],
+        language: str | None,
+    ) -> None:
+        if request.confidence < 0.6:
+            return
+        event = await self._resolve_calendar_event_for_private_note(user, request)
+        if event is None:
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name="delete_calendar_private_note",
+                status="skipped",
+                args={**request.model_dump(mode="json"), **_call_source_payload(call)},
+                result={"reason": "event_not_found_or_ambiguous"},
+            )
+            results.append(_calendar_private_note_not_found_text(language))
+            return
+        event = await self.calendar.delete_private_note(user, event)
+        await self.runs.log_tool_call(
+            run=run,
+            tool_name="delete_calendar_private_note",
+            status="completed",
+            args={**request.model_dump(mode="json"), **_call_source_payload(call)},
+            result={"event_id": str(event.id)},
+        )
+        results.append(_calendar_private_note_deleted_text(language, title=event.title))
+
     async def _apply_read_calendar_events_tool(
         self,
         *,
@@ -2869,13 +3061,16 @@ class AssistantOrchestrator:
         )
         for event in events[:20]:
             when = _calendar_event_when(event, user.timezone)
-            line = f"{when} — {event.title}"
+            line = f"{when} — {event.title} id={event.id}"
             location = event.metadata_.get("location")
             meeting_url = event.metadata_.get("meeting_url")
             if location:
                 line += f" ({location})"
             if request.include_details and meeting_url:
                 line += f" — {meeting_url}"
+            private_note_line = _calendar_private_note_line(event, language)
+            if private_note_line:
+                line += f" — {private_note_line}"
             lines.append(line)
         if len(events) > 20:
             lines.append(f"{len(events) - 20} more events not shown.")
@@ -2987,6 +3182,9 @@ class AssistantOrchestrator:
                 agent_run_id=run.id,
                 metadata={"reply_language": language},
             )
+            if request.private_note:
+                event = await self.calendar.set_private_note(user, event, request.private_note)
+                await _enqueue_private_note_summary(user, event)
             await self.runs.log_tool_call(
                 run=run, tool_name="create_internal_calendar_block", status="completed",
                 args=request.model_dump(mode="json"),
@@ -3084,6 +3282,9 @@ class AssistantOrchestrator:
                     } if (start_at, end_at) != (requested_start_at, requested_end_at) else {}),
                 },
             )
+            if request.private_note:
+                event = await self.calendar.set_private_note(user, event, request.private_note)
+                await _enqueue_private_note_summary(user, event)
             await self.runs.log_tool_call(
                 run=run,
                 tool_name="create_internal_calendar_block",

@@ -706,6 +706,74 @@ async def run_calendar_sync(*, session, user: User, run: AgentRun, notify: bool)
     return summary
 
 
+@_job(AgentRunType.CUSTOM)
+async def summarize_calendar_private_note(
+    *,
+    session,
+    user: User,
+    run: AgentRun,
+    notify: bool,
+    event_id: str = "",
+    private_note_hash: str = "",
+) -> str:
+    from lumi.assistant.prompts import CALENDAR_PRIVATE_NOTE_SUMMARY_SYSTEM
+    from lumi.db.models import CalendarEvent
+    from lumi.services.calendar import CalendarService, private_note_needs_summary
+
+    if not event_id or not private_note_hash:
+        return "missing event id or note hash"
+    result = await session.execute(
+        select(CalendarEvent).where(CalendarEvent.id == uuid.UUID(event_id), CalendarEvent.user_id == user.id)
+    )
+    event = result.scalar_one_or_none()
+    if event is None:
+        return "event not found"
+    metadata = event.metadata_ or {}
+    note = metadata.get("private_note")
+    if metadata.get("private_note_hash") != private_note_hash:
+        return "stale personal note hash"
+    if not isinstance(note, str) or not note.strip():
+        return "personal note missing"
+    if metadata.get("private_note_summary_status") == "ready" and metadata.get("private_note_summary"):
+        return "summary already ready"
+    calendar = CalendarService(session)
+    if not private_note_needs_summary(note):
+        await calendar.set_private_note(user, event, note)
+        return "summary not needed"
+    try:
+        response = await LLMGateway().complete_json(
+            messages=[LLMMessage(role="user", content=f"Personal note:\n{note}")],
+            system=CALENDAR_PRIVATE_NOTE_SUMMARY_SYSTEM,
+            json_schema_hint={
+                "type": "object",
+                "properties": {"summary": {"type": "string", "maxLength": 160}},
+                "required": ["summary"],
+                "additionalProperties": False,
+            },
+            temperature=0.1,
+            max_tokens=256,
+            request_kind="calendar_private_note_summary",
+            user_id=user.id,
+            agent_run_id=run.id,
+            session=session,
+        )
+    except Exception as exc:  # noqa: BLE001 - note stays usable through deterministic fallback
+        await calendar.mark_private_note_summary_failed(
+            user,
+            event,
+            note_hash=private_note_hash,
+            error=str(exc),
+        )
+        return f"summary failed: {exc}"
+    await calendar.write_private_note_summary(
+        user,
+        event,
+        note_hash=private_note_hash,
+        summary=str(response.get("summary") or ""),
+    )
+    return f"summarized {event.id}"
+
+
 @_job(AgentRunType.TASK_REVIEW)
 async def run_task_review(*, session, user: User, run: AgentRun, notify: bool) -> str:
     from lumi.assistant.prompts import TASK_REVIEW_SYSTEM
@@ -868,6 +936,35 @@ async def cleanup_ui_events(ctx: dict[str, Any]) -> str:
             utc_now() - timedelta(hours=72)
         )
     return f"deleted {deleted}"
+
+
+async def recover_pending_calendar_private_note_summaries(ctx: dict[str, Any]) -> str:
+    """Cron recovery when an API enqueue races commit or Redis is temporarily down."""
+    from lumi.db.models import CalendarEvent
+
+    async with session_scope() as session:
+        result = await session.execute(
+            select(CalendarEvent)
+            .where(CalendarEvent.metadata_["private_note_summary_status"].astext == "pending")
+            .order_by(CalendarEvent.updated_at)
+            .limit(50)
+        )
+        events = list(result.scalars())
+        enqueued = 0
+        for event in events:
+            note_hash = (event.metadata_ or {}).get("private_note_hash")
+            if not note_hash:
+                continue
+            job_id = await enqueue_job(
+                "summarize_calendar_private_note",
+                str(event.user_id),
+                event_id=str(event.id),
+                private_note_hash=note_hash,
+                notify=False,
+            )
+            if job_id:
+                enqueued += 1
+    return f"enqueued {enqueued} calendar personal note summaries"
 
 
 JOB_BY_AUTOMATION_TYPE = {
