@@ -42,7 +42,6 @@ import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
 import { addDays, formatDateParam, formatDayLabel, formatRelative, formatTime, formatTimeRange, isSameDay, startOfDay } from '../lib/format';
 import type { AppLocale } from '../lib/i18n';
-import { pickLocaleText } from '../lib/i18n';
 import { useAppLocale } from '../lib/useAppLocale';
 import { useTimeDisplay } from '../lib/useTimeDisplay';
 import { haptic, openExternalLink } from '../telegram/webapp';
@@ -56,6 +55,221 @@ interface ContactAction {
   person: CalendarPerson | CalendarAttendee;
   anchor: DOMRect;
 }
+
+const CALENDAR_COPY: Record<AppLocale, {
+  linkFallback: string;
+  participantFallback: string;
+  responseDeclined: string;
+  responseTentative: string;
+  responseNeedsAction: string;
+  copyEmail: string;
+  closeContact: string;
+  participantContact: string;
+  defaultBlockTitle: string;
+  titleRequired: string;
+  endAfterStart: string;
+  blockCreated: string;
+  blockCreateFailed: string;
+  newBlock: string;
+  internalCalendar: string;
+  title: string;
+  titlePlaceholder: string;
+  start: string;
+  end: string;
+  descriptionOptional: string;
+  descriptionPlaceholder: string;
+  locationOptional: string;
+  locationPlaceholder: string;
+  linksOptional: string;
+  createBlock: string;
+  noteLabel: string;
+  notePlaceholder: string;
+  noteMaxError: string;
+  noteDeleted: string;
+  noteDeleteFailed: string;
+  noteSaved: string;
+  noteSaveFailed: string;
+  calendarSynced: string;
+  planReady: string;
+  copied: string;
+  copyFailed: string;
+  prevDay: string;
+  nextDay: string;
+  backToday: string;
+  sync: string;
+  planDay: string;
+  updatingExternal: string;
+  lastSync: (value: string) => string;
+  externalSyncHint: string;
+  googleMissingTitle: string;
+  googleMissingHint: string;
+  openSettings: string;
+  hideHint: string;
+  loadFailed: string;
+  freeDay: string;
+  freeDayHint: string;
+  yandexCalendar: string;
+  proposedLumi: string;
+  participants: string;
+  organizer: string;
+  optional: string;
+  resource: string;
+  hide: string;
+  showAll: (count: number) => string;
+  meeting: string;
+  openOriginal: string;
+  externalManaged: string;
+  blockConfirmed: string;
+  confirmFailed: string;
+  accept: string;
+  removed: string;
+  removeFailed: string;
+  reject: string;
+  remove: string;
+}> = {
+  en: {
+    linkFallback: 'Link',
+    participantFallback: 'Participant',
+    responseDeclined: 'declined',
+    responseTentative: 'tentative',
+    responseNeedsAction: 'needs reply',
+    copyEmail: 'Copy email',
+    closeContact: 'Close contact',
+    participantContact: 'Attendee contact',
+    defaultBlockTitle: 'Focus block',
+    titleRequired: 'Name the block, for example "Lumi architecture"',
+    endAfterStart: 'End time must be after start time',
+    blockCreated: 'Block created',
+    blockCreateFailed: 'Could not create block',
+    newBlock: 'New block',
+    internalCalendar: 'Lumi internal calendar',
+    title: 'Title',
+    titlePlaceholder: 'Focus: Lumi architecture',
+    start: 'Start',
+    end: 'End',
+    descriptionOptional: 'Description (optional)',
+    descriptionPlaceholder: 'What needs to happen in this block',
+    locationOptional: 'Location (optional)',
+    locationPlaceholder: 'Office, Zoom, home',
+    linksOptional: 'Links (optional)',
+    createBlock: 'Create block',
+    noteLabel: 'Personal note (optional)',
+    notePlaceholder: 'Context just for yourself',
+    noteMaxError: `Personal note is limited to ${PRIVATE_NOTE_MAX_CHARS} characters`,
+    noteDeleted: 'Note deleted',
+    noteDeleteFailed: 'Could not delete note',
+    noteSaved: 'Note saved',
+    noteSaveFailed: 'Could not save note',
+    calendarSynced: 'Calendar synced',
+    planReady: 'Plan ready',
+    copied: 'Copied',
+    copyFailed: 'Could not copy',
+    prevDay: 'Previous day',
+    nextDay: 'Next day',
+    backToday: 'Back to today',
+    sync: 'Sync',
+    planDay: 'Plan day',
+    updatingExternal: 'Calendar is updating from an external source.',
+    lastSync: (value) => `Last sync: ${value}.`,
+    externalSyncHint: 'External calendar will update after connection or manual sync.',
+    googleMissingTitle: 'Google Calendar is not connected',
+    googleMissingHint: 'Lumi already keeps an internal calendar. After you connect Google, it will include work meetings too.',
+    openSettings: 'Open settings',
+    hideHint: 'Hide hint',
+    loadFailed: 'Could not load calendar.',
+    freeDay: 'Free day',
+    freeDayHint: 'Tap the grid to create a block, or tap "Plan day" so Lumi can place tasks into free windows.',
+    yandexCalendar: 'Yandex Calendar',
+    proposedLumi: 'Lumi proposal',
+    participants: 'Participants',
+    organizer: 'organizer',
+    optional: 'opt.',
+    resource: 'resource',
+    hide: 'Hide',
+    showAll: (count) => `Show all (${count})`,
+    meeting: 'Meeting',
+    openOriginal: 'Open original',
+    externalManaged: 'External calendar event: it is managed there, Lumi only reads it.',
+    blockConfirmed: 'Block confirmed',
+    confirmFailed: 'Could not confirm',
+    accept: 'Accept',
+    removed: 'Removed from schedule',
+    removeFailed: 'Could not remove',
+    reject: 'Reject',
+    remove: 'Remove',
+  },
+  ru: {
+    linkFallback: 'Ссылка',
+    participantFallback: 'Участник',
+    responseDeclined: 'отказался',
+    responseTentative: 'возможно',
+    responseNeedsAction: 'ждёт ответа',
+    copyEmail: 'Скопировать email',
+    closeContact: 'Закрыть контакт',
+    participantContact: 'Контакт участника',
+    defaultBlockTitle: 'Фокус-блок',
+    titleRequired: 'Назови блок — например, «Архитектура Lumi»',
+    endAfterStart: 'Время окончания должно быть позже начала',
+    blockCreated: 'Блок создан',
+    blockCreateFailed: 'Не удалось создать блок',
+    newBlock: 'Новый блок',
+    internalCalendar: 'внутренний календарь Lumi',
+    title: 'Название',
+    titlePlaceholder: 'Фокус: архитектура Lumi',
+    start: 'Начало',
+    end: 'Конец',
+    descriptionOptional: 'Описание (необязательно)',
+    descriptionPlaceholder: 'Что нужно сделать в этом блоке',
+    locationOptional: 'Место (необязательно)',
+    locationPlaceholder: 'Офис, Zoom, дом',
+    linksOptional: 'Ссылки (необязательно)',
+    createBlock: 'Создать блок',
+    noteLabel: 'Личная заметка (необязательно)',
+    notePlaceholder: 'Контекст только для себя',
+    noteMaxError: `Личная заметка — до ${PRIVATE_NOTE_MAX_CHARS} символов`,
+    noteDeleted: 'Заметка удалена',
+    noteDeleteFailed: 'Не удалось удалить заметку',
+    noteSaved: 'Заметка сохранена',
+    noteSaveFailed: 'Не удалось сохранить заметку',
+    calendarSynced: 'Календарь синхронизирован',
+    planReady: 'План готов',
+    copied: 'Скопировано',
+    copyFailed: 'Не удалось скопировать',
+    prevDay: 'Предыдущий день',
+    nextDay: 'Следующий день',
+    backToday: 'Вернуться к сегодня',
+    sync: 'Синхронизировать',
+    planDay: 'Спланировать день',
+    updatingExternal: 'Календарь обновляется из внешнего источника.',
+    lastSync: (value) => `Последняя синхронизация: ${value}.`,
+    externalSyncHint: 'Внешний календарь обновится после подключения или ручной синхронизации.',
+    googleMissingTitle: 'Google Calendar не подключен',
+    googleMissingHint: 'Lumi уже ведёт внутренний календарь. После подключения Google он будет учитывать и рабочие встречи.',
+    openSettings: 'Открыть настройки',
+    hideHint: 'Скрыть подсказку',
+    loadFailed: 'Не удалось загрузить календарь.',
+    freeDay: 'День свободен',
+    freeDayHint: 'Тапни по сетке, чтобы создать блок, или нажми «Спланировать день» — Lumi разложит твои задачи по свободным окнам.',
+    yandexCalendar: 'Яндекс.Календарь',
+    proposedLumi: 'предложение Lumi',
+    participants: 'Участники',
+    organizer: 'организатор',
+    optional: 'опц.',
+    resource: 'ресурс',
+    hide: 'Скрыть',
+    showAll: (count) => `Показать всех (${count})`,
+    meeting: 'Встреча',
+    openOriginal: 'Открыть оригинал',
+    externalManaged: 'Событие из внешнего календаря — управляется там, Lumi его только читает.',
+    blockConfirmed: 'Блок подтверждён',
+    confirmFailed: 'Не удалось подтвердить',
+    accept: 'Принять',
+    removed: 'Убрано из расписания',
+    removeFailed: 'Не удалось убрать',
+    reject: 'Отклонить',
+    remove: 'Убрать',
+  },
+};
 
 function combine(day: Date, time: string): Date | null {
   const m = /^(\d{1,2}):(\d{2})$/.exec(time);
@@ -75,11 +289,11 @@ function parseLinks(value: string): string[] {
   return out;
 }
 
-function linkLabel(url: string): string {
+function linkLabel(url: string, locale: AppLocale): string {
   try {
     return new URL(url).hostname.replace(/^www\./, '');
   } catch {
-    return 'Ссылка';
+    return CALENDAR_COPY[locale].linkFallback;
   }
 }
 
@@ -102,14 +316,15 @@ function visibleLinks(event: CalendarEvent): string[] {
   );
 }
 
-function personLabel(person: { name?: string; email?: string }): string {
-  return person.name || person.email || 'Участник';
+function personLabel(person: { name?: string; email?: string }, locale: AppLocale): string {
+  return person.name || person.email || CALENDAR_COPY[locale].participantFallback;
 }
 
-function responseLabel(status?: string | null): string | null {
-  if (status === 'declined') return 'отказался';
-  if (status === 'tentative') return 'возможно';
-  if (status === 'needsAction') return 'ждёт ответа';
+function responseLabel(status: string | null | undefined, locale: AppLocale): string | null {
+  const copy = CALENDAR_COPY[locale];
+  if (status === 'declined') return copy.responseDeclined;
+  if (status === 'tentative') return copy.responseTentative;
+  if (status === 'needsAction') return copy.responseNeedsAction;
   return null;
 }
 
@@ -144,12 +359,15 @@ function ContactActionSheet({
   contact,
   onClose,
   onCopy,
+  locale,
 }: {
   contact: ContactAction | null;
   onClose: () => void;
   onCopy: (email: string) => void;
+  locale: AppLocale;
 }) {
   const reduceMotion = useReducedMotion();
+  const copy = CALENDAR_COPY[locale];
   const email = contact?.person.email;
   if (!contact || !email) return null;
 
@@ -163,14 +381,14 @@ function ContactActionSheet({
         className="flex min-h-12 w-full items-center gap-3 px-4 text-left text-[15px] font-medium text-ink"
       >
         <Copy size={17} className="shrink-0 text-hint" />
-        Скопировать email
+        {copy.copyEmail}
       </button>
     </>
   );
 
   const content = (
     <div className="fixed inset-0 z-[90]">
-      <button type="button" aria-label="Закрыть контакт" className="absolute inset-0 cursor-default" onClick={onClose} />
+      <button type="button" aria-label={copy.closeContact} className="absolute inset-0 cursor-default" onClick={onClose} />
       <motion.div
         initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 12, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -179,7 +397,7 @@ function ContactActionSheet({
         className="absolute inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+14px)] overflow-hidden rounded-[22px] border border-hairline bg-[var(--surface-strong)] shadow-card sm:hidden"
         role="dialog"
         aria-modal="true"
-        aria-label="Контакт участника"
+        aria-label={copy.participantContact}
       >
         {actions}
       </motion.div>
@@ -192,7 +410,7 @@ function ContactActionSheet({
         style={contactPopoverStyle(contact.anchor)}
         role="dialog"
         aria-modal="true"
-        aria-label="Контакт участника"
+        aria-label={copy.participantContact}
       >
         {actions}
       </motion.div>
@@ -206,12 +424,14 @@ function ParticipantRow({
   person,
   labels,
   onContact,
+  locale,
 }: {
   person: CalendarPerson | CalendarAttendee;
   labels: string[];
   onContact: (person: CalendarPerson | CalendarAttendee, anchor: DOMRect) => void;
+  locale: AppLocale;
 }) {
-  const label = personLabel(person);
+  const label = personLabel(person, locale);
   const badges = labels.filter(Boolean);
   const content = (
     <>
@@ -233,7 +453,7 @@ function ParticipantRow({
       type="button"
       onClick={(event) => onContact(person, event.currentTarget.getBoundingClientRect())}
       className="-mx-2 flex w-[calc(100%+16px)] min-w-0 items-center gap-2 rounded-xl px-2 py-1.5 text-left transition active:bg-[var(--secondary-bg)] sm:hover:bg-[var(--secondary-bg)]"
-      aria-label={`Открыть контакт: ${label}`}
+      aria-label={locale === 'en' ? `Open contact: ${label}` : `Открыть контакт: ${label}`}
     >
       {content}
     </button>
@@ -264,18 +484,7 @@ function CreateBlockSheet({
   const createEvent = useCreateEvent();
   const { show } = useToast();
   const timeDisplay = useTimeDisplay();
-  const noteCopy = pickLocaleText(locale, {
-    en: {
-      label: 'Personal note (optional)',
-      placeholder: 'Context just for yourself',
-      maxError: `Personal note is limited to ${PRIVATE_NOTE_MAX_CHARS} characters`,
-    },
-    ru: {
-      label: 'Личная заметка (необязательно)',
-      placeholder: 'Контекст только для себя',
-      maxError: `Личная заметка — до ${PRIVATE_NOTE_MAX_CHARS} символов`,
-    },
-  });
+  const copy = CALENDAR_COPY[locale];
 
   // Re-seed fields each time the sheet opens (keyed remount from parent)
   const [seeded, setSeeded] = useState(false);
@@ -284,7 +493,7 @@ function CreateBlockSheet({
     if (prefill) {
       setStart(prefill.start);
       setEnd(prefill.end);
-      setTitle('Фокус-блок');
+      setTitle(copy.defaultBlockTitle);
     }
   }
   if (!open && seeded) {
@@ -302,17 +511,17 @@ function CreateBlockSheet({
   const submit = () => {
     const trimmed = title.trim();
     if (!trimmed) {
-      setError('Назови блок — например, «Архитектура Lumi»');
+      setError(copy.titleRequired);
       return;
     }
     const startDate = combine(day, start);
     const endDate = combine(day, end);
     if (!startDate || !endDate || endDate.getTime() <= startDate.getTime()) {
-      setError('Время окончания должно быть позже начала');
+      setError(copy.endAfterStart);
       return;
     }
     if (privateNote.length > PRIVATE_NOTE_MAX_CHARS) {
-      setError(noteCopy.maxError);
+      setError(copy.noteMaxError);
       return;
     }
     setError(null);
@@ -330,50 +539,50 @@ function CreateBlockSheet({
       {
         onSuccess: () => {
           haptic('success');
-          show('Блок создан', 'success');
+          show(copy.blockCreated, 'success');
           onClose();
         },
-        onError: () => show('Не удалось создать блок', 'error'),
+        onError: () => show(copy.blockCreateFailed, 'error'),
       },
     );
   };
 
   return (
-    <Sheet open={open} onClose={onClose} title="Новый блок">
-      <p className="mb-4 text-[13px] text-hint">{formatDayLabel(day, timeDisplay)} · внутренний календарь Lumi</p>
+    <Sheet open={open} onClose={onClose} title={copy.newBlock}>
+      <p className="mb-4 text-[13px] text-hint">{formatDayLabel(day, timeDisplay)} · {copy.internalCalendar}</p>
       <label className="block">
-        <FieldLabel>Название</FieldLabel>
-        <Input value={title} onChange={setTitle} placeholder="Фокус: архитектура Lumi" />
+        <FieldLabel>{copy.title}</FieldLabel>
+        <Input value={title} onChange={setTitle} placeholder={copy.titlePlaceholder} />
       </label>
       <div className="mt-4 grid grid-cols-2 gap-3">
         <label className="block">
-          <FieldLabel>Начало</FieldLabel>
+          <FieldLabel>{copy.start}</FieldLabel>
           <Input type="time" value={start} onChange={setStart} />
         </label>
         <label className="block">
-          <FieldLabel>Конец</FieldLabel>
+          <FieldLabel>{copy.end}</FieldLabel>
           <Input type="time" value={end} onChange={setEnd} />
         </label>
       </div>
       <label className="mt-4 block">
-        <FieldLabel>Описание (необязательно)</FieldLabel>
-        <Textarea value={description} onChange={setDescription} rows={2} placeholder="Что нужно сделать в этом блоке" />
+        <FieldLabel>{copy.descriptionOptional}</FieldLabel>
+        <Textarea value={description} onChange={setDescription} rows={2} placeholder={copy.descriptionPlaceholder} />
       </label>
       <label className="mt-4 block">
-        <FieldLabel>{noteCopy.label}</FieldLabel>
-        <Textarea value={privateNote} onChange={setPrivateNote} rows={3} placeholder={noteCopy.placeholder} />
+        <FieldLabel>{copy.noteLabel}</FieldLabel>
+        <Textarea value={privateNote} onChange={setPrivateNote} rows={3} placeholder={copy.notePlaceholder} />
       </label>
       <label className="mt-4 block">
-        <FieldLabel>Место (необязательно)</FieldLabel>
-        <Input value={location} onChange={setLocation} placeholder="Офис, Zoom, дом" />
+        <FieldLabel>{copy.locationOptional}</FieldLabel>
+        <Input value={location} onChange={setLocation} placeholder={copy.locationPlaceholder} />
       </label>
       <label className="mt-4 block">
-        <FieldLabel>Ссылки (необязательно)</FieldLabel>
+        <FieldLabel>{copy.linksOptional}</FieldLabel>
         <Textarea value={linksText} onChange={setLinksText} rows={2} placeholder="https://..." />
       </label>
       {error && <p className="mt-3 text-[13px] text-danger">{error}</p>}
       <Button fullWidth className="mt-5" busy={createEvent.isPending} onClick={submit}>
-        Создать блок
+        {copy.createBlock}
       </Button>
     </Sheet>
   );
@@ -389,22 +598,7 @@ export default function CalendarPage() {
   const reduceMotion = useReducedMotion();
   const timeDisplay = useTimeDisplay();
   const locale = useAppLocale();
-  const noteCopy = pickLocaleText(locale, {
-    en: {
-      maxError: `Personal note is limited to ${PRIVATE_NOTE_MAX_CHARS} characters`,
-      deleted: 'Note deleted',
-      deleteFailed: 'Could not delete note',
-      saved: 'Note saved',
-      saveFailed: 'Could not save note',
-    },
-    ru: {
-      maxError: `Личная заметка — до ${PRIVATE_NOTE_MAX_CHARS} символов`,
-      deleted: 'Заметка удалена',
-      deleteFailed: 'Не удалось удалить заметку',
-      saved: 'Заметка сохранена',
-      saveFailed: 'Не удалось сохранить заметку',
-    },
-  });
+  const copy = CALENDAR_COPY[locale];
 
   const rangeStart = day.toISOString();
   const rangeEnd = addDays(day, 1).toISOString();
@@ -417,7 +611,7 @@ export default function CalendarPage() {
   const syncAction = useAgentRunAction({
     start: () => api.syncCalendar(),
     invalidate: [qk.eventsAll, qk.freeSlotsAll],
-    successMessage: 'Календарь синхронизирован',
+    successMessage: copy.calendarSynced,
     onApiError: (error) => {
       if (error.status === 409 && (error.error === 'calendar_not_connected' || error.error === 'google_not_connected')) {
         setGoogleHint(true);
@@ -430,7 +624,7 @@ export default function CalendarPage() {
   const planAction = useAgentRunAction({
     start: () => api.planDay(formatDateParam(day)),
     invalidate: [qk.eventsAll, qk.freeSlotsAll, qk.tasksAll],
-    successMessage: 'План готов',
+    successMessage: copy.planReady,
   });
 
   const isToday = isSameDay(day, startOfDay(new Date()));
@@ -463,10 +657,10 @@ export default function CalendarPage() {
     void copyText(email)
       .then(() => {
         haptic('success');
-        show('Скопировано', 'success');
+        show(copy.copied, 'success');
         setContactAction(null);
       })
-      .catch(() => show('Не удалось скопировать', 'error'));
+      .catch(() => show(copy.copyFailed, 'error'));
   };
 
   const closeEventSheet = () => {
@@ -478,7 +672,7 @@ export default function CalendarPage() {
   const savePrivateNote = () => {
     if (!selectedEvent) return;
     if (noteDraft.length > PRIVATE_NOTE_MAX_CHARS) {
-      setNoteError(noteCopy.maxError);
+      setNoteError(copy.noteMaxError);
       return;
     }
     const note = noteDraft.trim();
@@ -491,11 +685,11 @@ export default function CalendarPage() {
       deletePrivateNote.mutate(selectedEvent.id, {
         onSuccess: ({ event }) => {
           haptic('success');
-          show(noteCopy.deleted, 'success');
+          show(copy.noteDeleted, 'success');
           setSelectedEvent(event);
           setNoteEditing(false);
         },
-        onError: () => show(noteCopy.deleteFailed, 'error'),
+        onError: () => show(copy.noteDeleteFailed, 'error'),
       });
       return;
     }
@@ -504,12 +698,12 @@ export default function CalendarPage() {
       {
         onSuccess: ({ event }) => {
           haptic('success');
-          show(noteCopy.saved, 'success');
+          show(copy.noteSaved, 'success');
           setSelectedEvent(event);
           setNoteEditing(false);
           setNoteExpanded(false);
         },
-        onError: () => show(noteCopy.saveFailed, 'error'),
+        onError: () => show(copy.noteSaveFailed, 'error'),
       },
     );
   };
@@ -519,11 +713,11 @@ export default function CalendarPage() {
     deletePrivateNote.mutate(selectedEvent.id, {
       onSuccess: ({ event }) => {
         haptic('success');
-        show(noteCopy.deleted, 'success');
+        show(copy.noteDeleted, 'success');
         setSelectedEvent(event);
         setNoteEditing(false);
       },
-      onError: () => show(noteCopy.deleteFailed, 'error'),
+      onError: () => show(copy.noteDeleteFailed, 'error'),
     });
   };
 
@@ -534,7 +728,7 @@ export default function CalendarPage() {
         <div className="card card-strong flex items-center justify-between px-2 py-1.5">
           <button
             type="button"
-            aria-label="Предыдущий день"
+            aria-label={copy.prevDay}
             onClick={() => {
               haptic('light');
               setDay((d) => addDays(d, -1));
@@ -551,13 +745,13 @@ export default function CalendarPage() {
                 onClick={() => setDay(startOfDay(new Date()))}
                 className="relative text-[12px] font-medium text-accent-text after:absolute after:-inset-1.5 after:content-['']"
               >
-                Вернуться к сегодня
+                {copy.backToday}
               </button>
             )}
           </div>
           <button
             type="button"
-            aria-label="Следующий день"
+            aria-label={copy.nextDay}
             onClick={() => {
               haptic('light');
               setDay((d) => addDays(d, 1));
@@ -578,18 +772,18 @@ export default function CalendarPage() {
             busy={syncAction.isRunning}
             onClick={syncAction.trigger}
           >
-            Синхронизировать
+            {copy.sync}
           </Button>
           <Button variant="primary" icon={<Sparkles size={15} />} busy={planAction.isRunning} onClick={planAction.trigger}>
-            Спланировать день
+            {copy.planDay}
           </Button>
         </div>
         <p className="mt-2 px-1 text-[12px] leading-snug text-hint">
           {syncState?.stale && syncState.refresh_queued
-            ? 'Календарь обновляется из внешнего источника.'
+            ? copy.updatingExternal
             : syncState?.last_sync_at
-              ? `Последний sync: ${formatRelative(syncState.last_sync_at, timeDisplay)}.`
-              : 'Внешний календарь обновится после подключения или ручного sync.'}
+              ? copy.lastSync(formatRelative(syncState.last_sync_at, timeDisplay))
+              : copy.externalSyncHint}
         </p>
       </Rise>
 
@@ -600,21 +794,21 @@ export default function CalendarPage() {
             <div className="flex items-start gap-3">
               <CloudOff size={18} className="mt-0.5 shrink-0 text-hint" strokeWidth={1.8} />
               <div className="min-w-0 flex-1">
-                <p className="text-[14px] font-medium text-ink">Google Calendar не подключен</p>
+                <p className="text-[14px] font-medium text-ink">{copy.googleMissingTitle}</p>
                 <p className="mt-1 text-[12.5px] leading-relaxed text-hint">
-                  Lumi уже ведёт внутренний календарь. После подключения Google он будет учитывать и рабочие встречи.
+                  {copy.googleMissingHint}
                 </p>
                 <button
                   type="button"
                   onClick={() => navigate('/settings')}
                   className="relative mt-2 text-[13px] font-medium text-accent-text after:absolute after:-inset-1.5 after:content-['']"
                 >
-                  Открыть настройки →
+                  {copy.openSettings} →
                 </button>
               </div>
               <button
                 type="button"
-                aria-label="Скрыть подсказку"
+                aria-label={copy.hideHint}
                 onClick={() => setGoogleHint(false)}
                 className="-m-1.5 shrink-0 p-1.5 text-hint"
               >
@@ -630,18 +824,19 @@ export default function CalendarPage() {
         {eventsQuery.isPending ? (
           <SkeletonTimeline rows={4} />
         ) : eventsQuery.isError ? (
-          <ErrorState message="Не удалось загрузить календарь." onRetry={() => void eventsQuery.refetch()} />
+          <ErrorState message={copy.loadFailed} onRetry={() => void eventsQuery.refetch()} />
         ) : events.filter((e) => e.status !== 'cancelled').length === 0 ? (
           <EmptyState
             icon={CalendarDays}
-            title="День свободен"
-            hint="Тапни по сетке, чтобы создать блок, или нажми «Спланировать день» — Lumi разложит твои задачи по свободным окнам."
+            title={copy.freeDay}
+            hint={copy.freeDayHint}
           />
         ) : (
           <div className="card card-strong px-4 py-4">
             <DayGrid
               events={events}
               dayStart={dayStart}
+              locale={locale}
               nowLine={isToday}
               onEventTap={(e) => {
                 setShowAllAttendees(false);
@@ -671,8 +866,8 @@ export default function CalendarPage() {
             <p className="tnum text-[14px] text-hint">
               {formatTimeRange(selectedEvent.start_at, selectedEvent.end_at, timeDisplay)}
               {selectedEvent.source === 'google' && ' · Google Calendar'}
-              {selectedEvent.source === 'yandex' && ' · Яндекс.Календарь'}
-              {selectedEvent.status === 'proposed' && ' · предложение Lumi'}
+              {selectedEvent.source === 'yandex' && ` · ${copy.yandexCalendar}`}
+              {selectedEvent.status === 'proposed' && ` · ${copy.proposedLumi}`}
             </p>
             {selectedEvent.location && (
               <div className="flex items-start gap-2 text-[14px] leading-relaxed text-ink">
@@ -684,20 +879,21 @@ export default function CalendarPage() {
               <div className="space-y-2.5 rounded-xl bg-[var(--secondary-bg)] px-3.5 py-3">
                 <div className="flex items-center gap-2 text-[13px] font-medium text-hint">
                   <Users size={15} />
-                  <span>Участники{selectedEvent.attendee_count ? ` · ${selectedEvent.attendee_count}` : ''}</span>
+                  <span>{copy.participants}{selectedEvent.attendee_count ? ` · ${selectedEvent.attendee_count}` : ''}</span>
                 </div>
                 {selectedEvent.organizer && (
-                  <ParticipantRow person={selectedEvent.organizer} labels={['организатор']} onContact={openContactAction} />
+                  <ParticipantRow person={selectedEvent.organizer} labels={[copy.organizer]} onContact={openContactAction} locale={locale} />
                 )}
                 <div className="space-y-1.5">
                   {(showAllAttendees ? selectedEvent.attendees : selectedEvent.attendees.slice(0, 5)).map((attendee) => {
-                    const label = responseLabel(attendee.response_status);
+                    const label = responseLabel(attendee.response_status, locale);
                     return (
                       <ParticipantRow
                         key={`${attendee.email ?? attendee.name}-${attendee.response_status ?? ''}`}
                         person={attendee}
-                        labels={[label ?? '', attendee.optional ? 'опц.' : '', attendee.resource ? 'ресурс' : '']}
+                        labels={[label ?? '', attendee.optional ? copy.optional : '', attendee.resource ? copy.resource : '']}
                         onContact={openContactAction}
+                        locale={locale}
                       />
                     );
                   })}
@@ -708,7 +904,7 @@ export default function CalendarPage() {
                     onClick={() => setShowAllAttendees((v) => !v)}
                     className="text-[13px] font-medium text-accent-text"
                   >
-                    {showAllAttendees ? 'Скрыть' : `Показать всех (${selectedEvent.attendees.length})`}
+                    {showAllAttendees ? copy.hide : copy.showAll(selectedEvent.attendees.length)}
                   </button>
                 )}
               </div>
@@ -747,7 +943,7 @@ export default function CalendarPage() {
                     icon={<Video size={15} />}
                     onClick={() => openExternalLink(selectedEvent.meeting_url!)}
                   >
-                    Встреча
+                    {copy.meeting}
                   </Button>
                 )}
                 {visibleLinks(selectedEvent).map((link) => (
@@ -757,7 +953,7 @@ export default function CalendarPage() {
                     icon={<ExternalLink size={15} />}
                     onClick={() => openExternalLink(link)}
                   >
-                    {linkLabel(link)}
+                    {linkLabel(link, locale)}
                   </Button>
                 ))}
                 {selectedEvent.external_url && selectedEvent.source !== 'internal' && (
@@ -767,14 +963,14 @@ export default function CalendarPage() {
                     icon={<ExternalLink size={14} />}
                     onClick={() => openExternalLink(selectedEvent.external_url!)}
                   >
-                    Открыть оригинал
+                    {copy.openOriginal}
                   </Button>
                 )}
               </div>
             )}
             {selectedEvent.source !== 'internal' ? (
               <p className="text-[13px] leading-relaxed text-hint">
-                Событие из внешнего календаря — управляется там, Lumi его только читает.
+                {copy.externalManaged}
               </p>
             ) : (
               <div className="flex gap-2.5">
@@ -784,14 +980,14 @@ export default function CalendarPage() {
                     onClick={() =>
                       confirmBlock.mutate(selectedEvent.id, {
                         onSuccess: () => {
-                          show('Блок подтверждён', 'success');
+                          show(copy.blockConfirmed, 'success');
                           setSelectedEvent(null);
                         },
-                        onError: () => show('Не удалось подтвердить', 'error'),
+                        onError: () => show(copy.confirmFailed, 'error'),
                       })
                     }
                   >
-                    Принять
+                    {copy.accept}
                   </Button>
                 )}
                 <Button
@@ -800,14 +996,14 @@ export default function CalendarPage() {
                   onClick={() =>
                     deleteEvent.mutate(selectedEvent.id, {
                       onSuccess: () => {
-                        show('Убрано из расписания', 'success');
+                        show(copy.removed, 'success');
                         setSelectedEvent(null);
                       },
-                      onError: () => show('Не удалось убрать', 'error'),
+                      onError: () => show(copy.removeFailed, 'error'),
                     })
                   }
                 >
-                  {selectedEvent.status === 'proposed' ? 'Отклонить' : 'Убрать'}
+                  {selectedEvent.status === 'proposed' ? copy.reject : copy.remove}
                 </Button>
               </div>
             )}
@@ -818,7 +1014,7 @@ export default function CalendarPage() {
       {/* FAB: new internal block */}
       <motion.button
         type="button"
-        aria-label="Создать блок"
+        aria-label={copy.createBlock}
         whileTap={reduceMotion ? undefined : { scale: 0.92 }}
         transition={{ type: 'spring', stiffness: 420, damping: 22 }}
         onClick={() => {
@@ -837,6 +1033,7 @@ export default function CalendarPage() {
         contact={contactAction}
         onClose={() => setContactAction(null)}
         onCopy={copyContactEmail}
+        locale={locale}
       />
     </Stagger>
   );

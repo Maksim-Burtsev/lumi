@@ -10,6 +10,7 @@ import {
   Terminal,
 } from 'lucide-react';
 import { runStatusLabel } from '../../lib/labels';
+import { useAppLocale } from '../../lib/useAppLocale';
 
 const STATUS_DOT: Record<string, string> = {
   queued: 'bg-[var(--hint)]',
@@ -35,6 +36,7 @@ const STATUS_BADGE: Record<string, string> = {
 };
 
 export function RunStatusBadge({ status }: { status: string }) {
+  const locale = useAppLocale();
   return (
     <span
       className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11.5px] font-medium ${
@@ -42,7 +44,7 @@ export function RunStatusBadge({ status }: { status: string }) {
       }`}
     >
       <RunStatusDot status={status} />
-      {runStatusLabel(status)}
+      {runStatusLabel(status, locale)}
     </span>
   );
 }

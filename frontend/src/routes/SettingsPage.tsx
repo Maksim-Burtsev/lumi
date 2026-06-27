@@ -266,11 +266,12 @@ export default function SettingsPage() {
   };
 
   const handleLocale = (locale: string) => {
+    const targetCopy = COPY[normalizeAppLocale(locale)];
     patchSettings.mutate(
       { locale },
       {
-        onSuccess: () => show(copy.languageSaved, 'success'),
-        onError: () => show(copy.languageSaveFailed, 'error'),
+        onSuccess: () => show(targetCopy.languageSaved, 'success'),
+        onError: () => show(targetCopy.languageSaveFailed, 'error'),
       },
     );
   };

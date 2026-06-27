@@ -166,13 +166,7 @@ function formatDueLabelLocalized(ts: string, locale: AppLocale, timeDisplay: Tim
 }
 
 function formatSpanMinutesLocalized(startTs: string, endTs: string, locale: AppLocale): string {
-  if (locale === 'ru') return formatSpanMinutes(startTs, endTs);
-  const minutes = Math.max(0, Math.round((new Date(endTs).getTime() - new Date(startTs).getTime()) / 60_000));
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  if (h > 0 && m > 0) return `${h} hr ${m} min`;
-  if (h > 0) return `${h} ${h === 1 ? 'hr' : 'hrs'}`;
-  return `${m} min`;
+  return formatSpanMinutes(startTs, endTs, locale);
 }
 
 function overdueTasksLabel(count: number, locale: AppLocale): string {

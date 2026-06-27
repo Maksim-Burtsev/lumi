@@ -333,7 +333,7 @@ describe('TodayPage personal notes', () => {
     expect(screen.queryByText('Личная заметка')).not.toBeInTheDocument();
   });
 
-  it('labels long ready summaries as AI summaries', async () => {
+  it('labels long ready summaries with localized copy', async () => {
     const user = userEvent.setup();
     vi.spyOn(api, 'getToday').mockResolvedValue(
       makeTodayResponse({
@@ -354,7 +354,7 @@ describe('TodayPage personal notes', () => {
 
     await user.click(await screen.findByRole('button', { name: /Product sync/ }));
 
-    expect(await screen.findByText('AI summary')).toBeInTheDocument();
+    expect(await screen.findByText('AI-резюме')).toBeInTheDocument();
     expect(screen.getByText('Short generated summary.')).toBeInTheDocument();
     expect(screen.queryByText('AI summary: Short generated summary.')).not.toBeInTheDocument();
   });

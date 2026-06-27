@@ -3,6 +3,7 @@ import { motion, useReducedMotion } from 'framer-motion';
 import { StickyNote } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { formatTime, formatTimeRange } from '../../lib/format';
+import { useAppLocale } from '../../lib/useAppLocale';
 import { useTimeDisplay } from '../../lib/useTimeDisplay';
 
 export type TimelineEntryKind = 'event' | 'focus' | 'proposed' | 'free' | 'task';
@@ -49,6 +50,7 @@ function entryCardClass(kind: TimelineEntryKind): string {
 function EntryRow({ entry }: { entry: TimelineEntry }) {
   const reduceMotion = useReducedMotion();
   const timeDisplay = useTimeDisplay();
+  const locale = useAppLocale();
   const press = () => entry.onPress?.();
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!entry.onPress) return;
@@ -78,14 +80,14 @@ function EntryRow({ entry }: { entry: TimelineEntry }) {
                 {entry.title}
               </p>
               {entry.hasPersonalNote && (
-                <span role="img" aria-label="Есть личная заметка" className="shrink-0 text-hint">
+                <span role="img" aria-label={locale === 'en' ? 'Has personal note' : 'Есть личная заметка'} className="shrink-0 text-hint">
                   <StickyNote size={13} aria-hidden="true" />
                 </span>
               )}
             </div>
             <p className="tnum mt-0.5 text-[12px] text-hint">
               {entry.kind === 'task'
-                ? `к ${formatTime(entry.start_at, timeDisplay)}`
+                ? `${locale === 'en' ? 'by' : 'к'} ${formatTime(entry.start_at, timeDisplay)}`
                 : formatTimeRange(entry.start_at, entry.end_at, timeDisplay)}
               {entry.subtitle ? ` · ${entry.subtitle}` : ''}
             </p>

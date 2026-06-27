@@ -47,6 +47,7 @@ function renderGrid(event: CalendarEvent) {
       <DayGrid
         events={[event]}
         dayStart={new Date('2026-06-16T20:00:00Z')}
+        locale="ru"
         onEmptyTap={vi.fn()}
         onEventTap={vi.fn()}
       />

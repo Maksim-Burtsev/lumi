@@ -2,6 +2,7 @@ import { useMemo, useRef } from 'react';
 import { StickyNote } from 'lucide-react';
 import type { CalendarEvent } from '../../api/types';
 import { formatTime } from '../../lib/format';
+import type { AppLocale } from '../../lib/i18n';
 import { useTimeDisplay } from '../../lib/useTimeDisplay';
 
 /**
@@ -15,6 +16,7 @@ const MIN_EVENT_PX = 20;
 export interface DayGridProps {
   events: CalendarEvent[];
   dayStart: Date;
+  locale: AppLocale;
   /** Tap on an event opens its detail sheet. */
   onEventTap: (event: CalendarEvent) => void;
   /** Tap on empty space → create a block at that time (rounded to 30 min). */
@@ -87,11 +89,17 @@ function eventClasses(event: CalendarEvent): string {
   return 'bg-[var(--secondary-bg)] border-l-[3px] border-l-[var(--hint)]';
 }
 
-const SOURCE_LABELS: Record<string, string> = { google: 'Google', yandex: 'Яндекс' };
+const SOURCE_LABELS: Record<AppLocale, Record<string, string>> = {
+  en: { google: 'Google', yandex: 'Yandex' },
+  ru: { google: 'Google', yandex: 'Яндекс' },
+};
 
-export function DayGrid({ events, dayStart, onEventTap, onEmptyTap, nowLine }: DayGridProps) {
+export function DayGrid({ events, dayStart, locale, onEventTap, onEmptyTap, nowLine }: DayGridProps) {
   const gridRef = useRef<HTMLDivElement>(null);
   const timeDisplay = useTimeDisplay();
+  const allDayLabel = locale === 'en' ? 'all day' : 'весь день';
+  const createBlockLabel = locale === 'en' ? 'Create block' : 'Создать блок';
+  const proposedLabel = locale === 'en' ? 'proposal' : 'предложение';
 
   const DAY_MIN = 24 * 60;
   const visible = events.filter((e) => e.status !== 'cancelled');
@@ -150,7 +158,7 @@ export function DayGrid({ events, dayStart, onEventTap, onEmptyTap, nowLine }: D
             >
               <span className="min-w-0 flex-1 truncate">{e.title}</span>
               {e.private_note && <StickyNote size={13} className="shrink-0 text-hint" aria-hidden="true" />}
-              <span className="shrink-0 text-[11.5px] font-normal text-hint">весь день</span>
+              <span className="shrink-0 text-[11.5px] font-normal text-hint">{allDayLabel}</span>
             </button>
           ))}
         </div>
@@ -172,7 +180,7 @@ export function DayGrid({ events, dayStart, onEventTap, onEmptyTap, nowLine }: D
 
         {/* click-to-create layer */}
         <button
-          aria-label="Создать блок"
+          aria-label={createBlockLabel}
           className="absolute inset-0 cursor-pointer"
           onClick={(e) => handleGridClick(e.clientY)}
         />
@@ -226,9 +234,9 @@ export function DayGrid({ events, dayStart, onEventTap, onEmptyTap, nowLine }: D
                 <p className="tnum mt-0.5 truncate text-[11px] leading-tight text-hint">
                   {formatTime(event.start_at, timeDisplay)}–{formatTime(event.end_at, timeDisplay)}
                   {event.source !== 'internal'
-                    ? ` · ${SOURCE_LABELS[event.source] ?? event.source}`
+                    ? ` · ${SOURCE_LABELS[locale][event.source] ?? event.source}`
                     : event.status === 'proposed'
-                      ? ' · предложение'
+                      ? ` · ${proposedLabel}`
                       : ''}
                 </p>
               )}

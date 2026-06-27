@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { AlertCircle, Play, Plus, Zap } from 'lucide-react';
 import { api } from '../api/client';
 import { qk, useAgentRunAction, useAutomations, useCreateAutomation, usePatchAutomation } from '../api/hooks';
@@ -13,19 +13,135 @@ import { Switch } from '../components/ui/Switch';
 import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
 import { runTypeIcon } from '../components/runs/RunBadge';
-import { CRON_PRESETS, humanizeCron } from '../lib/cron';
+import { cronPresets, humanizeCron } from '../lib/cron';
 import { formatRelative } from '../lib/format';
-import { automationTypeLabel, AUTOMATION_TYPE_LABELS } from '../lib/labels';
+import type { AppLocale } from '../lib/i18n';
+import { automationTypeLabel } from '../lib/labels';
+import { useAppLocale } from '../lib/useAppLocale';
+import { useTimeDisplay } from '../lib/useTimeDisplay';
 
-function AutomationCard({ automation }: { automation: Automation }) {
+const AUTOMATION_TYPES: AutomationType[] = [
+  'morning_brief',
+  'news_digest',
+  'email_triage',
+  'daily_planning',
+  'calendar_sync',
+  'task_review',
+  'custom_prompt',
+];
+
+const COPY: Record<AppLocale, {
+  runSuccess: (title: string) => string;
+  updateFailed: string;
+  toggle: (title: string) => string;
+  lastRun: string;
+  nextRun: string;
+  run: string;
+  nameRequired: string;
+  promptRequired: string;
+  dateRequired: string;
+  cronInvalid: string;
+  configObject: string;
+  configInvalid: string;
+  created: string;
+  createFailed: string;
+  newAutomation: string;
+  type: string;
+  title: string;
+  prompt: string;
+  promptPlaceholder: string;
+  resultFormat: string;
+  formatText: string;
+  formatMarkdown: string;
+  formatHtml: string;
+  whenToRun: string;
+  scheduled: string;
+  once: string;
+  advanced: string;
+  create: string;
+  loadFailed: string;
+  emptyTitle: string;
+  emptyHint: string;
+}> = {
+  en: {
+    runSuccess: (title) => `"${title}" is done`,
+    updateFailed: 'Could not update automation',
+    toggle: (title) => `Automation "${title}"`,
+    lastRun: 'Last run',
+    nextRun: 'Next',
+    run: 'Run',
+    nameRequired: 'Give the automation a name',
+    promptRequired: 'Write a prompt: what Lumi should do',
+    dateRequired: 'Choose run date and time',
+    cronInvalid: 'Cron must have 5 fields, for example "30 8 * * 1-5"',
+    configObject: 'Config must be a JSON object',
+    configInvalid: 'Config: invalid JSON',
+    created: 'Automation created',
+    createFailed: 'Could not create automation',
+    newAutomation: 'New automation',
+    type: 'Type',
+    title: 'Title',
+    prompt: 'Prompt: what to do',
+    promptPlaceholder: 'Summarize the AI assistant market: key players, recent funding rounds, trends',
+    resultFormat: 'Result format',
+    formatText: 'Message in chat',
+    formatMarkdown: 'Markdown file',
+    formatHtml: 'HTML document',
+    whenToRun: 'When to run',
+    scheduled: 'Scheduled',
+    once: 'Once',
+    advanced: 'Advanced settings (JSON)',
+    create: 'Create',
+    loadFailed: 'Could not load automations.',
+    emptyTitle: 'No automations yet',
+    emptyHint: 'Create a workflow, for example a weekday morning news digest at 08:30.',
+  },
+  ru: {
+    runSuccess: (title) => `«${title}» — готово`,
+    updateFailed: 'Не удалось обновить автоматизацию',
+    toggle: (title) => `Автоматизация «${title}»`,
+    lastRun: 'Последний запуск',
+    nextRun: 'Следующий',
+    run: 'Запустить',
+    nameRequired: 'Дай автоматизации название',
+    promptRequired: 'Напиши промпт — что Lumi должна сделать',
+    dateRequired: 'Выбери дату и время запуска',
+    cronInvalid: 'Cron-строка должна состоять из 5 полей, например «30 8 * * 1-5»',
+    configObject: 'Config должен быть JSON-объектом',
+    configInvalid: 'Config: некорректный JSON',
+    created: 'Автоматизация создана',
+    createFailed: 'Не удалось создать автоматизацию',
+    newAutomation: 'Новая автоматизация',
+    type: 'Тип',
+    title: 'Название',
+    prompt: 'Промпт — что сделать',
+    promptPlaceholder: 'Собери сводку по рынку AI-ассистентов: ключевые игроки, последние раунды, тренды',
+    resultFormat: 'Формат результата',
+    formatText: 'Сообщение в чат',
+    formatMarkdown: 'Markdown-файл',
+    formatHtml: 'HTML-документ',
+    whenToRun: 'Когда запускать',
+    scheduled: 'По расписанию',
+    once: 'Один раз',
+    advanced: 'Расширенные настройки (JSON)',
+    create: 'Создать',
+    loadFailed: 'Не удалось загрузить автоматизации.',
+    emptyTitle: 'Автоматизаций пока нет',
+    emptyHint: 'Создай сценарий — например, утренний дайджест новостей по будням в 08:30.',
+  },
+};
+
+function AutomationCard({ automation, locale }: { automation: Automation; locale: AppLocale }) {
   const patchAutomation = usePatchAutomation();
   const { show } = useToast();
   const Icon = runTypeIcon(automation.type);
+  const timeDisplay = useTimeDisplay();
+  const copy = COPY[locale];
 
   const runAction = useAgentRunAction({
     start: () => api.runAutomation(automation.id),
     invalidate: [qk.automations],
-    successMessage: `«${automation.title}» — готово`,
+    successMessage: copy.runSuccess(automation.title),
   });
 
   return (
@@ -39,17 +155,17 @@ function AutomationCard({ automation }: { automation: Automation }) {
             {automation.title}
           </p>
           <p className="tnum mt-0.5 text-[12.5px] text-hint">
-            {humanizeCron(automation.cron_expression)} · {automationTypeLabel(automation.type)}
+            {humanizeCron(automation.cron_expression, locale)} · {automationTypeLabel(automation.type, locale)}
           </p>
         </div>
         <Switch
           checked={automation.enabled}
-          aria-label={`Автоматизация «${automation.title}»`}
+          aria-label={copy.toggle(automation.title)}
           disabled={patchAutomation.isPending}
           onChange={(enabled) =>
             patchAutomation.mutate(
               { id: automation.id, input: { enabled } },
-              { onError: () => show('Не удалось обновить автоматизацию', 'error') },
+              { onError: () => show(copy.updateFailed, 'error') },
             )
           }
         />
@@ -58,14 +174,14 @@ function AutomationCard({ automation }: { automation: Automation }) {
       <div className="mt-3 flex items-center justify-between gap-3 border-t border-hairline pt-3">
         <div className="tnum min-w-0 text-[12px] leading-relaxed text-hint">
           <p className="truncate">
-            Последний запуск: {automation.last_run_at ? formatRelative(automation.last_run_at) : '—'}
+            {copy.lastRun}: {automation.last_run_at ? formatRelative(automation.last_run_at, timeDisplay) : '—'}
           </p>
           <p className="truncate">
-            Следующий: {automation.next_run_at ? formatRelative(automation.next_run_at) : '—'}
+            {copy.nextRun}: {automation.next_run_at ? formatRelative(automation.next_run_at, timeDisplay) : '—'}
           </p>
         </div>
         <Button size="sm" variant="secondary" icon={<Play size={13} />} busy={runAction.isRunning} onClick={runAction.trigger}>
-          Запустить
+          {copy.run}
         </Button>
       </div>
 
@@ -79,22 +195,20 @@ function AutomationCard({ automation }: { automation: Automation }) {
   );
 }
 
-const TYPE_OPTIONS: { value: AutomationType; label: string }[] = (
-  Object.entries(AUTOMATION_TYPE_LABELS) as [AutomationType, string][]
-).map(([value, label]) => ({ value, label }));
-
 function CreateAutomationSheet({
   open,
   onClose,
   defaultTimezone,
+  locale,
 }: {
   open: boolean;
   onClose: () => void;
   defaultTimezone?: string;
+  locale: AppLocale;
 }) {
   const [type, setType] = useState<AutomationType>('news_digest');
   const [title, setTitle] = useState('');
-  const [presetId, setPresetId] = useState<string>(CRON_PRESETS[0].id);
+  const [presetId, setPresetId] = useState<string>('morning-8');
   const [customCron, setCustomCron] = useState('');
   const [configText, setConfigText] = useState('');
   const [prompt, setPrompt] = useState('');
@@ -104,27 +218,33 @@ function CreateAutomationSheet({
   const [error, setError] = useState<string | null>(null);
   const createAutomation = useCreateAutomation();
   const { show } = useToast();
+  const copy = COPY[locale];
+  const presets = useMemo(() => cronPresets(locale), [locale]);
+  const typeOptions = useMemo(
+    () => AUTOMATION_TYPES.map((value) => ({ value, label: automationTypeLabel(value, locale) })),
+    [locale],
+  );
 
-  const preset = CRON_PRESETS.find((p) => p.id === presetId) ?? CRON_PRESETS[0];
+  const preset = presets.find((p) => p.id === presetId) ?? presets[0];
   const cronExpression = preset.expression ?? customCron.trim();
 
   const submit = () => {
     const t = title.trim();
     if (!t) {
-      setError('Дай автоматизации название');
+      setError(copy.nameRequired);
       return;
     }
     if (type === 'custom_prompt' && !prompt.trim()) {
-      setError('Напиши промпт — что Lumi должна сделать');
+      setError(copy.promptRequired);
       return;
     }
     if (scheduleMode === 'once') {
       if (!runAt) {
-        setError('Выбери дату и время запуска');
+        setError(copy.dateRequired);
         return;
       }
     } else if (!cronExpression || cronExpression.split(/\s+/).length !== 5) {
-      setError('Cron-строка должна состоять из 5 полей, например «30 8 * * 1-5»');
+      setError(copy.cronInvalid);
       return;
     }
     let config: Record<string, unknown> | undefined;
@@ -132,12 +252,12 @@ function CreateAutomationSheet({
       try {
         const parsed: unknown = JSON.parse(configText);
         if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-          setError('Config должен быть JSON-объектом');
+          setError(copy.configObject);
           return;
         }
         config = parsed as Record<string, unknown>;
       } catch {
-        setError('Config: некорректный JSON');
+        setError(copy.configInvalid);
         return;
       }
     }
@@ -160,47 +280,47 @@ function CreateAutomationSheet({
       },
       {
         onSuccess: () => {
-          show('Автоматизация создана', 'success');
+          show(copy.created, 'success');
           setTitle('');
           setConfigText('');
           onClose();
         },
-        onError: () => show('Не удалось создать автоматизацию', 'error'),
+        onError: () => show(copy.createFailed, 'error'),
       },
     );
   };
 
   return (
-    <Sheet open={open} onClose={onClose} title="Новая автоматизация">
+    <Sheet open={open} onClose={onClose} title={copy.newAutomation}>
       <label className="block">
-        <FieldLabel>Тип</FieldLabel>
-        <Select value={type} onChange={(v) => setType(v as AutomationType)} options={TYPE_OPTIONS} />
+        <FieldLabel>{copy.type}</FieldLabel>
+        <Select value={type} onChange={(v) => setType(v as AutomationType)} options={typeOptions} />
       </label>
       <label className="mt-4 block">
-        <FieldLabel>Название</FieldLabel>
-        <Input value={title} onChange={setTitle} placeholder={automationTypeLabel(type)} />
+        <FieldLabel>{copy.title}</FieldLabel>
+        <Input value={title} onChange={setTitle} placeholder={automationTypeLabel(type, locale)} />
       </label>
 
       {type === 'custom_prompt' && (
         <>
           <label className="mt-4 block">
-            <FieldLabel>Промпт — что сделать</FieldLabel>
+            <FieldLabel>{copy.prompt}</FieldLabel>
             <Textarea
               value={prompt}
               onChange={setPrompt}
               rows={4}
-              placeholder="Собери сводку по рынку AI-ассистентов: ключевые игроки, последние раунды, тренды"
+              placeholder={copy.promptPlaceholder}
             />
           </label>
           <label className="mt-4 block">
-            <FieldLabel>Формат результата</FieldLabel>
+            <FieldLabel>{copy.resultFormat}</FieldLabel>
             <Select
               value={format}
               onChange={(v) => setFormat(v as 'text' | 'md' | 'html')}
               options={[
-                { value: 'text', label: 'Сообщение в чат' },
-                { value: 'md', label: 'Markdown-файл' },
-                { value: 'html', label: 'HTML-документ' },
+                { value: 'text', label: copy.formatText },
+                { value: 'md', label: copy.formatMarkdown },
+                { value: 'html', label: copy.formatHtml },
               ]}
             />
           </label>
@@ -208,9 +328,9 @@ function CreateAutomationSheet({
       )}
 
       <div className="mt-4">
-        <FieldLabel>Когда запускать</FieldLabel>
+        <FieldLabel>{copy.whenToRun}</FieldLabel>
         <div className="mb-2.5 flex gap-1.5">
-          {([['cron', 'По расписанию'], ['once', 'Один раз']] as const).map(([mode, label]) => (
+          {([['cron', copy.scheduled], ['once', copy.once]] as const).map(([mode, label]) => (
             <button
               key={mode}
               type="button"
@@ -233,39 +353,39 @@ function CreateAutomationSheet({
             className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3.5 text-[15px] text-ink outline-none"
           />
         ) : (
-        <>
-        <div className="flex flex-col gap-1.5">
-          {CRON_PRESETS.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              onClick={() => setPresetId(p.id)}
-              className={`flex min-h-[44px] items-center justify-between rounded-xl border px-3.5 py-2 text-left text-[13.5px] transition-colors ${
-                presetId === p.id
-                  ? 'border-[var(--accent-border)] bg-[var(--accent-soft)] text-ink'
-                  : 'border-hairline bg-transparent text-hint'
-              }`}
-            >
-              <span>{p.label}</span>
-              {p.expression && <span className="tnum font-mono text-[11.5px] text-hint">{p.expression}</span>}
-            </button>
-          ))}
-        </div>
-        {preset.expression === null && (
-          <div className="mt-2.5">
-            <Input value={customCron} onChange={setCustomCron} placeholder="30 8 * * 1-5" />
-            {customCron.trim() && (
-              <p className="mt-1.5 text-[12px] text-hint">→ {humanizeCron(customCron.trim())}</p>
+          <>
+            <div className="flex flex-col gap-1.5">
+              {presets.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setPresetId(p.id)}
+                  className={`flex min-h-[44px] items-center justify-between rounded-xl border px-3.5 py-2 text-left text-[13.5px] transition-colors ${
+                    presetId === p.id
+                      ? 'border-[var(--accent-border)] bg-[var(--accent-soft)] text-ink'
+                      : 'border-hairline bg-transparent text-hint'
+                  }`}
+                >
+                  <span>{p.label}</span>
+                  {p.expression && <span className="tnum font-mono text-[11.5px] text-hint">{p.expression}</span>}
+                </button>
+              ))}
+            </div>
+            {preset.expression === null && (
+              <div className="mt-2.5">
+                <Input value={customCron} onChange={setCustomCron} placeholder="30 8 * * 1-5" />
+                {customCron.trim() && (
+                  <p className="mt-1.5 text-[12px] text-hint">→ {humanizeCron(customCron.trim(), locale)}</p>
+                )}
+              </div>
             )}
-          </div>
-        )}
-        </>
+          </>
         )}
       </div>
 
       <details className="mt-4">
         <summary className="cursor-pointer select-none text-[13px] font-medium text-hint">
-          Расширенные настройки (JSON)
+          {copy.advanced}
         </summary>
         <div className="mt-2.5">
           <Textarea value={configText} onChange={setConfigText} rows={4} mono placeholder='{ "limit": 10 }' />
@@ -274,7 +394,7 @@ function CreateAutomationSheet({
 
       {error && <p className="mt-3 text-[13px] text-danger">{error}</p>}
       <Button fullWidth className="mt-5" busy={createAutomation.isPending} onClick={submit}>
-        Создать
+        {copy.create}
       </Button>
     </Sheet>
   );
@@ -283,12 +403,14 @@ function CreateAutomationSheet({
 export default function AutomationsPage() {
   const automationsQuery = useAutomations();
   const [sheetOpen, setSheetOpen] = useState(false);
+  const locale = useAppLocale();
+  const copy = COPY[locale];
 
   return (
     <Stagger>
       <Rise>
         <Button variant="ghost" icon={<Plus size={15} />} onClick={() => setSheetOpen(true)}>
-          Новая автоматизация
+          {copy.newAutomation}
         </Button>
       </Rise>
 
@@ -296,22 +418,22 @@ export default function AutomationsPage() {
         {automationsQuery.isPending ? (
           <SkeletonList count={3} lines={2} />
         ) : automationsQuery.isError ? (
-          <ErrorState message="Не удалось загрузить автоматизации." onRetry={() => void automationsQuery.refetch()} />
+          <ErrorState message={copy.loadFailed} onRetry={() => void automationsQuery.refetch()} />
         ) : (automationsQuery.data?.items.length ?? 0) === 0 ? (
           <EmptyState
             icon={Zap}
-            title="Автоматизаций пока нет"
-            hint="Создай сценарий — например, утренний дайджест новостей по будням в 08:30."
+            title={copy.emptyTitle}
+            hint={copy.emptyHint}
             action={
               <Button variant="secondary" size="sm" icon={<Plus size={14} />} onClick={() => setSheetOpen(true)}>
-                Создать
+                {copy.create}
               </Button>
             }
           />
         ) : (
           <div className="flex flex-col gap-3">
             {automationsQuery.data.items.map((automation) => (
-              <AutomationCard key={automation.id} automation={automation} />
+              <AutomationCard key={automation.id} automation={automation} locale={locale} />
             ))}
           </div>
         )}
@@ -321,6 +443,7 @@ export default function AutomationsPage() {
         open={sheetOpen}
         onClose={() => setSheetOpen(false)}
         defaultTimezone={Intl.DateTimeFormat().resolvedOptions().timeZone}
+        locale={locale}
       />
     </Stagger>
   );

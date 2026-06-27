@@ -12,34 +12,60 @@ import { SkeletonList } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
 import { haptic } from '../telegram/webapp';
+import type { AppLocale } from '../lib/i18n';
+import { useAppLocale } from '../lib/useAppLocale';
 
-const FILTERS: { id: TaskFilter; label: string }[] = [
-  { id: 'today', label: 'Сегодня' },
-  { id: 'upcoming', label: 'Предстоящие' },
-  { id: 'inbox', label: 'Инбокс' },
-  { id: 'done', label: 'Готово' },
+const FILTERS: { id: TaskFilter; label: Record<AppLocale, string> }[] = [
+  { id: 'today', label: { en: 'Today', ru: 'Сегодня' } },
+  { id: 'upcoming', label: { en: 'Upcoming', ru: 'Предстоящие' } },
+  { id: 'inbox', label: { en: 'Inbox', ru: 'Инбокс' } },
+  { id: 'done', label: { en: 'Done', ru: 'Готово' } },
 ];
 
-const EMPTY_HINTS: Record<TaskFilter, { title: string; hint: string }> = {
-  today: {
-    title: 'На сегодня всё чисто',
-    hint: 'Напиши Lumi в чате: «Напомни завтра…» — и задача появится здесь.',
+const EMPTY_HINTS: Record<AppLocale, Record<TaskFilter, { title: string; hint: string }>> = {
+  en: {
+    today: {
+      title: 'No active tasks yet',
+      hint: 'Write to Lumi in chat: "Remind me tomorrow..." and the task will appear here.',
+    },
+    upcoming: {
+      title: 'Nothing upcoming yet',
+      hint: 'Tasks with future dates will collect in this list.',
+    },
+    inbox: {
+      title: 'No active tasks yet',
+      hint: 'Write to Lumi in chat: "Remind me tomorrow..." and the task will appear here.',
+    },
+    done: {
+      title: 'Completed tasks will appear here',
+      hint: 'Mark tasks with the circle on the left. Lumi will keep the history.',
+    },
+    all: {
+      title: 'No tasks yet',
+      hint: 'Write to Lumi in chat: "Remind me tomorrow..." and the task will appear here.',
+    },
   },
-  upcoming: {
-    title: 'Впереди пока пусто',
-    hint: 'Задачи с датами на будущее соберутся в этом списке.',
-  },
-  inbox: {
-    title: 'Пока нет активных задач',
-    hint: 'Напиши Lumi в чате: «Напомни завтра…» — и задача появится здесь.',
-  },
-  done: {
-    title: 'Здесь появятся выполненные задачи',
-    hint: 'Отмечай задачи кружком слева — Lumi сохранит историю.',
-  },
-  all: {
-    title: 'Пока нет задач',
-    hint: 'Напиши Lumi в чате: «Напомни завтра…» — и задача появится здесь.',
+  ru: {
+    today: {
+      title: 'На сегодня всё чисто',
+      hint: 'Напиши Lumi в чате: «Напомни завтра…» — и задача появится здесь.',
+    },
+    upcoming: {
+      title: 'Впереди пока пусто',
+      hint: 'Задачи с датами на будущее соберутся в этом списке.',
+    },
+    inbox: {
+      title: 'Пока нет активных задач',
+      hint: 'Напиши Lumi в чате: «Напомни завтра…» — и задача появится здесь.',
+    },
+    done: {
+      title: 'Здесь появятся выполненные задачи',
+      hint: 'Отмечай задачи кружком слева — Lumi сохранит историю.',
+    },
+    all: {
+      title: 'Пока нет задач',
+      hint: 'Напиши Lumi в чате: «Напомни завтра…» — и задача появится здесь.',
+    },
   },
 };
 
@@ -49,6 +75,32 @@ export default function TasksPage() {
   const [project, setProject] = useState<string | null>(null);
   const [editing, setEditing] = useState<Task | null>(null);
   const { show } = useToast();
+  const locale = useAppLocale();
+  const copy = locale === 'en'
+    ? {
+        createFailed: 'Could not create task',
+        loadFailed: 'Could not load tasks.',
+        noProject: 'No project',
+        completeFailed: 'Could not complete',
+        snoozed: 'Task snoozed',
+        snoozeFailed: 'Could not snooze',
+        placeholder: 'New task... (Enter to create)',
+        inputLabel: 'New task',
+        overdue: 'Overdue',
+        today: 'Today',
+      }
+    : {
+        createFailed: 'Не удалось создать задачу',
+        loadFailed: 'Не удалось загрузить задачи.',
+        noProject: 'Без проекта',
+        completeFailed: 'Не удалось выполнить',
+        snoozed: 'Задача отложена',
+        snoozeFailed: 'Не удалось отложить',
+        placeholder: 'Новая задача… (Enter — создать)',
+        inputLabel: 'Новая задача',
+        overdue: 'Просроченные',
+        today: 'Сегодня',
+      };
 
   const tasksQuery = useTasks(filter);
   const createTask = useCreateTask(filter);
@@ -67,7 +119,7 @@ export default function TasksPage() {
       { title: cleanTitle || trimmed, ...(hashMatch ? { project: hashMatch[1] } : {}) },
       {
         onError: () => {
-          show('Не удалось создать задачу', 'error');
+          show(copy.createFailed, 'error');
           setTitle(trimmed);
         },
       },
@@ -118,16 +170,16 @@ export default function TasksPage() {
       if (ai !== bi) return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
       return a.localeCompare(b, 'ru');
     });
-    return keys.map((key) => ({ name: key || 'Без проекта', tasks: map.get(key)! }));
-  }, [rest, project]);
+    return keys.map((key) => ({ name: key || copy.noProject, tasks: map.get(key)! }));
+  }, [rest, project, copy.noProject]);
 
-  const handleComplete = (id: string) => completeTask.mutate(id, { onError: () => show('Не удалось выполнить', 'error') });
+  const handleComplete = (id: string) => completeTask.mutate(id, { onError: () => show(copy.completeFailed, 'error') });
   const handleSnooze = (id: string, preset: SnoozePreset) =>
     snoozeTask.mutate(
       { id, input: { preset } },
       {
-        onSuccess: () => show('Задача отложена', 'success'),
-        onError: () => show('Не удалось отложить', 'error'),
+        onSuccess: () => show(copy.snoozed, 'success'),
+        onError: () => show(copy.snoozeFailed, 'error'),
       },
     );
 
@@ -164,8 +216,8 @@ export default function TasksPage() {
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            placeholder="Новая задача… (Enter — создать)"
-            aria-label="Новая задача"
+            placeholder={copy.placeholder}
+            aria-label={copy.inputLabel}
             className="h-full min-w-0 flex-1 bg-transparent text-[14.5px] text-ink outline-none"
           />
         </form>
@@ -175,7 +227,7 @@ export default function TasksPage() {
       <Rise>
         <div className="no-scrollbar -mx-4 mt-4 flex gap-2 overflow-x-auto px-4 py-1">
           {FILTERS.map((f) => (
-            <Chip key={f.id} label={f.label} active={filter === f.id} onClick={() => setFilter(f.id)} />
+            <Chip key={f.id} label={f.label[locale]} active={filter === f.id} onClick={() => setFilter(f.id)} />
           ))}
         </div>
       </Rise>
@@ -195,20 +247,20 @@ export default function TasksPage() {
         {tasksQuery.isPending ? (
           <SkeletonList count={4} lines={1} />
         ) : tasksQuery.isError ? (
-          <ErrorState message="Не удалось загрузить задачи." onRetry={() => void tasksQuery.refetch()} />
+          <ErrorState message={copy.loadFailed} onRetry={() => void tasksQuery.refetch()} />
         ) : visible.length === 0 ? (
-          <EmptyState icon={CheckCircle2} title={EMPTY_HINTS[filter].title} hint={EMPTY_HINTS[filter].hint} />
+          <EmptyState icon={CheckCircle2} title={EMPTY_HINTS[locale][filter].title} hint={EMPTY_HINTS[locale][filter].hint} />
         ) : (
           <div>
             {overdue.length > 0 && (
               <>
                 <p className="mb-2 mt-1 px-1 text-[12.5px] font-semibold uppercase tracking-wide text-danger">
-                  Просроченные
+                  {copy.overdue}
                 </p>
                 {renderList(overdue)}
                 {rest.length > 0 && (
                   <p className="mb-2 mt-4 px-1 text-[12.5px] font-semibold uppercase tracking-wide text-hint">
-                    Сегодня
+                    {copy.today}
                   </p>
                 )}
               </>
