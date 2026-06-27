@@ -1,4 +1,5 @@
 import { useMemo, useRef } from 'react';
+import { StickyNote } from 'lucide-react';
 import type { CalendarEvent } from '../../api/types';
 import { formatTime } from '../../lib/format';
 import { useTimeDisplay } from '../../lib/useTimeDisplay';
@@ -145,10 +146,11 @@ export function DayGrid({ events, dayStart, onEventTap, onEmptyTap, nowLine }: D
             <button
               key={e.id}
               onClick={() => onEventTap(e)}
-              className="block w-full rounded-xl bg-[var(--secondary-bg)] px-3.5 py-2 text-left text-[13px] font-medium text-ink"
+              className="flex w-full items-center gap-2 rounded-xl bg-[var(--secondary-bg)] px-3.5 py-2 text-left text-[13px] font-medium text-ink"
             >
-              {e.title}
-              <span className="ml-2 text-[11.5px] font-normal text-hint">весь день</span>
+              <span className="min-w-0 flex-1 truncate">{e.title}</span>
+              {e.private_note && <StickyNote size={13} className="shrink-0 text-hint" aria-hidden="true" />}
+              <span className="shrink-0 text-[11.5px] font-normal text-hint">весь день</span>
             </button>
           ))}
         </div>
@@ -207,12 +209,19 @@ export function DayGrid({ events, dayStart, onEventTap, onEmptyTap, nowLine }: D
               }}
             >
               <p
-                className={`truncate font-medium leading-tight text-ink ${
+                className={`truncate pr-4 font-medium leading-tight text-ink ${
                   height < 32 ? 'text-[11px]' : 'text-[12.5px]'
                 }`}
               >
                 {height < 32 ? `${formatTime(event.start_at, timeDisplay)} ${event.title}` : event.title}
               </p>
+              {event.private_note && (
+                <StickyNote
+                  size={height < 32 ? 11 : 12}
+                  className="absolute right-1.5 top-1.5 text-hint"
+                  aria-hidden="true"
+                />
+              )}
               {height >= 42 && (
                 <p className="tnum mt-0.5 truncate text-[11px] leading-tight text-hint">
                   {formatTime(event.start_at, timeDisplay)}–{formatTime(event.end_at, timeDisplay)}

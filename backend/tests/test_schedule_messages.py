@@ -165,6 +165,35 @@ def test_render_schedule_message_limits_rows_and_reports_hidden_count():
     assert "<footer><i>+ ещё 2 в календаре</i></footer>" in rendered.rich_html
 
 
+def test_render_schedule_message_includes_private_note_summary_only():
+    tz = "Europe/Moscow"
+    start = local_to_utc(datetime(2026, 6, 24, 10, 0), tz)
+    long_note = " ".join(["Ask about launch risk and rollout owner."] * 40)
+    summary = "Ask about launch risk and rollout owner."
+
+    rendered = render_schedule_message(
+        title="📅 Wed, 24 Jun",
+        items=[
+            ScheduleMessageItem(
+                title="Product sync",
+                start_at=start,
+                end_at=start + timedelta(hours=1),
+                private_note=long_note,
+                private_note_summary=summary,
+                private_note_summary_status="ready",
+            )
+        ],
+        timezone=tz,
+        language="en",
+    )
+
+    assert summary in rendered.plain_text
+    assert summary in rendered.rich_html
+    assert long_note not in rendered.plain_text
+    assert long_note not in rendered.rich_html
+    assert "🔒 Personal note:" in rendered.plain_text
+
+
 def test_render_schedule_message_marks_proposed_blocks_without_color_noise():
     tz = "Europe/Moscow"
     start = local_to_utc(datetime(2026, 6, 24, 15, 0), tz)

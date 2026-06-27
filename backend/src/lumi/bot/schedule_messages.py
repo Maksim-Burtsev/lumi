@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 from html import escape
 from typing import Any
 
+from lumi.services.calendar import private_note_needs_summary, truncate_private_note_summary
 from lumi.utils.text import truncate
 from lumi.utils.time import utc_to_local
 
@@ -34,6 +35,9 @@ class ScheduleMessageItem:
     meeting_url: str | None = None
     action_id: str | None = None
     busy: bool = True
+    private_note: str | None = None
+    private_note_summary: str | None = None
+    private_note_summary_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -112,6 +116,9 @@ def render_schedule_message(
 
         plain_line, rich_row = _render_item(item, timezone, language)
         plain_lines.append(plain_line)
+        private_note_line = _private_note_line(item, language)
+        if private_note_line:
+            plain_lines.append(f"   {private_note_line}")
         current_table_rows.append(rich_row)
         if confirm_proposed and item.kind == "proposed" and item.action_id:
             start_label = utc_to_local(item.start_at, timezone).strftime("%H:%M")
@@ -155,6 +162,9 @@ def schedule_items_from_today_timeline(timeline: list[dict[str, Any]]) -> list[S
             meeting_url=_metadata_value(entry, "meeting_url"),
             action_id=str(entry["id"]) if entry.get("kind") == "proposed" and entry.get("id") else None,
             busy=bool(entry.get("busy", True)),
+            private_note=_metadata_value(entry, "private_note"),
+            private_note_summary=_metadata_value(entry, "private_note_summary"),
+            private_note_summary_status=_metadata_value(entry, "private_note_summary_status"),
         ))
     return items
 
@@ -228,14 +238,26 @@ def schedule_items_from_calendar_events(events: list[Any]) -> list[ScheduleMessa
             kind = "proposed"
         elif getattr(source, "value", source) == "internal" and getattr(event, "created_by", None) == "agent":
             kind = "focus"
+        metadata = getattr(event, "metadata_", {}) or {}
         items.append(ScheduleMessageItem(
             title=event.title,
             start_at=event.start_at,
             end_at=event.end_at,
             kind=kind,
-            meeting_url=(getattr(event, "metadata_", {}) or {}).get("meeting_url"),
+            meeting_url=metadata.get("meeting_url"),
             action_id=str(event.id) if kind == "proposed" else None,
             busy=bool(getattr(event, "busy", True)),
+            private_note=metadata.get("private_note") if isinstance(metadata.get("private_note"), str) else None,
+            private_note_summary=(
+                metadata.get("private_note_summary")
+                if isinstance(metadata.get("private_note_summary"), str)
+                else None
+            ),
+            private_note_summary_status=(
+                str(metadata.get("private_note_summary_status"))
+                if metadata.get("private_note_summary_status") is not None
+                else None
+            ),
         ))
     return items
 
@@ -249,11 +271,39 @@ def _render_item(item: ScheduleMessageItem, timezone: str, language: str | None)
     link_html = ""
     if item.meeting_url:
         link_html = f' <a href="{escape(item.meeting_url, quote=True)}">↗</a>'
+    private_note_line = _private_note_line(item, language)
+    private_note_html = f"<br/><i>{escape(private_note_line)}</i>" if private_note_line else ""
     rich_row = (
         f"<tr><td><b>{escape(start_local.strftime('%H:%M'))}</b></td>"
-        f"<td>{escape(title)} · {escape(duration)}{link_html}</td></tr>"
+        f"<td>{escape(title)} · {escape(duration)}{link_html}{private_note_html}</td></tr>"
     )
     return plain_line, rich_row
+
+
+def _private_note_line(item: ScheduleMessageItem, language: str | None) -> str | None:
+    note = (item.private_note or "").strip()
+    if not note:
+        return None
+    if not private_note_needs_summary(note):
+        summary = note
+    elif item.private_note_summary_status == "ready" and item.private_note_summary:
+        summary = item.private_note_summary.strip()
+    else:
+        summary = (
+            f"{truncate_private_note_summary(note)} "
+            f"({_private_note_open_app_text(language)})"
+        )
+    if not summary:
+        return None
+    return f"🔒 {_private_note_label(language)}: {summary}"
+
+
+def _private_note_label(language: str | None) -> str:
+    return "Personal note" if _normalized_language(language) == "en" else "Личная заметка"
+
+
+def _private_note_open_app_text(language: str | None) -> str:
+    return "open Lumi for full note" if _normalized_language(language) == "en" else "полная заметка в Lumi"
 
 
 def _render_free_row(*, start_at: datetime, duration: timedelta, timezone: str, language: str | None) -> str:
