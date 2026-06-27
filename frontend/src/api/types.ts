@@ -181,6 +181,25 @@ export interface Suggestion {
   action: SuggestionAction;
 }
 
+export interface SlotSuggestionTask {
+  id: string;
+  title: string;
+  project?: string | null;
+  estimated_minutes?: number | null;
+  priority?: TaskPriority;
+}
+
+export interface SlotSuggestion {
+  id: string;
+  title: string;
+  description: string | null;
+  start_at: string;
+  end_at: string;
+  tasks: SlotSuggestionTask[];
+  reason: string | null;
+  source: string | null;
+}
+
 export interface AgentRunBrief {
   id: string;
   type: string;
@@ -198,6 +217,7 @@ export interface TodayResponse {
   timeline: TimelineItem[];
   needs_attention: AttentionItem[];
   suggestions: Suggestion[];
+  slot_suggestions: SlotSuggestion[];
   recent_runs: AgentRunBrief[];
 }
 

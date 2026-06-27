@@ -50,6 +50,7 @@ GET /api/today → {
   "timeline": [TimelineItem],           // today's events + focus blocks, sorted by start
   "needs_attention": [AttentionItem],
   "suggestions": [Suggestion],
+  "slot_suggestions": [SlotSuggestion], // precomputed micro-slot task options
   "recent_runs": [AgentRunBrief]        // last 5
 }
 
@@ -68,6 +69,12 @@ AttentionItem = {"id": str, "kind": "overdue_task"|"due_task"|"email"|"confirmat
 Suggestion = {"id": str, "kind": "focus_block"|"plan_day"|"email_triage"|"news_digest",
               "title": str, "description": str|null,
               "action": {"type": "plan_day"|"run_triage"|"run_digest"|"confirm_block", "payload": object}}
+
+SlotSuggestion = {"id": uuid, "title": str, "description": str|null,
+                  "start_at": ts, "end_at": ts,
+                  "tasks": [{"id": uuid, "title": str, "project": str|null,
+                             "estimated_minutes": int|null, "priority": str|null}],
+                  "reason": str|null, "source": str|null}
 
 AgentRunBrief = {"id": uuid, "type": str, "status": str, "created_at": ts,
                  "finished_at": ts|null, "duration_ms": int|null, "result_summary": str|null}

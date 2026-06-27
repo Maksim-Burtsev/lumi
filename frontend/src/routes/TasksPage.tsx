@@ -39,12 +39,13 @@ import { haptic } from '../telegram/webapp';
 
 type TaskView = 'today' | 'projects' | 'review' | 'done';
 type ReviewMode = 'estimates' | 'due_dates' | 'projects';
-type EstimateSuggestion = { id: string; taskId: string; minutes: number; reason?: string | null };
+type EstimateSuggestion = { id: string; taskId: string; title: string; minutes: number; reason?: string | null };
 type DueBucket = 'week' | 'backlog' | 'context';
 type DueDateDecision = {
   id: string;
   task: Task;
   suggestionId?: string;
+  title: string;
   bucket: DueBucket;
   dueAt: string | null;
   noDeadline: boolean;
@@ -54,6 +55,7 @@ type ProjectDecision = {
   id: string;
   task: Task;
   suggestionId?: string;
+  title: string;
   projectId?: string | null;
   projectName: string;
   confidence?: string | null;
@@ -103,6 +105,11 @@ const COPY = {
     reviewEstimates: 'Review estimates',
     reviewDueDates: 'Review plan dates',
     reviewProjects: 'Review project sorting',
+    preparedNow: 'Prepared now',
+    noPreparedDecisions: 'No prepared decisions yet',
+    reviewCleanup: 'Review cleanup',
+    decisionReady: 'decision ready',
+    decisionsReady: 'decisions ready',
     dueDates: 'Plan dates',
     dueDatesHint: 'Prepared date or no-deadline decisions',
     projectSuggestions: 'Sort into projects',
@@ -180,6 +187,11 @@ const COPY = {
     reviewEstimates: 'Разобрать оценки',
     reviewDueDates: 'Разобрать даты',
     reviewProjects: 'Разложить по проектам',
+    preparedNow: 'Готово сейчас',
+    noPreparedDecisions: 'Пока нет готовых решений',
+    reviewCleanup: 'Разобрать',
+    decisionReady: 'решение готово',
+    decisionsReady: 'решений готово',
     dueDates: 'План дат',
     dueDatesHint: 'Готовые решения: дата или без срока',
     projectSuggestions: 'Разложить по проектам',
@@ -238,6 +250,7 @@ function parseEstimateSuggestion(suggestion: AssistantSuggestion): EstimateSugge
   return {
     id: suggestion.id,
     taskId,
+    title: suggestion.title,
     minutes,
     reason: typeof suggestion.payload.reason === 'string' ? suggestion.payload.reason : suggestion.description,
   };
@@ -306,6 +319,7 @@ function parseDueDateSuggestion(suggestion: AssistantSuggestion, task: Task): Du
     id: `due:${task.id}`,
     task,
     suggestionId: suggestion.id,
+    title: suggestion.title,
     bucket: bucketFromSuggestion(suggestion.payload.bucket, task),
     dueAt,
     noDeadline,
@@ -318,29 +332,17 @@ function buildDueDateDecisions(
   suggestions: AssistantSuggestion[],
   hiddenDecisionIds: Set<string>,
 ): DueDateDecision[] {
-  return tasks
-    .filter((task) => task.due_at === null && task.review_skips?.due_date !== true)
-    .map((task) => {
-      for (const suggestion of suggestions) {
-        const parsed = parseDueDateSuggestion(suggestion, task);
-        if (parsed) return parsed;
-      }
-      const backlog = task.project === 'Backlog';
-      const shortTask = task.estimated_minutes !== null && task.estimated_minutes <= 30;
-      return {
-        id: `due:${task.id}`,
-        task,
-        bucket: backlog ? 'backlog' : shortTask ? 'week' : 'context',
-        dueAt: backlog ? null : shortTask ? defaultWeekDueIso() : null,
-        noDeadline: backlog,
-        reason: backlog
-          ? 'Backlog items can stay open without a deadline.'
-          : shortTask
-            ? 'Short enough to plan this week.'
-            : 'No clear date yet; choose a date or leave it without a deadline.',
-      } satisfies DueDateDecision;
-    })
-    .filter((decision) => !hiddenDecisionIds.has(decision.id));
+  const taskById = new Map(tasks.map((task) => [task.id, task]));
+  const decisions: DueDateDecision[] = [];
+  for (const suggestion of suggestions) {
+    if (suggestion.kind !== 'task_due_date') continue;
+    const taskId = suggestionTaskId(suggestion);
+    const task = taskId ? taskById.get(taskId) : undefined;
+    if (!task || task.due_at !== null || task.review_skips?.due_date === true) continue;
+    const parsed = parseDueDateSuggestion(suggestion, task);
+    if (parsed && !hiddenDecisionIds.has(parsed.id)) decisions.push(parsed);
+  }
+  return decisions;
 }
 
 function parseProjectSuggestion(suggestion: AssistantSuggestion, task: Task): ProjectDecision | null {
@@ -356,6 +358,7 @@ function parseProjectSuggestion(suggestion: AssistantSuggestion, task: Task): Pr
     id: `project:${task.id}`,
     task,
     suggestionId: suggestion.id,
+    title: suggestion.title,
     projectId,
     projectName: projectName ?? 'Project',
     confidence: typeof suggestion.payload.confidence === 'string' ? suggestion.payload.confidence : null,
@@ -365,29 +368,20 @@ function parseProjectSuggestion(suggestion: AssistantSuggestion, task: Task): Pr
 
 function buildProjectDecisions(
   tasks: Task[],
-  projects: Project[],
   suggestions: AssistantSuggestion[],
   hiddenDecisionIds: Set<string>,
 ): ProjectDecision[] {
-  const backlog = projects.find((project) => project.system_key === 'backlog')
-    ?? projects.find((project) => project.name === 'Backlog');
-  return tasks
-    .filter((task) => task.project_id === null && task.review_skips?.project !== true)
-    .map((task) => {
-      for (const suggestion of suggestions) {
-        const parsed = parseProjectSuggestion(suggestion, task);
-        if (parsed) return parsed;
-      }
-      return {
-        id: `project:${task.id}`,
-        task,
-        projectId: backlog?.id ?? null,
-        projectName: backlog?.name ?? 'Backlog',
-        confidence: null,
-        reason: 'Default place until a stronger project is clear.',
-      } satisfies ProjectDecision;
-    })
-    .filter((decision) => !hiddenDecisionIds.has(decision.id));
+  const taskById = new Map(tasks.map((task) => [task.id, task]));
+  const decisions: ProjectDecision[] = [];
+  for (const suggestion of suggestions) {
+    if (suggestion.kind !== 'task_project') continue;
+    const taskId = suggestionTaskId(suggestion);
+    const task = taskId ? taskById.get(taskId) : undefined;
+    if (!task || task.review_skips?.project === true) continue;
+    const parsed = parseProjectSuggestion(suggestion, task);
+    if (parsed && !hiddenDecisionIds.has(parsed.id)) decisions.push(parsed);
+  }
+  return decisions;
 }
 
 function normalizeSearch(value: string): string {
@@ -421,6 +415,39 @@ function formatMinutes(minutes: number, locale: AppLocale): string {
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
   return `${hours} ${locale === 'en' ? 'h' : 'ч'} ${rest} ${locale === 'en' ? 'min' : 'мин'}`;
+}
+
+function preparedReviewLabel(count: number, locale: AppLocale): string {
+  if (locale === 'en') return `Lumi prepared ${count} ${count === 1 ? 'decision' : 'decisions'}`;
+  const form = count % 10 === 1 && count % 100 !== 11
+    ? 'решение'
+    : [2, 3, 4].includes(count % 10) && ![12, 13, 14].includes(count % 100)
+      ? 'решения'
+      : 'решений';
+  return `Lumi подготовила ${count} ${form}`;
+}
+
+function decisionCountLabel(count: number, locale: AppLocale): string {
+  const copy = copyFor(locale);
+  if (locale === 'en') return `${count} ${count === 1 ? copy.decisionReady : copy.decisionsReady}`;
+  const form = count % 10 === 1 && count % 100 !== 11
+    ? 'решение готово'
+    : [2, 3, 4].includes(count % 10) && ![12, 13, 14].includes(count % 100)
+      ? 'решения готово'
+      : 'решений готово';
+  return `${count} ${form}`;
+}
+
+function countPreparedDecisionsForTasks(
+  tasks: Task[],
+  estimates: EstimateSuggestion[],
+  dueDates: DueDateDecision[],
+  projects: ProjectDecision[],
+): number {
+  const ids = new Set(tasks.map((task) => task.id));
+  return estimates.filter((suggestion) => ids.has(suggestion.taskId)).length
+    + dueDates.filter((decision) => ids.has(decision.task.id)).length
+    + projects.filter((decision) => ids.has(decision.task.id)).length;
 }
 
 function startOfLocalDay(date: Date): Date {
@@ -552,14 +579,18 @@ function ProjectDetail({
   project,
   tasks,
   locale,
+  preparedReviewCount,
   onBack,
+  onReviewCleanup,
   onOpenTask,
   renderTaskList,
 }: {
   project: Project;
   tasks: Task[];
   locale: AppLocale;
+  preparedReviewCount: number;
   onBack: () => void;
+  onReviewCleanup: () => void;
   onOpenTask: (task: Task) => void;
   renderTaskList: (tasks: Task[]) => JSX.Element;
 }) {
@@ -567,13 +598,7 @@ function ProjectDetail({
   const nextTask = project.next_task ?? tasks[0] ?? null;
   const later = nextTask ? tasks.filter((task) => task.id !== nextTask.id && task.status !== 'done') : tasks;
   const done = tasks.filter((task) => task.status === 'done').slice(0, 3);
-  const openTasks = tasks.filter((task) => task.status !== 'done');
   const isBacklog = project.system_key === 'backlog';
-  const cleanup = {
-    estimates: openTasks.filter((task) => task.estimated_minutes === null && task.estimate_source !== 'skipped').length,
-    dates: openTasks.filter((task) => task.due_at === null && task.review_skips?.due_date !== true).length,
-    projects: openTasks.filter((task) => task.review_skips?.project !== true).length,
-  };
   return (
     <div>
       <button type="button" onClick={onBack} className="mb-3 inline-flex h-10 items-center gap-2 rounded-full bg-[var(--secondary-bg)] px-3 text-[13px] font-semibold text-ink">
@@ -599,26 +624,24 @@ function ProjectDetail({
 
       {isBacklog && (
         <div className="card card-strong mb-3 p-4">
-          <div className="flex items-start gap-3">
+          <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-[var(--accent-soft)] text-accent-text">
               <Sparkles size={16} />
             </div>
             <div className="min-w-0 flex-1">
               <p className="text-[15px] font-semibold text-ink">{copy.backlogCleanup}</p>
-              <p className="mt-1 text-[12.5px] leading-snug text-hint">{copy.backlogCleanupHint}</p>
-              <div className="mt-3 grid grid-cols-3 gap-2">
-                {[
-                  [copy.estimate, cleanup.estimates],
-                  [copy.planDates, cleanup.dates],
-                  [copy.sortProjects, cleanup.projects],
-                ].map(([label, count]) => (
-                  <div key={String(label)} className="rounded-2xl border border-hairline bg-[var(--surface)] px-2.5 py-2">
-                    <p className="tnum text-[15px] font-semibold text-ink">{count}</p>
-                    <p className="mt-0.5 truncate text-[11.5px] text-hint">{label}</p>
-                  </div>
-                ))}
-              </div>
+              <p className="mt-1 text-[12.5px] leading-snug text-hint">
+                {preparedReviewCount > 0 ? decisionCountLabel(preparedReviewCount, locale) : copy.noPreparedDecisions}
+              </p>
             </div>
+            <button
+              type="button"
+              disabled={preparedReviewCount === 0}
+              onClick={onReviewCleanup}
+              className="h-10 shrink-0 rounded-full bg-accent px-3.5 text-[12.5px] font-semibold text-white disabled:bg-[var(--secondary-bg)] disabled:text-hint"
+            >
+              {copy.reviewCleanup}
+            </button>
           </div>
         </div>
       )}
@@ -676,37 +699,84 @@ function ReviewHub({
   onOpenReview: (mode: ReviewMode) => void;
 }) {
   const copy = copyFor(locale);
+  const total = suggestions.length + dueDateDecisions.length + projectDecisions.length;
   const categories = [
     { mode: 'estimates' as const, label: copy.estimates, hint: copy.estimatesHint, count: suggestions.length, action: copy.reviewEstimates },
     { mode: 'due_dates' as const, label: copy.dueDates, hint: copy.dueDatesHint, count: dueDateDecisions.length, action: copy.reviewDueDates },
     { mode: 'projects' as const, label: copy.projectSuggestions, hint: copy.projectSuggestionsHint, count: projectDecisions.length, action: copy.reviewProjects },
   ];
+  const previews = [
+    ...suggestions.slice(0, 2).map((suggestion) => ({
+      id: suggestion.id,
+      label: copy.estimates,
+      title: suggestion.title,
+      meta: formatMinutes(suggestion.minutes, locale),
+    })),
+    ...dueDateDecisions.slice(0, 2).map((decision) => ({
+      id: decision.id,
+      label: copy.dueDates,
+      title: decision.title,
+      meta: formatDateDecisionLabel(decision.dueAt, locale),
+    })),
+    ...projectDecisions.slice(0, 2).map((decision) => ({
+      id: decision.id,
+      label: copy.projectSuggestions,
+      title: decision.title,
+      meta: decision.projectName,
+    })),
+  ].slice(0, 2);
   return (
     <div>
       <div className="mb-3 px-1">
         <h2 className="text-[20px] font-semibold tracking-[-0.01em] text-ink">{copy.reviewHub}</h2>
         <p className="mt-0.5 text-[13px] text-hint">{copy.reviewSubtitle}</p>
       </div>
-      <div className="card card-strong overflow-hidden">
-        {categories.map((category) => (
-          <button
-            key={category.mode}
-            type="button"
-            aria-label={category.action}
-            onClick={() => onOpenReview(category.mode)}
-            className="flex w-full items-center gap-3 border-t border-hairline px-4 py-3.5 text-left first:border-t-0 active:bg-[rgba(255,255,255,0.03)]"
-          >
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-[var(--accent-soft)] text-accent-text">
-              <Sparkles size={16} />
+      <div className="card card-strong p-4">
+        <div className="flex items-start gap-3">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[var(--accent-soft)] text-accent-text">
+            <Sparkles size={17} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[17px] font-semibold tracking-[-0.01em] text-ink">{preparedReviewLabel(total, locale)}</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {categories.map((category) => (
+                <button
+                  key={category.mode}
+                  type="button"
+                  aria-label={category.action}
+                  onClick={() => onOpenReview(category.mode)}
+                  className="inline-flex h-8 items-center gap-2 rounded-full border border-hairline bg-[var(--secondary-bg)] px-3 text-[12px] font-semibold text-ink active:bg-[rgba(255,255,255,0.04)]"
+                >
+                  <span>{category.label}</span>
+                  <span className="tnum text-accent-text">{category.count}</span>
+                </button>
+              ))}
             </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-[14.5px] font-semibold text-ink">{category.label}</p>
-              <p className="truncate text-[12.5px] text-hint">{category.hint}</p>
+          </div>
+        </div>
+
+        {previews.length > 0 ? (
+          <div className="mt-4 border-t border-hairline pt-3">
+            <p className="mb-2 px-0.5 text-[11.5px] font-semibold uppercase tracking-wide text-hint">{copy.preparedNow}</p>
+            <div className="space-y-2">
+              {previews.map((item) => (
+                <div key={item.id} className="rounded-2xl border border-hairline bg-[var(--surface)] px-3 py-2.5">
+                  <div className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate text-[13.5px] font-semibold text-ink">{item.title}</span>
+                    <span className="tnum shrink-0 rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[11.5px] font-semibold text-accent-text">
+                      {item.meta}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-[12px] text-hint">{item.label}</p>
+                </div>
+              ))}
             </div>
-            <span className="tnum rounded-full bg-[var(--secondary-bg)] px-2.5 py-1 text-[12px] font-semibold text-ink">{category.count}</span>
-            <ChevronRight size={17} className="shrink-0 text-hint" />
-          </button>
-        ))}
+          </div>
+        ) : (
+          <div className="mt-4 rounded-2xl border border-hairline bg-[var(--surface)] px-3 py-3 text-[13px] text-hint">
+            {copy.noPreparedDecisions}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1317,8 +1387,12 @@ export default function TasksPage() {
     [hiddenReviewDecisionIds, visible, visibleSuggestions],
   );
   const projectDecisions = useMemo(
-    () => buildProjectDecisions(visible, allProjects, visibleSuggestions, hiddenReviewDecisionIds),
-    [allProjects, hiddenReviewDecisionIds, visible, visibleSuggestions],
+    () => buildProjectDecisions(visible, visibleSuggestions, hiddenReviewDecisionIds),
+    [hiddenReviewDecisionIds, visible, visibleSuggestions],
+  );
+  const selectedProjectPreparedReviewCount = useMemo(
+    () => countPreparedDecisionsForTasks(searchedProjectItems, estimateSuggestions, dueDateDecisions, projectDecisions),
+    [dueDateDecisions, estimateSuggestions, projectDecisions, searchedProjectItems],
   );
 
   const submit = () => {
@@ -1369,8 +1443,8 @@ export default function TasksPage() {
         },
       );
     };
-  const editEstimate = (task: Task, suggestion: { id: string; minutes: number; reason?: string | null }) =>
-    setEstimateEditing({ task, suggestion: { ...suggestion, taskId: task.id } });
+  const editEstimate = (task: Task, suggestion: { id: string; minutes: number; reason?: string | null; title?: string }) =>
+    setEstimateEditing({ task, suggestion: { title: suggestion.title ?? `Estimate ${task.title}`, ...suggestion, taskId: task.id } });
 
   const hideDecision = (id: string) => setHiddenReviewDecisionIds((current) => new Set(current).add(id));
   const restoreDecision = (id: string) => setHiddenReviewDecisionIds((current) => {
@@ -1666,7 +1740,13 @@ export default function TasksPage() {
             project={selectedProject}
             tasks={searchedProjectItems}
             locale={locale}
+            preparedReviewCount={selectedProjectPreparedReviewCount}
             onBack={() => setSelectedProject(null)}
+            onReviewCleanup={() => {
+              setSelectedProject(null);
+              setView('review');
+              setReviewMode(null);
+            }}
             onOpenTask={setEditing}
             renderTaskList={renderTaskList}
           />

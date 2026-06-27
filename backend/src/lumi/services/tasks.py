@@ -784,9 +784,9 @@ class TaskService:
     async def _queue_suggestion_refresh(self, user: User, *, task: Task, reason: str) -> None:
         await AssistantSuggestionService(self.session).enqueue_opportunity(
             user,
-            kind="task_suggestions",
-            scope_key="today",
+            kind="task_cleanup",
+            scope_key="review",
             reason=reason,
             payload={"task_id": str(task.id), "project_id": str(task.project_id) if task.project_id else None},
-            delay_seconds=30,
+            delay_seconds=45,
         )

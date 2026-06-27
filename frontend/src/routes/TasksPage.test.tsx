@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
@@ -279,11 +279,12 @@ describe('TasksPage Review and estimates', () => {
     await user.click(await screen.findByRole('button', { name: 'Review' }));
     await user.click(screen.getByRole('button', { name: /Review estimates/i }));
 
-    expect(screen.getByRole('dialog', { name: 'Estimate suggestions' })).toBeInTheDocument();
-    expect(screen.getByText('Compare Mira design')).toBeInTheDocument();
-    expect(screen.getByText('Buy capsules')).toBeInTheDocument();
-    expect(screen.getByText('45 min')).toBeInTheDocument();
-    expect(screen.getByText('10 min')).toBeInTheDocument();
+    const dialog = screen.getByRole('dialog', { name: 'Estimate suggestions' });
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByText('Compare Mira design')).toBeInTheDocument();
+    expect(within(dialog).getByText('Buy capsules')).toBeInTheDocument();
+    expect(within(dialog).getByText('45 min')).toBeInTheDocument();
+    expect(within(dialog).getByText('10 min')).toBeInTheDocument();
   });
 
   it('keeps the bulk estimate review open and removes an accepted row', async () => {
@@ -410,7 +411,7 @@ describe('TasksPage Review and estimates', () => {
     });
   });
 
-  it('shows Review Hub instead of a raw triage list', async () => {
+  it('shows a prepared Review command center instead of raw task gaps', async () => {
     vi.spyOn(api, 'listTasks').mockResolvedValue({
       items: [
         makeTask({ id: 'task-1', title: 'Compare Mira design', project: 'Lumi', project_id: 'project-lumi' }),
@@ -434,6 +435,20 @@ describe('TasksPage Review and estimates', () => {
           decided_at: null,
           created_at: '2026-06-21T08:00:00Z',
         },
+        {
+          id: 'suggestion-2',
+          kind: 'task_project',
+          status: 'pending',
+          title: 'Sort into Backlog',
+          description: 'Default place until clearer',
+          start_at: null,
+          end_at: null,
+          affected_task_ids: ['task-2'],
+          payload: { task_id: 'task-2', project: 'Backlog', confidence: 'medium', reason: 'Default place until clearer' },
+          expires_at: null,
+          decided_at: null,
+          created_at: '2026-06-21T08:01:00Z',
+        },
       ],
     } satisfies AssistantSuggestionsResponse);
 
@@ -442,10 +457,12 @@ describe('TasksPage Review and estimates', () => {
     await user.click(await screen.findByRole('button', { name: 'Review' }));
 
     expect(screen.getByText('Review Hub')).toBeInTheDocument();
-    expect(screen.getAllByText('Estimates').length).toBeGreaterThan(0);
-    expect(screen.getByText('Plan dates')).toBeInTheDocument();
-    expect(screen.getByText('Sort into projects')).toBeInTheDocument();
+    expect(screen.getByText('Lumi prepared 2 decisions')).toBeInTheDocument();
+    expect(screen.getByText('Estimate Compare Mira design')).toBeInTheDocument();
+    expect(screen.getByText('Sort into Backlog')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Review estimates/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Review project sorting/i })).toBeInTheDocument();
+    expect(screen.queryByText('Need project')).not.toBeInTheDocument();
     expect(screen.queryByText('Разбор')).not.toBeInTheDocument();
   });
 
@@ -509,11 +526,33 @@ describe('TasksPage Review and estimates', () => {
       project: 'Backlog',
       project_id: 'project-backlog',
     });
+    const dueSuggestion = {
+      id: 'suggestion-no-date',
+      kind: 'task_due_date',
+      status: 'pending',
+      title: 'No deadline',
+      description: 'Backlog items can stay open without a deadline.',
+      start_at: null,
+      end_at: null,
+      affected_task_ids: ['task-backlog-date'],
+      payload: {
+        task_id: 'task-backlog-date',
+        no_deadline: true,
+        bucket: 'Someday / Backlog',
+        reason: 'Backlog items can stay open without a deadline.',
+      },
+      expires_at: null,
+      decided_at: null,
+      created_at: '2026-06-21T08:00:00Z',
+    } satisfies AssistantSuggestion;
     vi.spyOn(api, 'listTasks').mockResolvedValue({ items: [task] } satisfies TasksResponse);
     vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
-    vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({ items: [] });
+    vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({ items: [dueSuggestion] });
     const patchSpy = vi.spyOn(api, 'patchTask').mockResolvedValue({
       task: { ...task, review_skips: { due_date: true } },
+    });
+    vi.spyOn(api, 'dismissAssistantSuggestion').mockResolvedValue({
+      suggestion: { ...dueSuggestion, status: 'dismissed', decided_at: '2026-06-21T08:01:00Z' },
     });
 
     const user = userEvent.setup();
@@ -563,10 +602,11 @@ describe('TasksPage Review and estimates', () => {
     await user.click(await screen.findByRole('button', { name: 'Review' }));
     await user.click(screen.getByRole('button', { name: /Review project sorting/i }));
 
-    expect(screen.getByRole('dialog', { name: 'Sort into projects' })).toBeInTheDocument();
-    expect(screen.getByText('Suggested project')).toBeInTheDocument();
-    expect(screen.getByText('Lumi')).toBeInTheDocument();
-    expect(screen.getByText('Looks related to Lumi docs')).toBeInTheDocument();
+    const dialog = screen.getByRole('dialog', { name: 'Sort into projects' });
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByText('Suggested project')).toBeInTheDocument();
+    expect(within(dialog).getByText('Lumi')).toBeInTheDocument();
+    expect(within(dialog).getByText('Looks related to Lumi docs')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /Keep Update office files unassigned/i }));
     await waitFor(() => {
@@ -595,7 +635,28 @@ describe('TasksPage Review and estimates', () => {
         : [],
     }));
     vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [backlogProject] });
-    vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({ items: [] });
+    vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({
+      items: [
+        {
+          id: 'suggestion-backlog-estimate',
+          kind: 'task_estimate',
+          status: 'pending',
+          title: 'Estimate Think about subscription UX',
+          description: 'Small enough for one focus block.',
+          start_at: null,
+          end_at: null,
+          affected_task_ids: ['task-backlog-1'],
+          payload: {
+            task_id: 'task-backlog-1',
+            estimated_minutes: 30,
+            reason: 'Small enough for one focus block.',
+          },
+          expires_at: null,
+          decided_at: null,
+          created_at: '2026-06-21T08:00:00Z',
+        },
+      ],
+    } satisfies AssistantSuggestionsResponse);
 
     const user = userEvent.setup();
     renderTasksPage('en');
@@ -603,9 +664,8 @@ describe('TasksPage Review and estimates', () => {
     await user.click(screen.getByRole('button', { name: /Open project Backlog/i }));
 
     expect(await screen.findByText('Backlog cleanup')).toBeInTheDocument();
-    expect(screen.getByText('Estimate')).toBeInTheDocument();
-    expect(screen.getByText('Plan dates')).toBeInTheDocument();
-    expect(screen.getByText('Sort projects')).toBeInTheDocument();
+    expect(screen.getByText('1 decision ready')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review cleanup' })).toBeInTheDocument();
   });
 
   it('groups Done tasks and can undo completion inline', async () => {

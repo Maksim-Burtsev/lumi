@@ -11,6 +11,8 @@ from lumi.logging import get_logger, setup_logging
 from lumi.worker.jobs import (
     cleanup_ui_events,
     compact_conversation,
+    enqueue_active_user_task_cleanup,
+    enqueue_daily_task_cleanup,
     enqueue_due_assistant_turns,
     process_assistant_turn,
     process_due_opportunity_jobs,
@@ -52,6 +54,8 @@ class WorkerSettings:
         compact_conversation,
         process_assistant_turn,
         process_due_opportunity_jobs,
+        enqueue_active_user_task_cleanup,
+        enqueue_daily_task_cleanup,
         cleanup_ui_events,
     ]
     cron_jobs = [
@@ -61,6 +65,8 @@ class WorkerSettings:
         cron(enqueue_due_assistant_turns, second=45, unique=True),
         # Low-latency proactive task/project opportunities.
         cron(process_due_opportunity_jobs, second=35, unique=True),
+        cron(enqueue_active_user_task_cleanup, minute={0, 15, 30, 45}, second=25, unique=True),
+        cron(enqueue_daily_task_cleanup, minute=5, second=5, unique=True),
         # Realtime outbox retention: durable catch-up is 72h.
         cron(cleanup_ui_events, hour=3, minute=20, unique=True),
     ]

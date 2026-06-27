@@ -438,7 +438,7 @@ class CalendarService:
     ) -> None:
         await AssistantSuggestionService(self.session).enqueue_opportunity(
             user,
-            kind="task_suggestions",
+            kind="slot_suggestions",
             scope_key="today",
             reason=reason,
             payload=payload,

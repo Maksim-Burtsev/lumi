@@ -166,7 +166,7 @@ async def test_calendar_changes_enqueue_task_suggestion_refresh(client):
         result = await session.execute(
             select(AssistantOpportunityJob).where(
                 AssistantOpportunityJob.user_id == user.id,
-                AssistantOpportunityJob.kind == "task_suggestions",
+                AssistantOpportunityJob.kind == "slot_suggestions",
                 AssistantOpportunityJob.scope_key == "today",
             )
         )
@@ -182,7 +182,7 @@ async def test_calendar_changes_enqueue_task_suggestion_refresh(client):
         result = await session.execute(
             select(AssistantOpportunityJob).where(
                 AssistantOpportunityJob.user_id == user.id,
-                AssistantOpportunityJob.kind == "task_suggestions",
+                AssistantOpportunityJob.kind == "slot_suggestions",
                 AssistantOpportunityJob.scope_key == "today",
             )
         )
@@ -373,3 +373,35 @@ async def test_today_filters_past_proposed_blocks_and_does_not_duplicate_inline_
     assert "Past proposal" not in titles
     assert "Future proposal" in titles
     assert all(item["kind"] != "focus_block" for item in payload["suggestions"])
+
+
+async def test_today_includes_pending_micro_slot_suggestions_separately(client, monkeypatch):
+    now = datetime(2026, 6, 10, 10, 0, tzinfo=UTC)
+    monkeypatch.setattr(today_module, "utc_now", lambda: now)
+    start_at = now + timedelta(minutes=30)
+    end_at = start_at + timedelta(minutes=25)
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        await AssistantSuggestionService(session).create(
+            user,
+            kind="micro_slot",
+            title="25 min free",
+            description="2 quick wins ready",
+            start_at=start_at,
+            end_at=end_at,
+            payload={
+                "slot": {"start_at": start_at.isoformat(), "end_at": end_at.isoformat()},
+                "tasks": [{"id": "task-1", "title": "Check mail", "estimated_minutes": 5}],
+                "reason": "Fits this window.",
+                "source": "llm",
+            },
+            context_hash="slot-test",
+        )
+
+    response = await client.get("/api/today")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["slot_suggestions"][0]["title"] == "25 min free"
+    assert payload["slot_suggestions"][0]["tasks"][0]["title"] == "Check mail"
+    assert all(item["kind"] != "micro_slot" for item in payload["suggestions"])

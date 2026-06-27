@@ -22,12 +22,13 @@ import {
   useSnoozeTask,
   useToday,
 } from '../api/hooks';
-import type { AttentionItem, Suggestion, TimelineItem, TodaySummary } from '../api/types';
+import type { AttentionItem, SlotSuggestion, Suggestion, TimelineItem, TodaySummary } from '../api/types';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorState } from '../components/ui/ErrorState';
 import { SectionHeader } from '../components/ui/SectionHeader';
+import { Sheet } from '../components/ui/Sheet';
 import { Skeleton, SkeletonList, SkeletonTimeline } from '../components/ui/Skeleton';
 import { StatPill } from '../components/ui/StatPill';
 import { useToast } from '../components/ui/Toast';
@@ -77,6 +78,9 @@ const TODAY_COPY = {
     openTasks: 'Open tasks',
     createTask: 'Create task',
     openInbox: 'Open inbox',
+    quickWinsReady: 'Quick wins ready',
+    freeSlotReady: 'quick wins ready',
+    openTaskList: 'Open task list',
   },
   ru: {
     quietDay: 'Спокойный день — можно заняться важным',
@@ -113,6 +117,9 @@ const TODAY_COPY = {
     openTasks: 'Открыть задачи',
     createTask: 'Создать задачу',
     openInbox: 'Открыть почту',
+    quickWinsReady: 'Готовые быстрые задачи',
+    freeSlotReady: 'готовых быстрых задач',
+    openTaskList: 'Открыть список задач',
   },
 } satisfies Record<AppLocale, Record<string, string>>;
 
@@ -169,6 +176,21 @@ function formatSpanMinutesLocalized(startTs: string, endTs: string, locale: AppL
   if (h > 0 && m > 0) return `${h} hr ${m} min`;
   if (h > 0) return `${h} ${h === 1 ? 'hr' : 'hrs'}`;
   return `${m} min`;
+}
+
+function slotTaskCountLabel(count: number, locale: AppLocale): string {
+  if (locale === 'en') return `${count} ${count === 1 ? 'quick win' : 'quick wins'} ready`;
+  const form = count % 10 === 1 && count % 100 !== 11
+    ? 'готовая быстрая задача'
+    : [2, 3, 4].includes(count % 10) && ![12, 13, 14].includes(count % 100)
+      ? 'готовые быстрые задачи'
+      : 'готовых быстрых задач';
+  return `${count} ${form}`;
+}
+
+function slotTimelineTitle(slot: SlotSuggestion, locale: AppLocale): string {
+  const span = formatSpanMinutesLocalized(slot.start_at, slot.end_at, locale);
+  return `${span} ${locale === 'en' ? 'free' : 'свободно'} · ${slotTaskCountLabel(slot.tasks.length, locale)}`;
 }
 
 function overdueTasksLabel(count: number, locale: AppLocale): string {
@@ -333,6 +355,7 @@ export default function TodayPage() {
   const { show } = useToast();
   const [expandedAttentionId, setExpandedAttentionId] = useState<string | null>(null);
   const [decisionInFlightId, setDecisionInFlightId] = useState<string | null>(null);
+  const [selectedSlot, setSelectedSlot] = useState<SlotSuggestion | null>(null);
   const confirmBlock = useConfirmBlock();
   const decideConfirmation = useDecideConfirmation();
   const completeTask = useCompleteTask('today');
@@ -486,7 +509,7 @@ export default function TodayPage() {
   const nowMs = Date.now();
   const isTodayPayload = date.toDateString() === new Date().toDateString();
 
-  const rawEntries: TimelineEntry[] = data.timeline
+  const timelineItems: TimelineEntry[] = data.timeline
     .filter((item: TimelineItem) => item.status !== 'cancelled')
     .filter((item: TimelineItem) => !(
       isTodayPayload && item.kind === 'proposed' && new Date(item.end_at).getTime() <= nowMs
@@ -516,6 +539,20 @@ export default function TodayPage() {
             }
           : undefined,
     }));
+  const slotEntries: TimelineEntry[] = (data.slot_suggestions ?? [])
+    .filter((slot) => !isTodayPayload || new Date(slot.end_at).getTime() > nowMs)
+    .map((slot) => ({
+      id: `slot-${slot.id}`,
+      kind: 'free' as const,
+      title: slotTimelineTitle(slot, locale),
+      start_at: slot.start_at,
+      end_at: slot.end_at,
+      subtitle: slot.reason ?? slot.tasks.slice(0, 2).map((task) => task.title).join(' · '),
+      onPress: () => setSelectedSlot(slot),
+    }));
+
+  const rawEntries = [...timelineItems, ...slotEntries]
+    .sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime());
 
   // Agenda rhythm: surface real gaps between items as ghost "free" rows,
   // so back-to-back meetings and 2-hour windows look different.
@@ -757,6 +794,43 @@ export default function TodayPage() {
         </Rise>
       )}
 
+      {selectedSlot && (
+        <Sheet open onClose={() => setSelectedSlot(null)} title={copy.quickWinsReady} closeLabel={copy.dismiss}>
+          <div className="rounded-2xl border border-hairline bg-[var(--surface)] px-3.5 py-3">
+            <p className="tnum text-[14px] font-semibold text-ink">
+              {formatSpanMinutesLocalized(selectedSlot.start_at, selectedSlot.end_at, locale)}
+            </p>
+            {selectedSlot.reason && <p className="mt-1 text-[12.5px] leading-relaxed text-hint">{selectedSlot.reason}</p>}
+          </div>
+          <div className="mt-3 space-y-2.5">
+            {selectedSlot.tasks.map((task) => (
+              <button
+                key={task.id}
+                type="button"
+                onClick={() => {
+                  setSelectedSlot(null);
+                  navigate('/tasks');
+                }}
+                className="flex w-full items-center gap-3 rounded-2xl border border-hairline bg-[var(--surface)] px-3.5 py-3 text-left active:bg-[rgba(255,255,255,0.04)]"
+              >
+                <Sparkles size={15} className="shrink-0 text-accent-text" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[14px] font-semibold text-ink">{task.title}</span>
+                  <span className="block truncate text-[12.5px] text-hint">
+                    {[task.project, task.estimated_minutes ? `${task.estimated_minutes} min` : null].filter(Boolean).join(' · ')}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+          <Button fullWidth variant="secondary" className="mt-4" onClick={() => {
+            setSelectedSlot(null);
+            navigate('/tasks');
+          }}>
+            {copy.openTaskList}
+          </Button>
+        </Sheet>
+      )}
     </Stagger>
   );
 }

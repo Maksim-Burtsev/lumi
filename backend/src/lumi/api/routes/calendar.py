@@ -211,7 +211,7 @@ async def delete_event(
     )
     await AssistantSuggestionService(session).enqueue_opportunity(
         user,
-        kind="task_suggestions",
+        kind="slot_suggestions",
         scope_key="today",
         reason="calendar_event.cancelled",
         payload={"event_id": str(event.id)},

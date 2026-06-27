@@ -184,6 +184,10 @@ class MockLLMProvider:
                 },
                 ensure_ascii=False,
             )
+        if request_kind == "task_cleanup":
+            return json.dumps(self._task_cleanup(joined), ensure_ascii=False)
+        if request_kind == "slot_suggestions":
+            return json.dumps(self._slot_suggestions(joined), ensure_ascii=False)
         # final_chat / custom / anything else
         return "Готово, я это зафиксировал."
 
@@ -325,3 +329,72 @@ class MockLLMProvider:
                 }
             ]
         return result
+
+    def _task_cleanup(self, joined: str) -> dict[str, Any]:
+        try:
+            payload = json.loads(joined)
+        except json.JSONDecodeError:
+            payload = {}
+        tasks = payload.get("tasks") if isinstance(payload.get("tasks"), list) else []
+        decisions: list[dict[str, Any]] = []
+        for task in tasks[:8]:
+            if not isinstance(task, dict):
+                continue
+            task_id = task.get("id")
+            title = str(task.get("title") or "")
+            if not isinstance(task_id, str):
+                continue
+            if task.get("estimated_minutes") is None and task.get("estimate_source") != "skipped":
+                minutes = 5 if any(word in title.lower() for word in ("почт", "email", "mail")) else 30
+                decisions.append({
+                    "kind": "task_estimate",
+                    "task_id": task_id,
+                    "estimated_minutes": minutes,
+                    "confidence": "high" if minutes <= 10 else "medium",
+                    "reason": "Looks like a quick operational task." if minutes <= 10 else "Small enough for one focus block.",
+                })
+            skips = task.get("review_skips") if isinstance(task.get("review_skips"), dict) else {}
+            if task.get("due_at") is None and skips.get("due_date") is not True:
+                if task.get("project") == "Backlog":
+                    decisions.append({
+                        "kind": "task_due_date",
+                        "task_id": task_id,
+                        "no_deadline": True,
+                        "bucket": "Someday / Backlog",
+                        "confidence": "high",
+                        "reason": "Backlog items can stay open without a deadline.",
+                    })
+                else:
+                    decisions.append({
+                        "kind": "task_due_date",
+                        "task_id": task_id,
+                        "no_deadline": True,
+                        "bucket": "Needs context",
+                        "confidence": "medium",
+                        "reason": "No clear deadline in the task text.",
+                    })
+            if task.get("project_id") is None and skips.get("project") is not True:
+                decisions.append({
+                    "kind": "task_project",
+                    "task_id": task_id,
+                    "project": task.get("project") or "Backlog",
+                    "confidence": "medium",
+                    "reason": "Default project until a stronger project is clear.",
+                })
+        return {"decisions": decisions[:20]}
+
+    def _slot_suggestions(self, joined: str) -> dict[str, Any]:
+        try:
+            payload = json.loads(joined)
+        except json.JSONDecodeError:
+            payload = {}
+        tasks = payload.get("tasks") if isinstance(payload.get("tasks"), list) else []
+        ordered = [
+            task.get("id")
+            for task in sorted(
+                [task for task in tasks if isinstance(task, dict)],
+                key=lambda item: (item.get("estimated_minutes") or 999, item.get("due_at") is None),
+            )
+            if isinstance(task.get("id"), str)
+        ]
+        return {"task_ids": ordered[:3], "reason": "Best fit for this free window."}

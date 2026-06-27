@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
+import json
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
@@ -26,15 +27,17 @@ from lumi.db.models import (
     User,
 )
 from lumi.db.session import session_scope
-from lumi.llm.base import LLMMessage
+from lumi.i18n import normalize_app_locale
+from lumi.llm.base import LLMError, LLMMessage
 from lumi.llm.gateway import LLMGateway
 from lumi.logging import agent_run_id_var, get_logger
 from lumi.services.assistant_suggestions import AssistantSuggestionService
+from lumi.services.calendar import CalendarService
 from lumi.services.planning_settings import normalize_planning_settings
 from lumi.services.runs import RunService
 from lumi.services.turns import TurnService
 from lumi.utils.text import chunk_telegram, ru_plural
-from lumi.utils.time import fmt_local, utc_now
+from lumi.utils.time import fmt_local, get_zone, utc_now
 from lumi.worker.queue import enqueue_job
 
 log = get_logger(__name__)
@@ -813,7 +816,7 @@ async def cleanup_ui_events(ctx: dict[str, Any]) -> str:
 
 
 async def process_due_opportunity_jobs(ctx: dict[str, Any]) -> str:
-    """arq cron job: precompute low-latency task suggestions for due users."""
+    """arq cron job: precompute low-latency task/review suggestions for due users."""
     processed = 0
     now = utc_now()
     async with session_scope() as session:
@@ -841,10 +844,10 @@ async def process_due_opportunity_jobs(ctx: dict[str, Any]) -> str:
                 job.locked_until = None
                 job.next_check_at = now + timedelta(hours=1)
                 continue
-            created = await _precompute_task_suggestion(session, user)
+            created = await _process_opportunity_job(session, user, job)
             job.last_run_at = now
             job.locked_until = None
-            job.next_check_at = now + timedelta(hours=1)
+            job.next_check_at = now + _next_opportunity_delay(job.kind)
             if created:
                 processed += 1
     if processed:
@@ -852,9 +855,393 @@ async def process_due_opportunity_jobs(ctx: dict[str, Any]) -> str:
     return f"processed {processed}"
 
 
-async def _precompute_task_suggestion(session, user: User) -> bool:
+async def enqueue_active_user_task_cleanup(ctx: dict[str, Any]) -> str:
+    """Queue light cleanup for users who recently opened/chat with Lumi."""
+    now = utc_now()
+    cutoff = now - timedelta(hours=24)
+    queued = 0
+    async with session_scope() as session:
+        result = await session.execute(
+            select(User)
+            .where(User.last_seen_at.is_not(None), User.last_seen_at >= cutoff)
+            .order_by(User.last_seen_at.desc())
+            .limit(200)
+        )
+        service = AssistantSuggestionService(session)
+        for user in result.scalars():
+            await service.enqueue_opportunity(
+                user,
+                kind="task_cleanup",
+                scope_key="review",
+                reason="active_sweep",
+                payload={"sweep": "active"},
+                delay_seconds=45,
+            )
+            queued += 1
+    return f"queued {queued}"
+
+
+async def enqueue_daily_task_cleanup(ctx: dict[str, Any]) -> str:
+    """Queue one daily deep cleanup close to each user's workday start."""
+    now = utc_now()
+    queued = 0
+    async with session_scope() as session:
+        result = await session.execute(
+            select(User)
+            .where(User.last_seen_at.is_not(None), User.last_seen_at >= now - timedelta(days=14))
+            .limit(500)
+        )
+        service = AssistantSuggestionService(session)
+        for user in result.scalars():
+            planning = normalize_planning_settings(user.settings)
+            local_now = now.astimezone(get_zone(user.timezone))
+            if local_now.weekday() not in planning["work_days"]:
+                continue
+            start_hour = int(str(planning["work_hours"]["start"]).split(":", 1)[0])
+            if local_now.hour != start_hour:
+                continue
+            scope = f"daily:{local_now.date().isoformat()}"
+            await service.enqueue_opportunity(
+                user,
+                kind="task_cleanup",
+                scope_key=scope,
+                reason="daily_cleanup",
+                payload={"date": local_now.date().isoformat(), "sweep": "daily"},
+                delay_seconds=60,
+            )
+            queued += 1
+    return f"queued {queued}"
+
+
+def _next_opportunity_delay(kind: str) -> timedelta:
+    if kind == "task_cleanup":
+        return timedelta(hours=6)
+    if kind == "slot_suggestions":
+        return timedelta(hours=1)
+    return timedelta(hours=1)
+
+
+async def _process_opportunity_job(session, user: User, job: AssistantOpportunityJob) -> bool:
+    if job.kind == "task_cleanup":
+        return await _precompute_task_cleanup(session, user, job=job)
+    if job.kind in {"slot_suggestions", "task_suggestions"}:
+        return await _precompute_slot_suggestion(session, user, job=job)
+    return False
+
+
+def _review_skips(task: Task) -> dict[str, bool]:
+    skips = (task.metadata_ or {}).get("review_skips")
+    if not isinstance(skips, dict):
+        return {}
+    return {str(key): True for key, value in skips.items() if value is True}
+
+
+def _task_payload(task: Task) -> dict[str, Any]:
+    return {
+        "id": str(task.id),
+        "title": task.title,
+        "project": task.project,
+        "project_id": str(task.project_id) if task.project_id else None,
+        "priority": task.priority.value,
+        "tags": task.tags or [],
+        "due_at": task.due_at.isoformat() if task.due_at else None,
+        "target_at": task.target_at.isoformat() if task.target_at else None,
+        "estimated_minutes": task.estimated_minutes,
+        "estimate_source": task.estimate_source,
+        "created_at": task.created_at.isoformat(),
+        "updated_at": task.updated_at.isoformat(),
+        "review_skips": _review_skips(task),
+    }
+
+
+async def _load_open_tasks_for_cleanup(session, user: User) -> list[Task]:
+    result = await session.execute(
+        select(Task)
+        .where(
+            Task.user_id == user.id,
+            Task.status.in_([TaskStatus.ACTIVE, TaskStatus.INBOX]),
+        )
+        .order_by(
+            Task.due_at.asc().nulls_last(),
+            Task.priority.desc(),
+            Task.updated_at.desc(),
+        )
+        .limit(200)
+    )
+    return list(result.scalars())
+
+
+def _needs_cleanup(task: Task) -> bool:
+    skips = _review_skips(task)
+    if task.estimated_minutes is None and task.estimate_source != "skipped":
+        return True
+    if task.due_at is None and not skips.get("due_date"):
+        return True
+    if task.project_id is None and not skips.get("project"):
+        return True
+    if task.project == "Backlog" and not skips.get("project"):
+        return True
+    return False
+
+
+async def _pending_review_keys(session, user: User) -> set[tuple[str, str]]:
+    pending = await AssistantSuggestionService(session).list_pending(user, limit=200)
+    keys: set[tuple[str, str]] = set()
+    for suggestion in pending:
+        task_id = suggestion.payload.get("task_id")
+        if isinstance(task_id, str):
+            keys.add((suggestion.kind, task_id))
+    return keys
+
+
+async def _precompute_task_cleanup(session, user: User, *, job: AssistantOpportunityJob) -> bool:
+    planning = normalize_planning_settings(user.settings)
+    if not planning["auto_enrich_tasks"]:
+        return False
+
+    tasks = [task for task in await _load_open_tasks_for_cleanup(session, user) if _needs_cleanup(task)]
+    if not tasks:
+        return False
+
+    pending_keys = await _pending_review_keys(session, user)
+    context = {
+        "locale": normalize_app_locale(user.locale),
+        "timezone": user.timezone,
+        "reason": job.reason,
+        "tasks": [_task_payload(task) for task in tasks],
+        "allowed_decisions": ["task_estimate", "task_due_date", "task_project"],
+    }
+    try:
+        raw = await _task_cleanup_llm(session, user, context)
+        for _ in range(2):
+            enrichment = await _cleanup_enrichment(session, user, raw.get("enrichment_requests"))
+            if not enrichment:
+                break
+            context = {**context, "enrichment": enrichment}
+            raw = await _task_cleanup_llm(session, user, context)
+    except LLMError:
+        log.exception("task cleanup llm failed", fields={"user_id": str(user.id)})
+        return False
+
+    task_by_id = {str(task.id): task for task in tasks}
+    created = 0
+    for decision in _validated_cleanup_decisions(raw):
+        task = task_by_id.get(decision["task_id"])
+        if task is None:
+            continue
+        suggestion = await _create_cleanup_suggestion(
+            session,
+            user,
+            task,
+            decision,
+            pending_keys=pending_keys,
+        )
+        if suggestion:
+            created += 1
+            pending_keys.add((suggestion.kind, str(task.id)))
+    return created > 0
+
+
+async def _task_cleanup_llm(session, user: User, context: dict[str, Any]) -> dict[str, Any]:
+    return await LLMGateway().complete_json(
+        messages=[LLMMessage(role="user", content=json.dumps(context, ensure_ascii=False))],
+        system=(
+            "You prepare quiet task cleanup suggestions. Return JSON only. "
+            "Never mutate tasks. Prefer high-confidence decisions. "
+            "Use no_deadline=true for backlog/someday items that should not get a due date. "
+            "If context is insufficient, request enrichment only as "
+            "project/backlog/due_window/tag filters; max two rounds."
+        ),
+        request_kind="task_cleanup",
+        user_id=user.id,
+        session=session,
+        max_tokens=4096,
+    )
+
+
+async def _cleanup_enrichment(session, user: User, raw_requests: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_requests, list):
+        return []
+    enriched: list[dict[str, Any]] = []
+    for request in raw_requests[:2]:
+        if not isinstance(request, dict):
+            continue
+        tasks = await _load_enrichment_tasks(session, user, request)
+        if not tasks:
+            continue
+        enriched.append({
+            "request": {key: request[key] for key in ("type", "project", "days", "tag") if key in request},
+            "tasks": [_task_payload(task) for task in tasks[:50]],
+        })
+    return enriched
+
+
+async def _load_enrichment_tasks(session, user: User, request: dict[str, Any]) -> list[Task]:
+    request_type = request.get("type")
+    base = [
+        Task.user_id == user.id,
+        Task.status.in_([TaskStatus.ACTIVE, TaskStatus.INBOX]),
+    ]
+    if request_type == "project":
+        project = request.get("project")
+        if not isinstance(project, str) or not project.strip():
+            return []
+        stmt = select(Task).where(*base, Task.project == project.strip())
+    elif request_type == "backlog":
+        stmt = select(Task).where(*base, Task.project == "Backlog")
+    elif request_type == "due_window":
+        days = request.get("days")
+        if not isinstance(days, int):
+            days = 14
+        days = max(1, min(days, 90))
+        now = utc_now()
+        stmt = select(Task).where(*base, Task.due_at.is_not(None), Task.due_at <= now + timedelta(days=days))
+    elif request_type == "tag":
+        tag = request.get("tag")
+        if not isinstance(tag, str) or not tag.strip():
+            return []
+        result = await session.execute(
+            select(Task)
+            .where(*base)
+            .order_by(Task.updated_at.desc())
+            .limit(200)
+        )
+        needle = tag.strip().lower()
+        return [task for task in result.scalars() if any(str(item).lower() == needle for item in (task.tags or []))]
+    else:
+        return []
+
+    result = await session.execute(
+        stmt.order_by(
+            Task.due_at.asc().nulls_last(),
+            Task.priority.desc(),
+            Task.updated_at.desc(),
+        ).limit(50)
+    )
+    return list(result.scalars())
+
+
+def _validated_cleanup_decisions(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_items = raw.get("decisions")
+    if not isinstance(raw_items, list):
+        return []
+    decisions: list[dict[str, Any]] = []
+    for item in raw_items[:40]:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("kind")
+        task_id = item.get("task_id")
+        if kind not in {"task_estimate", "task_due_date", "task_project"}:
+            continue
+        if not isinstance(task_id, str) or not task_id:
+            continue
+        reason = item.get("reason")
+        confidence = item.get("confidence")
+        decisions.append({
+            **item,
+            "kind": kind,
+            "task_id": task_id,
+            "reason": reason if isinstance(reason, str) and reason.strip() else "Prepared by Lumi.",
+            "confidence": confidence if confidence in {"low", "medium", "high"} else "medium",
+        })
+    return decisions
+
+
+async def _create_cleanup_suggestion(
+    session,
+    user: User,
+    task: Task,
+    decision: dict[str, Any],
+    *,
+    pending_keys: set[tuple[str, str]],
+):
+    kind = decision["kind"]
+    task_id = str(task.id)
+    if (kind, task_id) in pending_keys:
+        return None
+    skips = _review_skips(task)
+    reason = decision["reason"]
+    confidence = decision["confidence"]
+    payload: dict[str, Any] = {
+        "task_id": task_id,
+        "reason": reason,
+        "confidence": confidence,
+        "source": "llm",
+    }
+
+    if kind == "task_estimate":
+        minutes = decision.get("estimated_minutes")
+        if task.estimated_minutes is not None or task.estimate_source == "skipped":
+            return None
+        if not isinstance(minutes, int) or minutes < 1 or minutes > 1440:
+            return None
+        payload["estimated_minutes"] = minutes
+        title = f"Estimate {task.title}"
+        description = f"{minutes} min · {reason}"
+        context_hash = f"cleanup:estimate:{task.id}:{task.updated_at.isoformat()}:{minutes}"
+    elif kind == "task_due_date":
+        if task.due_at is not None or skips.get("due_date"):
+            return None
+        due_at = decision.get("due_at")
+        no_deadline = decision.get("no_deadline") is True
+        if no_deadline:
+            payload["no_deadline"] = True
+            payload["bucket"] = decision.get("bucket") if isinstance(decision.get("bucket"), str) else "Someday / Backlog"
+            title = f"No deadline for {task.title}"
+            description = reason
+            context_hash = f"cleanup:due:none:{task.id}:{task.updated_at.isoformat()}"
+        else:
+            if not isinstance(due_at, str):
+                return None
+            try:
+                parsed = datetime.fromisoformat(due_at.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+            payload["due_at"] = parsed.isoformat()
+            payload["bucket"] = decision.get("bucket") if isinstance(decision.get("bucket"), str) else "Likely this week"
+            title = f"Plan date for {task.title}"
+            description = reason
+            context_hash = f"cleanup:due:{task.id}:{task.updated_at.isoformat()}:{parsed.isoformat()}"
+    else:
+        if skips.get("project"):
+            return None
+        project = decision.get("project")
+        project_id = decision.get("project_id")
+        if isinstance(project_id, str) and project_id:
+            payload["project_id"] = project_id
+            project_label = decision.get("project") if isinstance(decision.get("project"), str) else "Project"
+        elif isinstance(project, str) and project.strip():
+            project_label = project.strip()
+            payload["project"] = project_label
+        else:
+            return None
+        if task.project == project_label and task.project_id is not None:
+            return None
+        title = f"Sort {task.title}"
+        description = reason
+        context_hash = f"cleanup:project:{task.id}:{task.updated_at.isoformat()}:{project_label}"
+
+    return await AssistantSuggestionService(session).create(
+        user,
+        kind=kind,
+        title=title,
+        description=description,
+        payload=payload,
+        context_hash=context_hash,
+        affected_task_ids=[task_id],
+        expires_at=utc_now() + timedelta(days=7),
+    )
+
+
+async def _precompute_slot_suggestion(session, user: User, *, job: AssistantOpportunityJob) -> bool:
     planning = normalize_planning_settings(user.settings)
     if not planning["micro_slots_enabled"]:
+        return False
+
+    day = _slot_day(user, job)
+    min_minutes = int(planning["micro_slots"]["min_minutes"])
+    slots = await CalendarService(session).find_free_slots(user, day=day, duration_minutes=min_minutes)
+    if not slots:
         return False
 
     result = await session.execute(
@@ -870,26 +1257,36 @@ async def _precompute_task_suggestion(session, user: User) -> bool:
         )
         .limit(200)
     )
-    tasks = [
-        task for task in result.scalars()
-        if task.estimated_minutes is not None and task.estimated_minutes <= 30
-    ]
+    tasks = [task for task in result.scalars() if task.estimated_minutes is not None and task.estimated_minutes >= 1]
     if not tasks:
         return False
 
-    tasks.sort(key=lambda task: (task.estimated_minutes or 999, task.due_at is None, -task.created_at.timestamp()))
-    picked = tasks[:3]
+    slot_start, slot_end, picked, source, reason = await _rank_slot_tasks(session, user, slots, tasks)
+    if not picked:
+        return False
     total = sum(task.estimated_minutes or 0 for task in picked)
-    context_hash = "task_suggestions:" + "|".join(
-        f"{task.id}:{task.updated_at.isoformat()}:{task.estimated_minutes}" for task in picked
-    )
+    context_hash = "slot_suggestions:" + "|".join([
+        slot_start.isoformat(),
+        slot_end.isoformat(),
+        *[f"{task.id}:{task.updated_at.isoformat()}:{task.estimated_minutes}" for task in picked],
+    ])
     first_project = picked[0].project
+    locale = normalize_app_locale(user.locale)
+    english_task_label = "quick win" if len(picked) == 1 else "quick wins"
+    description = (
+        f"Lumi already picked {len(picked)} {english_task_label} for {total} min"
+        if locale == "en"
+        else f"Lumi уже подобрала {len(picked)} {ru_plural(len(picked), 'задачу', 'задачи', 'задач')} на {total} мин"
+    )
     await AssistantSuggestionService(session).create(
         user,
         kind="micro_slot",
-        title=f"Окно от {planning['micro_slots']['min_minutes']} минут",
-        description=f"Lumi уже подобрала {len(picked)} {ru_plural(len(picked), 'задачу', 'задачи', 'задач')} на {total} мин",
+        title=f"{int((slot_end - slot_start).total_seconds() // 60)} min free",
+        description=description,
+        start_at=slot_start,
+        end_at=slot_end,
         payload={
+            "slot": {"start_at": slot_start.isoformat(), "end_at": slot_end.isoformat()},
             "tasks": [
                 {
                     "id": str(task.id),
@@ -901,12 +1298,75 @@ async def _precompute_task_suggestion(session, user: User) -> bool:
                 for task in picked
             ],
             "project": first_project,
+            "reason": reason,
+            "source": source,
         },
         context_hash=context_hash,
         affected_task_ids=[str(task.id) for task in picked],
         expires_at=utc_now() + timedelta(hours=4),
     )
     return True
+
+
+def _slot_day(user: User, job: AssistantOpportunityJob):
+    raw_date = (job.payload or {}).get("date")
+    if isinstance(raw_date, str) and raw_date:
+        try:
+            parsed = datetime.fromisoformat(raw_date)
+        except ValueError:
+            parsed = utc_now()
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=get_zone(user.timezone))
+        return parsed
+    return utc_now()
+
+
+async def _rank_slot_tasks(
+    session,
+    user: User,
+    slots: list[tuple[datetime, datetime]],
+    tasks: list[Task],
+) -> tuple[datetime, datetime, list[Task], str, str]:
+    tasks.sort(key=lambda task: (
+        task.due_at is None,
+        task.estimated_minutes or 999,
+        -task.created_at.timestamp(),
+    ))
+    for slot_start, slot_end in slots:
+        slot_minutes = int((slot_end - slot_start).total_seconds() // 60)
+        fitting = [task for task in tasks if (task.estimated_minutes or 9999) <= min(slot_minutes, 30)]
+        if not fitting:
+            continue
+        ranked = fitting[:8]
+        try:
+            raw = await LLMGateway().complete_json(
+                messages=[LLMMessage(role="user", content=json.dumps({
+                    "slot": {"start_at": slot_start.isoformat(), "end_at": slot_end.isoformat(), "minutes": slot_minutes},
+                    "tasks": [_task_payload(task) for task in ranked],
+                }, ensure_ascii=False))],
+                system=(
+                    "Rank tasks for this free calendar slot. Return JSON only with "
+                    "task_ids ordered best-first and a short reason."
+                ),
+                request_kind="slot_suggestions",
+                user_id=user.id,
+                session=session,
+                max_tokens=2048,
+            )
+            ordered_ids = raw.get("task_ids")
+            picked_by_id = {str(task.id): task for task in ranked}
+            picked = [
+                picked_by_id[task_id]
+                for task_id in ordered_ids[:3]
+                if isinstance(task_id, str) and task_id in picked_by_id
+            ] if isinstance(ordered_ids, list) else []
+            if picked:
+                reason = raw.get("reason")
+                return slot_start, slot_end, picked, "llm", reason if isinstance(reason, str) else "Fits this free window."
+        except LLMError:
+            log.exception("slot suggestion llm failed", fields={"user_id": str(user.id)})
+        return slot_start, slot_end, ranked[:3], "heuristic", "Fits this free window."
+    return slots[0][0], slots[0][1], [], "heuristic", "No fitting task."
 
 
 JOB_BY_AUTOMATION_TYPE = {
