@@ -82,6 +82,11 @@ describe('DayGrid time format', () => {
       attendees: [],
       attendee_count: 0,
       user_response_status: null,
+      private_note: null,
+      private_note_summary: null,
+      private_note_summary_status: null,
+      private_note_updated_at: null,
+      private_note_summary_updated_at: null,
     });
 
     expect(await screen.findByText('8:00 AM')).toBeInTheDocument();

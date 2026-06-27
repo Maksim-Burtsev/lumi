@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
@@ -25,10 +25,13 @@ import {
   useCalendarEvents,
   useConfirmBlock,
   useCreateEvent,
+  useDeleteCalendarPrivateNote,
   useDeleteEvent,
+  useUpdateCalendarPrivateNote,
 } from '../api/hooks';
 import type { CalendarAttendee, CalendarEvent, CalendarPerson } from '../api/types';
 import { DayGrid } from '../components/calendar/DayGrid';
+import { PRIVATE_NOTE_MAX_CHARS, PrivateNoteSection } from '../components/calendar/PrivateNoteSection';
 import { Button } from '../components/ui/Button';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorState } from '../components/ui/ErrorState';
@@ -38,6 +41,9 @@ import { SkeletonTimeline } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
 import { addDays, formatDateParam, formatDayLabel, formatRelative, formatTime, formatTimeRange, isSameDay, startOfDay } from '../lib/format';
+import type { AppLocale } from '../lib/i18n';
+import { pickLocaleText } from '../lib/i18n';
+import { useAppLocale } from '../lib/useAppLocale';
 import { useTimeDisplay } from '../lib/useTimeDisplay';
 import { haptic, openExternalLink } from '../telegram/webapp';
 
@@ -239,22 +245,37 @@ function CreateBlockSheet({
   onClose,
   day,
   prefill,
+  locale,
 }: {
   open: boolean;
   onClose: () => void;
   day: Date;
   prefill: SheetPrefill | null;
+  locale: AppLocale;
 }) {
   const [title, setTitle] = useState('');
   const [start, setStart] = useState('10:00');
   const [end, setEnd] = useState('11:00');
   const [description, setDescription] = useState('');
+  const [privateNote, setPrivateNote] = useState('');
   const [location, setLocation] = useState('');
   const [linksText, setLinksText] = useState('');
   const [error, setError] = useState<string | null>(null);
   const createEvent = useCreateEvent();
   const { show } = useToast();
   const timeDisplay = useTimeDisplay();
+  const noteCopy = pickLocaleText(locale, {
+    en: {
+      label: 'Personal note (optional)',
+      placeholder: 'Context just for yourself',
+      maxError: `Personal note is limited to ${PRIVATE_NOTE_MAX_CHARS} characters`,
+    },
+    ru: {
+      label: 'Личная заметка (необязательно)',
+      placeholder: 'Контекст только для себя',
+      maxError: `Личная заметка — до ${PRIVATE_NOTE_MAX_CHARS} символов`,
+    },
+  });
 
   // Re-seed fields each time the sheet opens (keyed remount from parent)
   const [seeded, setSeeded] = useState(false);
@@ -272,6 +293,7 @@ function CreateBlockSheet({
     setStart('10:00');
     setEnd('11:00');
     setDescription('');
+    setPrivateNote('');
     setLocation('');
     setLinksText('');
     setError(null);
@@ -289,15 +311,21 @@ function CreateBlockSheet({
       setError('Время окончания должно быть позже начала');
       return;
     }
+    if (privateNote.length > PRIVATE_NOTE_MAX_CHARS) {
+      setError(noteCopy.maxError);
+      return;
+    }
     setError(null);
+    const links = parseLinks(linksText);
     createEvent.mutate(
       {
         title: trimmed,
         start_at: startDate.toISOString(),
         end_at: endDate.toISOString(),
         ...(description.trim() ? { description: description.trim() } : {}),
+        ...(privateNote.trim() ? { private_note: privateNote.trim() } : {}),
         ...(location.trim() ? { location: location.trim() } : {}),
-        ...(parseLinks(linksText).length ? { links: parseLinks(linksText) } : {}),
+        ...(links.length ? { links } : {}),
       },
       {
         onSuccess: () => {
@@ -332,6 +360,10 @@ function CreateBlockSheet({
         <Textarea value={description} onChange={setDescription} rows={2} placeholder="Что нужно сделать в этом блоке" />
       </label>
       <label className="mt-4 block">
+        <FieldLabel>{noteCopy.label}</FieldLabel>
+        <Textarea value={privateNote} onChange={setPrivateNote} rows={3} placeholder={noteCopy.placeholder} />
+      </label>
+      <label className="mt-4 block">
         <FieldLabel>Место (необязательно)</FieldLabel>
         <Input value={location} onChange={setLocation} placeholder="Офис, Zoom, дом" />
       </label>
@@ -356,12 +388,31 @@ export default function CalendarPage() {
   const { show } = useToast();
   const reduceMotion = useReducedMotion();
   const timeDisplay = useTimeDisplay();
+  const locale = useAppLocale();
+  const noteCopy = pickLocaleText(locale, {
+    en: {
+      maxError: `Personal note is limited to ${PRIVATE_NOTE_MAX_CHARS} characters`,
+      deleted: 'Note deleted',
+      deleteFailed: 'Could not delete note',
+      saved: 'Note saved',
+      saveFailed: 'Could not save note',
+    },
+    ru: {
+      maxError: `Личная заметка — до ${PRIVATE_NOTE_MAX_CHARS} символов`,
+      deleted: 'Заметка удалена',
+      deleteFailed: 'Не удалось удалить заметку',
+      saved: 'Заметка сохранена',
+      saveFailed: 'Не удалось сохранить заметку',
+    },
+  });
 
   const rangeStart = day.toISOString();
   const rangeEnd = addDays(day, 1).toISOString();
   const eventsQuery = useCalendarEvents(rangeStart, rangeEnd);
   const confirmBlock = useConfirmBlock();
   const deleteEvent = useDeleteEvent();
+  const updatePrivateNote = useUpdateCalendarPrivateNote();
+  const deletePrivateNote = useDeleteCalendarPrivateNote();
 
   const syncAction = useAgentRunAction({
     start: () => api.syncCalendar(),
@@ -387,9 +438,20 @@ export default function CalendarPage() {
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
   const [showAllAttendees, setShowAllAttendees] = useState(false);
   const [contactAction, setContactAction] = useState<ContactAction | null>(null);
+  const [noteEditing, setNoteEditing] = useState(false);
+  const [noteExpanded, setNoteExpanded] = useState(false);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [noteError, setNoteError] = useState<string | null>(null);
   const dayStart = useMemo(() => startOfDay(day), [day]);
   const events = eventsQuery.data?.items ?? [];
   const syncState = eventsQuery.data?.sync;
+
+  useEffect(() => {
+    setNoteEditing(false);
+    setNoteExpanded(false);
+    setNoteDraft(selectedEvent?.private_note ?? '');
+    setNoteError(null);
+  }, [selectedEvent?.id, selectedEvent?.private_note]);
 
   const openContactAction = (person: CalendarPerson | CalendarAttendee, anchor: DOMRect) => {
     if (!person.email) return;
@@ -405,6 +467,64 @@ export default function CalendarPage() {
         setContactAction(null);
       })
       .catch(() => show('Не удалось скопировать', 'error'));
+  };
+
+  const closeEventSheet = () => {
+    setShowAllAttendees(false);
+    setContactAction(null);
+    setSelectedEvent(null);
+  };
+
+  const savePrivateNote = () => {
+    if (!selectedEvent) return;
+    if (noteDraft.length > PRIVATE_NOTE_MAX_CHARS) {
+      setNoteError(noteCopy.maxError);
+      return;
+    }
+    const note = noteDraft.trim();
+    setNoteError(null);
+    if (!note) {
+      if (!selectedEvent.private_note) {
+        setNoteEditing(false);
+        return;
+      }
+      deletePrivateNote.mutate(selectedEvent.id, {
+        onSuccess: ({ event }) => {
+          haptic('success');
+          show(noteCopy.deleted, 'success');
+          setSelectedEvent(event);
+          setNoteEditing(false);
+        },
+        onError: () => show(noteCopy.deleteFailed, 'error'),
+      });
+      return;
+    }
+    updatePrivateNote.mutate(
+      { id: selectedEvent.id, input: { note } },
+      {
+        onSuccess: ({ event }) => {
+          haptic('success');
+          show(noteCopy.saved, 'success');
+          setSelectedEvent(event);
+          setNoteEditing(false);
+          setNoteExpanded(false);
+        },
+        onError: () => show(noteCopy.saveFailed, 'error'),
+      },
+    );
+  };
+
+  const removePrivateNote = () => {
+    if (!selectedEvent?.private_note) return;
+    deletePrivateNote.mutate(selectedEvent.id, {
+      onSuccess: ({ event }) => {
+        haptic('success');
+        show(noteCopy.deleted, 'success');
+        setSelectedEvent(event);
+        setNoteEditing(false);
+      },
+      onError: () => show(noteCopy.deleteFailed, 'error'),
+    });
   };
 
   return (
@@ -526,6 +646,8 @@ export default function CalendarPage() {
               onEventTap={(e) => {
                 setShowAllAttendees(false);
                 setContactAction(null);
+                setNoteEditing(false);
+                setNoteExpanded(false);
                 setSelectedEvent(e);
               }}
               onEmptyTap={(time) => {
@@ -541,11 +663,7 @@ export default function CalendarPage() {
       {/* Event details */}
       <Sheet
         open={selectedEvent !== null}
-        onClose={() => {
-          setShowAllAttendees(false);
-          setContactAction(null);
-          setSelectedEvent(null);
-        }}
+        onClose={closeEventSheet}
         title={selectedEvent?.title ?? ''}
       >
         {selectedEvent && (
@@ -598,6 +716,29 @@ export default function CalendarPage() {
             {selectedEvent.description && (
               <p className="whitespace-pre-wrap text-[14px] leading-relaxed text-ink">{selectedEvent.description}</p>
             )}
+            <PrivateNoteSection
+              event={selectedEvent}
+              editing={noteEditing}
+              expanded={noteExpanded}
+              draft={noteDraft}
+              error={noteError}
+              saving={updatePrivateNote.isPending || deletePrivateNote.isPending}
+              deleting={deletePrivateNote.isPending}
+              onEdit={() => {
+                setNoteDraft(selectedEvent.private_note ?? '');
+                setNoteError(null);
+                setNoteEditing(true);
+              }}
+              onCancel={() => {
+                setNoteDraft(selectedEvent.private_note ?? '');
+                setNoteError(null);
+                setNoteEditing(false);
+              }}
+              onDelete={removePrivateNote}
+              onDraftChange={setNoteDraft}
+              onExpandedChange={setNoteExpanded}
+              onSave={savePrivateNote}
+            />
             {(selectedEvent.meeting_url || selectedEvent.external_url || visibleLinks(selectedEvent).length > 0) && (
               <div className="flex flex-wrap gap-2.5">
                 {selectedEvent.meeting_url && (
@@ -691,7 +832,7 @@ export default function CalendarPage() {
         <Plus size={24} />
       </motion.button>
 
-      <CreateBlockSheet open={sheetOpen} onClose={() => setSheetOpen(false)} day={day} prefill={prefill} />
+      <CreateBlockSheet open={sheetOpen} onClose={() => setSheetOpen(false)} day={day} prefill={prefill} locale={locale} />
       <ContactActionSheet
         contact={contactAction}
         onClose={() => setContactAction(null)}

@@ -13,6 +13,7 @@ from lumi.worker.jobs import (
     compact_conversation,
     enqueue_due_assistant_turns,
     process_assistant_turn,
+    recover_pending_calendar_private_note_summaries,
     run_calendar_sync,
     run_custom_prompt,
     run_daily_planning,
@@ -21,6 +22,7 @@ from lumi.worker.jobs import (
     run_news_digest,
     run_task_review,
     send_due_reminders,
+    summarize_calendar_private_note,
 )
 from lumi.worker.queue import redis_settings
 
@@ -48,6 +50,7 @@ class WorkerSettings:
         run_calendar_sync,
         run_task_review,
         run_custom_prompt,
+        summarize_calendar_private_note,
         compact_conversation,
         process_assistant_turn,
         cleanup_ui_events,
@@ -59,6 +62,7 @@ class WorkerSettings:
         cron(enqueue_due_assistant_turns, second=45, unique=True),
         # Realtime outbox retention: durable catch-up is 72h.
         cron(cleanup_ui_events, hour=3, minute=20, unique=True),
+        cron(recover_pending_calendar_private_note_summaries, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}, unique=True),
     ]
     on_startup = startup
     on_shutdown = shutdown

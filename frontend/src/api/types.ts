@@ -114,6 +114,11 @@ export interface TimelineItem {
   source: EventSource;
   status: EventStatus;
   busy: boolean;
+  private_note?: string | null;
+  private_note_summary?: string | null;
+  private_note_summary_status?: 'pending' | 'ready' | 'failed' | 'not_needed' | null;
+  private_note_updated_at?: string | null;
+  private_note_summary_updated_at?: string | null;
 }
 
 export type AttentionKind = 'overdue_task' | 'due_task' | 'email' | 'confirmation';
@@ -382,6 +387,11 @@ export interface CalendarEvent {
   attendees: CalendarAttendee[];
   attendee_count: number;
   user_response_status: string | null;
+  private_note: string | null;
+  private_note_summary: string | null;
+  private_note_summary_status: 'pending' | 'ready' | 'failed' | 'not_needed' | null;
+  private_note_updated_at: string | null;
+  private_note_summary_updated_at: string | null;
 }
 
 export interface CalendarPerson {
@@ -423,6 +433,11 @@ export interface CreateEventInput {
   meeting_url?: string;
   external_url?: string;
   links?: string[];
+  private_note?: string;
+}
+
+export interface PrivateNoteInput {
+  note: string;
 }
 
 export interface FreeSlot {
