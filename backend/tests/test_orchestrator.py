@@ -2319,6 +2319,37 @@ async def test_agent_schedule_guard_ignores_schedule_mutation_text():
     assert request is None
 
 
+async def test_agent_schedule_guard_russian_weekday_is_not_week(monkeypatch):
+    monkeypatch.setattr(
+        "lumi.assistant.orchestrator.local_now",
+        lambda timezone: datetime(2026, 6, 27, 12, 0),
+    )
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID, language_code="ru")
+
+        monday = _schedule_read_request_from_text(
+            "скинь расписание на понедельник 29 июня",
+            user,
+            allow_implicit=True,
+        )
+        typo_with_date = _schedule_read_request_from_text(
+            "скинь расписание на понеделдьник 29 июня",
+            user,
+            allow_implicit=True,
+        )
+        week = _schedule_read_request_from_text("покажи расписание на неделю", user)
+
+    assert monday is not None
+    assert monday.start_at_local == datetime(2026, 6, 29)
+    assert monday.end_at_local == datetime(2026, 6, 30)
+    assert typo_with_date is not None
+    assert typo_with_date.start_at_local == datetime(2026, 6, 29)
+    assert typo_with_date.end_at_local == datetime(2026, 6, 30)
+    assert week is not None
+    assert week.start_at_local == datetime(2026, 6, 27)
+    assert week.end_at_local == datetime(2026, 7, 4)
+
+
 async def test_agent_schedule_guard_uses_recent_schedule_context_for_weekday_followup(monkeypatch):
     async def fake_sync_all_calendars(
         self,

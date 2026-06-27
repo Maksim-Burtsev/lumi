@@ -10,7 +10,7 @@ import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from difflib import SequenceMatcher
 from html import escape
 from typing import Any
@@ -152,10 +152,10 @@ SCHEDULE_READ_KEYWORDS = (
 SCHEDULE_DATE_REF_KEYWORDS = (
     r"\btoday\b",
     r"\btomorrow\b",
-    r"\bweek\b",
     r"сегодня",
     r"завтра",
-    r"недел",
+    r"\bweek\b",
+    r"\bнедел(?:я|ю|е|и|ь)?\b",
 )
 SCHEDULE_CONTEXT_KEYWORDS = (
     *SCHEDULE_READ_KEYWORDS,
@@ -176,7 +176,7 @@ SCHEDULE_MUTATION_KEYWORDS = (
     r"заброни",
 )
 WEEKDAY_ALIASES = {
-    0: (r"\bmonday\b", r"\bmon\b", r"понедельник", r"\bпн\b"),
+    0: (r"\bmonday\b", r"\bmon\b", r"понедел[ьд]*ник", r"\bпн\b"),
     1: (r"\btuesday\b", r"\btue\b", r"вторник", r"\bвт\b"),
     2: (r"\bwednesday\b", r"\bwed\b", r"сред", r"\bср\b"),
     3: (r"\bthursday\b", r"\bthu\b", r"четверг", r"\bчт\b"),
@@ -184,6 +184,57 @@ WEEKDAY_ALIASES = {
     5: (r"\bsaturday\b", r"\bsat\b", r"суббот", r"\bсб\b"),
     6: (r"\bsunday\b", r"\bsun\b", r"воскрес", r"\bвс\b"),
 }
+MONTH_ALIASES = {
+    "января": 1,
+    "январь": 1,
+    "january": 1,
+    "jan": 1,
+    "февраля": 2,
+    "февраль": 2,
+    "february": 2,
+    "feb": 2,
+    "марта": 3,
+    "март": 3,
+    "march": 3,
+    "mar": 3,
+    "апреля": 4,
+    "апрель": 4,
+    "april": 4,
+    "apr": 4,
+    "мая": 5,
+    "май": 5,
+    "may": 5,
+    "июня": 6,
+    "июнь": 6,
+    "june": 6,
+    "jun": 6,
+    "июля": 7,
+    "июль": 7,
+    "july": 7,
+    "jul": 7,
+    "августа": 8,
+    "август": 8,
+    "august": 8,
+    "aug": 8,
+    "сентября": 9,
+    "сентябрь": 9,
+    "september": 9,
+    "sep": 9,
+    "sept": 9,
+    "октября": 10,
+    "октябрь": 10,
+    "october": 10,
+    "oct": 10,
+    "ноября": 11,
+    "ноябрь": 11,
+    "november": 11,
+    "nov": 11,
+    "декабря": 12,
+    "декабрь": 12,
+    "december": 12,
+    "dec": 12,
+}
+WEEK_DATE_REF_PATTERNS = (r"\bweek\b", r"\bнедел(?:я|ю|е|и|ь)?\b")
 FLEXIBLE_CALENDAR_SLOT_MARKERS = (
     "after",
     "first free",
@@ -497,16 +548,16 @@ def _schedule_read_request_from_text(
         return None
 
     today = local_now(user.timezone).date()
-    if _matches_any(lowered, (r"\bweek\b", r"недел")):
+    if _matches_any(lowered, WEEK_DATE_REF_PATTERNS):
         start_day = today
         end_day = today + timedelta(days=7)
     else:
-        day = None
+        day = _requested_explicit_date(lowered, today)
         if _matches_any(lowered, (r"\btomorrow\b", r"завтра")):
             day = today + timedelta(days=1)
         elif _matches_any(lowered, (r"\btoday\b", r"сегодня")):
             day = today
-        else:
+        elif day is None:
             weekday = _requested_weekday(lowered)
             if weekday is not None:
                 days_until = (weekday - today.weekday()) % 7
@@ -534,6 +585,52 @@ def _requested_weekday(text: str) -> int | None:
         if _matches_any(text, patterns):
             return weekday
     return None
+
+
+def _requested_explicit_date(text: str, today: date) -> date | None:
+    numeric = re.search(r"\b(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b", text)
+    if numeric:
+        return _build_requested_date(
+            day=int(numeric.group(1)),
+            month=int(numeric.group(2)),
+            year_text=numeric.group(3),
+            today=today,
+        )
+
+    month_names = "|".join(sorted((re.escape(month) for month in MONTH_ALIASES), key=len, reverse=True))
+    textual = re.search(rf"\b(\d{{1,2}})\s+({month_names})(?:\s+(\d{{2,4}}))?\b", text)
+    if textual:
+        return _build_requested_date(
+            day=int(textual.group(1)),
+            month=MONTH_ALIASES[textual.group(2)],
+            year_text=textual.group(3),
+            today=today,
+        )
+    return None
+
+
+def _build_requested_date(
+    *,
+    day: int,
+    month: int,
+    year_text: str | None,
+    today: date,
+) -> date | None:
+    year = today.year
+    if year_text:
+        year = int(year_text)
+        if year < 100:
+            year += 2000
+    try:
+        requested = date(year, month, day)
+    except ValueError:
+        return None
+    if year_text is None and requested < today:
+        try:
+            requested = date(today.year + 1, month, day)
+        except ValueError:
+            return None
+    return requested
 
 
 def _matches_any(text: str, patterns: tuple[str, ...]) -> bool:
