@@ -20,4 +20,7 @@ For real Telegram Mini App checks:
 3. Treat success as: fresh `APP_PUBLIC_URL`, `/health` OK, `/app/` OK, frontend asset 200, default Telegram menu URL matches, and chat-specific menu URL matches every `ALLOWED_TELEGRAM_USER_IDS`.
 4. If Telegram shows a blank page or robot icon, first suspect a stale Mini App window or stale/dead tunnel. Close the Telegram Mini App window with `X`, reopen from the bot menu, then check `APP_PUBLIC_URL`, `curl "$APP_PUBLIC_URL/health"`, and `docker compose logs api bot --tail=200`.
 
-For risky branch QA, read `docs/agent-qa.md` before claiming done.
+For risky branch QA, use the isolated worktree/runtime flow in `docs/agent-qa.md`.
+Do not use the default `make miniapp-local-up` path if another Lumi compose
+project or bot may already be active, and never run two bot pollers with the
+same `TELEGRAM_BOT_TOKEN`.
