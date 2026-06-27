@@ -18,6 +18,7 @@ os.environ["AUTO_MIGRATE"] = "false"
 
 import pytest  # noqa: E402
 
+from lumi.db import models  # noqa: E402,F401 — register all tables on Base.metadata
 from lumi.db.base import Base  # noqa: E402
 from lumi.db.session import dispose_engine, get_engine, session_scope  # noqa: E402
 from lumi.llm.gateway import reset_llm_provider  # noqa: E402
@@ -49,6 +50,7 @@ async def clean_db():
     engine = get_engine()
     async with engine.begin() as conn:
         if not _schema_ready:
+            await conn.run_sync(Base.metadata.drop_all)
             await conn.run_sync(Base.metadata.create_all)
             _schema_ready = True
         table_names = ", ".join(f'"{t.name}"' for t in Base.metadata.sorted_tables)

@@ -245,6 +245,15 @@ describe('TodayPage timeline gaps', () => {
           },
         ],
         needs_attention: [],
+        suggestions: [
+          {
+            id: 'suggest-plan',
+            kind: 'plan_day',
+            title: "Build today's plan",
+            description: 'Generic suggestion should stay hidden while quick wins are ready',
+            action: { type: 'plan_day', payload: {} },
+          },
+        ],
         slot_suggestions: [
           {
             id: 'slot-1',

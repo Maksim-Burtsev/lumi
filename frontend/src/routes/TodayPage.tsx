@@ -181,10 +181,10 @@ function formatSpanMinutesLocalized(startTs: string, endTs: string, locale: AppL
 function slotTaskCountLabel(count: number, locale: AppLocale): string {
   if (locale === 'en') return `${count} ${count === 1 ? 'quick win' : 'quick wins'} ready`;
   const form = count % 10 === 1 && count % 100 !== 11
-    ? 'готовая быстрая задача'
+    ? 'задача готова'
     : [2, 3, 4].includes(count % 10) && ![12, 13, 14].includes(count % 100)
-      ? 'готовые быстрые задачи'
-      : 'готовых быстрых задач';
+      ? 'задачи готовы'
+      : 'задач готово';
   return `${count} ${form}`;
 }
 
@@ -553,6 +553,8 @@ export default function TodayPage() {
 
   const rawEntries = [...timelineItems, ...slotEntries]
     .sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime());
+  const showSuggestions = data.suggestions.length > 0 && slotEntries.length === 0;
+  const showAllClear = data.needs_attention.length === 0 && !showSuggestions && slotEntries.length === 0;
 
   // Agenda rhythm: surface real gaps between items as ghost "free" rows,
   // so back-to-back meetings and 2-hour windows look different.
@@ -752,7 +754,7 @@ export default function TodayPage() {
       )}
 
       {/* ----------------------------------------------------------- Suggestions */}
-      {data.suggestions.length > 0 && (
+      {showSuggestions && (
         <Rise>
           <SectionHeader title={copy.lumiSuggests} />
           <div className="flex flex-col gap-3">
@@ -785,7 +787,7 @@ export default function TodayPage() {
       )}
 
       {/* All-clear footer when nothing demands attention */}
-      {data.needs_attention.length === 0 && data.suggestions.length === 0 && (
+      {showAllClear && (
         <Rise>
           <div className="mt-7 flex items-center justify-center gap-2 text-[13px] text-hint">
             <CheckCircle2 size={15} className="text-success" />
