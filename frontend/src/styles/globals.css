@@ -217,9 +217,26 @@ textarea::placeholder {
   animation: lumi-pulse 1.4s ease-in-out infinite;
 }
 
+@keyframes lumi-orb-breathe {
+  0%,
+  100% {
+    transform: scale(0.992);
+    filter: saturate(1);
+  }
+  50% {
+    transform: scale(1.018);
+    filter: saturate(1.08);
+  }
+}
+
+.orb-breathe {
+  animation: lumi-orb-breathe 6s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .skeleton::after,
-  .pulse-dot {
+  .pulse-dot,
+  .orb-breathe {
     animation: none;
   }
   *,

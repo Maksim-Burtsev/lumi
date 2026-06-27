@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { Activity, Newspaper, Settings, Zap } from 'lucide-react';
+import { Activity, Mail, Newspaper, Settings, Zap } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useHealth } from '../api/hooks';
 import { Card } from '../components/ui/Card';
@@ -15,6 +15,7 @@ interface MoreLink {
 }
 
 const LINKS: MoreLink[] = [
+  { to: '/inbox', label: { en: 'Inbox', ru: 'Почта' }, description: { en: 'Messages and triage', ru: 'Входящие и письма' }, icon: Mail },
   { to: '/news', label: { en: 'News', ru: 'Новости' }, description: { en: 'Topics and digests', ru: 'Темы и дайджесты' }, icon: Newspaper },
   { to: '/automations', label: { en: 'Automations', ru: 'Автоматизации' }, description: { en: 'Scheduled workflows', ru: 'Сценарии по расписанию' }, icon: Zap },
   { to: '/runs', label: { en: 'Agent runs', ru: 'Запуски агента' }, description: { en: 'Work log', ru: 'Журнал работы' }, icon: Activity },

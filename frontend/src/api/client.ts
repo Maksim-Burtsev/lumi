@@ -11,12 +11,18 @@ import type {
   CreateEventInput,
   CreateNewsTopicInput,
   CreateTaskInput,
+  FinishFocusSessionInput,
+  FocusSessionsResponse,
+  FocusSessionResponse,
+  FocusStateResponse,
+  FocusSummaryResponse,
   FreeSlotsResponse,
   GoogleStatus,
   YandexConnectInput,
   YandexStatus,
   HealthResponse,
   InboxSummaryResponse,
+  LogFocusSessionInput,
   MeResponse,
   MemoriesResponse,
   MemoryResponse,
@@ -34,11 +40,13 @@ import type {
   RunRef,
   SettingsResponse,
   SnoozeInput,
+  StartFocusSessionInput,
   TaskFilter,
   TaskResponse,
   TasksResponse,
   TimezonesResponse,
   TodayResponse,
+  UpdateFocusSessionInput,
 } from './types';
 
 /** Errors: non-2xx responses return {"error": "<machine_code>", "detail": "<text>"} */
@@ -178,6 +186,39 @@ export class LumiApiClient {
 
   snoozeTask(id: string, input: SnoozeInput): Promise<TaskResponse> {
     return request('POST', `/api/tasks/${id}/snooze`, { body: input });
+  }
+
+  // -------------------------------------------------- Focus
+  getFocusState(): Promise<FocusStateResponse> {
+    return request('GET', '/api/focus/state');
+  }
+
+  getFocusSummary(period: 'week' | 'month' = 'week'): Promise<FocusSummaryResponse> {
+    return request('GET', '/api/focus/summary', { query: { period } });
+  }
+
+  listFocusSessions(period: 'week' | 'month' = 'week', limit = 100): Promise<FocusSessionsResponse> {
+    return request('GET', '/api/focus/sessions', { query: { period, limit } });
+  }
+
+  startFocusSession(input: StartFocusSessionInput): Promise<FocusSessionResponse> {
+    return request('POST', '/api/focus/sessions', { body: input });
+  }
+
+  logFocusSession(input: LogFocusSessionInput): Promise<FocusSessionResponse> {
+    return request('POST', '/api/focus/sessions/log', { body: input });
+  }
+
+  finishFocusSession(id: string, input: FinishFocusSessionInput): Promise<FocusSessionResponse> {
+    return request('POST', `/api/focus/sessions/${id}/finish`, { body: input });
+  }
+
+  updateFocusSession(id: string, input: UpdateFocusSessionInput): Promise<FocusSessionResponse> {
+    return request('PATCH', `/api/focus/sessions/${id}`, { body: input });
+  }
+
+  abandonFocusSession(id: string): Promise<FocusSessionResponse> {
+    return request('POST', `/api/focus/sessions/${id}/abandon`);
   }
 
   // -------------------------------------------------- Calendar
