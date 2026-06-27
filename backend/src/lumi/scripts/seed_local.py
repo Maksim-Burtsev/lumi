@@ -40,10 +40,28 @@ async def seed() -> None:
         seed_tasks = [
             {"title": "Write product spec", "project": "Lumi", "tags": ["focus", "product"], "status": TaskStatus.ACTIVE},
             {"title": "Focus timer v2 QA", "project": "Lumi", "tags": ["qa", "miniapp"], "status": TaskStatus.ACTIVE},
+            {"title": "Polish breathing orb", "project": "Lumi", "tags": ["ui", "timer"], "status": TaskStatus.ACTIVE},
+            {"title": "Design analytics grid", "project": "Lumi", "tags": ["analytics", "ui"], "status": TaskStatus.ACTIVE},
             {"title": "QA task search project", "project": "QA Project", "tags": ["qa"], "status": TaskStatus.ACTIVE},
+            {"title": "Regression checklist", "project": "QA Project", "tags": ["qa", "release"], "status": TaskStatus.ACTIVE},
+            {"title": "Mobile layout pass", "project": "QA Project", "tags": ["mobile"], "status": TaskStatus.INBOX},
             {"title": "Manual log regression", "project": "Manual QA", "tags": ["manual", "focus"], "status": TaskStatus.INBOX},
+            {"title": "Reflection form QA", "project": "Manual QA", "tags": ["manual", "reflection"], "status": TaskStatus.ACTIVE},
             {"title": "Prepare analytics review", "project": "Ops Review", "tags": ["analytics"], "status": TaskStatus.ACTIVE},
+            {"title": "Weekly status notes", "project": "Ops Review", "tags": ["status"], "status": TaskStatus.ACTIVE},
+            {"title": "Triage follow-ups", "project": "Ops Review", "tags": ["ops"], "status": TaskStatus.INBOX},
             {"title": "Draft reflection prompts", "project": "AI Coach", "tags": ["reflection"], "status": TaskStatus.INBOX},
+            {"title": "LLM insight prompt", "project": "AI Coach", "tags": ["llm", "analytics"], "status": TaskStatus.ACTIVE},
+            {"title": "Summarize focus patterns", "project": "AI Coach", "tags": ["llm", "review"], "status": TaskStatus.ACTIVE},
+            {"title": "Calendar focus blocks", "project": "Calendar", "tags": ["calendar", "planning"], "status": TaskStatus.ACTIVE},
+            {"title": "Morning planning flow", "project": "Calendar", "tags": ["planning"], "status": TaskStatus.INBOX},
+            {"title": "Yandex sync review", "project": "Calendar", "tags": ["sync"], "status": TaskStatus.ACTIVE},
+            {"title": "Inbox capture cleanup", "project": "Inbox Zero", "tags": ["inbox"], "status": TaskStatus.INBOX},
+            {"title": "Email triage design", "project": "Inbox Zero", "tags": ["email"], "status": TaskStatus.ACTIVE},
+            {"title": "Notification copy pass", "project": "Inbox Zero", "tags": ["copy"], "status": TaskStatus.ACTIVE},
+            {"title": "Launch notes draft", "project": "Release", "tags": ["release"], "status": TaskStatus.ACTIVE},
+            {"title": "PR checklist update", "project": "Release", "tags": ["github"], "status": TaskStatus.INBOX},
+            {"title": "Screenshots for PR", "project": "Release", "tags": ["qa", "screens"], "status": TaskStatus.ACTIVE},
         ]
         task_by_title: dict[str, Task] = {}
         task_created = 0
@@ -66,19 +84,87 @@ async def seed() -> None:
             task_by_title[existing.title] = existing
 
         zone = get_zone(user.timezone)
-        today = utc_now().astimezone(zone).replace(hour=10, minute=0, second=0, microsecond=0)
-        focus_seed = [
-            (-6, "Plan Sessions v2", "Lumi", "Write product spec", 50, 5, "Outlined active mode and details sheet.", "Keep orb simple."),
-            (-5, "QA manual log", "Manual QA", "Manual log regression", 32, 4, "Checked date/time inputs and custom duration.", "Retest project override."),
-            (-4, "Task picker cleanup", "QA Project", "QA task search project", 39, 4, "Validated search by title and project.", "Add scroll evidence."),
-            (-3, "Analytics pass", "Ops Review", "Prepare analytics review", 65, 5, "Reviewed weekly split and project totals.", "Tune empty days."),
-            (-2, "Reflection prompts", "AI Coach", "Draft reflection prompts", 28, 3, "Drafted reflection questions.", "Shorten copy."),
-            (-1, "No-project focus block", None, None, 18, 4, "Handled quick maintenance without project.", "File follow-up task."),
-            (0, "Polish breathing orb", "Lumi", "Focus timer v2 QA", 45, 5, "Matched selected active-session mock.", "Run mobile QA."),
+        today = utc_now().astimezone(zone).replace(hour=9, minute=0, second=0, microsecond=0)
+        project_tasks = [
+            ("Lumi", "Write product spec"),
+            ("Lumi", "Focus timer v2 QA"),
+            ("Lumi", "Polish breathing orb"),
+            ("Lumi", "Design analytics grid"),
+            ("QA Project", "QA task search project"),
+            ("QA Project", "Regression checklist"),
+            ("QA Project", "Mobile layout pass"),
+            ("Manual QA", "Manual log regression"),
+            ("Manual QA", "Reflection form QA"),
+            ("Ops Review", "Prepare analytics review"),
+            ("Ops Review", "Weekly status notes"),
+            ("Ops Review", "Triage follow-ups"),
+            ("AI Coach", "Draft reflection prompts"),
+            ("AI Coach", "LLM insight prompt"),
+            ("AI Coach", "Summarize focus patterns"),
+            ("Calendar", "Calendar focus blocks"),
+            ("Calendar", "Morning planning flow"),
+            ("Calendar", "Yandex sync review"),
+            ("Inbox Zero", "Inbox capture cleanup"),
+            ("Inbox Zero", "Email triage design"),
+            ("Inbox Zero", "Notification copy pass"),
+            ("Release", "Launch notes draft"),
+            ("Release", "PR checklist update"),
+            ("Release", "Screenshots for PR"),
+            (None, None),
         ]
+        intentions = [
+            "Write product spec",
+            "Review implementation plan",
+            "Polish breathing orb",
+            "QA timer finish flow",
+            "Design analytics grid",
+            "Manual regression pass",
+            "Prepare release notes",
+            "Triage inbox follow-ups",
+            "Calendar sync review",
+            "Draft reflection prompts",
+            "Summarize focus patterns",
+            "Mobile layout pass",
+        ]
+        results = [
+            "Moved the feature forward and captured follow-up notes.",
+            "Validated the core flow and logged edge cases.",
+            "Cleaned up UI details and checked responsive behavior.",
+            "Reviewed the data model and tested the important path.",
+            "Finished the planned chunk without major blockers.",
+        ]
+        next_steps = [
+            "Run browser QA.",
+            "Tighten copy.",
+            "Check mobile layout.",
+            "Update PR notes.",
+            "Review analytics after more data.",
+        ]
+        durations = [18, 22, 25, 32, 39, 45, 50, 55, 65, 75, 90]
+        hours = [6, 7, 9, 10, 11, 13, 15, 17, 19, 21, 23]
+        focus_seed = []
+        for index in range(100):
+            day_offset = -(index % 30)
+            project, task_title = project_tasks[index % len(project_tasks)]
+            hour = hours[(index * 7) % len(hours)]
+            minute = (index * 11) % 50
+            focus_seed.append(
+                (
+                    day_offset,
+                    hour,
+                    minute,
+                    intentions[index % len(intentions)],
+                    project,
+                    task_title,
+                    durations[(index * 5) % len(durations)],
+                    3 + (index % 3),
+                    results[index % len(results)],
+                    next_steps[index % len(next_steps)],
+                )
+            )
         session_created = 0
-        for offset, intention, project, task_title, minutes, score, done, next_step in focus_seed:
-            started = today + timedelta(days=offset, hours=offset % 3)
+        for offset, hour, minute, intention, project, task_title, minutes, score, done, next_step in focus_seed:
+            started = (today + timedelta(days=offset)).replace(hour=hour, minute=minute)
             started_utc = started.astimezone(utc_now().tzinfo)
             exists = await session.scalar(
                 select(FocusSession)

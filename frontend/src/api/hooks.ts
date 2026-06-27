@@ -24,6 +24,7 @@ import type {
   TasksResponse,
   TimezonesResponse,
   TodayResponse,
+  UpdateFocusSessionInput,
 } from './types';
 import { haptic } from '../telegram/webapp';
 import { useToast } from '../components/ui/Toast';
@@ -39,6 +40,7 @@ export const qk = {
   tasks: (filter: TaskFilter) => ['tasks', filter] as const,
   focus: ['focus'] as const,
   focusSummary: (period: 'week' | 'month') => ['focus-summary', period] as const,
+  focusSessions: (period: 'week' | 'month') => ['focus-sessions', period] as const,
   eventsAll: ['calendar-events'] as const,
   events: (start: string, end: string) => ['calendar-events', start, end] as const,
   freeSlotsAll: ['free-slots'] as const,
@@ -173,7 +175,7 @@ export function useToday() {
 }
 
 export function useTasks(filter: TaskFilter) {
-  return useQuery({ queryKey: qk.tasks(filter), queryFn: () => api.listTasks(filter) });
+  return useQuery({ queryKey: qk.tasks(filter), queryFn: () => api.listTasks(filter, 300) });
 }
 
 export function useFocusState() {
@@ -182,6 +184,10 @@ export function useFocusState() {
 
 export function useFocusSummary(period: 'week' | 'month') {
   return useQuery({ queryKey: qk.focusSummary(period), queryFn: () => api.getFocusSummary(period) });
+}
+
+export function useFocusSessions(period: 'week' | 'month') {
+  return useQuery({ queryKey: qk.focusSessions(period), queryFn: () => api.listFocusSessions(period, 200) });
 }
 
 export function useCalendarEvents(start: string, end: string) {
@@ -344,6 +350,18 @@ export function usePatchTask() {
 
 // ------------------------------------------------------------------ focus mutations
 
+function invalidateFocusQueries(queryClient: ReturnType<typeof useQueryClient>) {
+  void queryClient.invalidateQueries({ queryKey: qk.focus });
+  invalidateFocusDerivedQueries(queryClient);
+}
+
+function invalidateFocusDerivedQueries(queryClient: ReturnType<typeof useQueryClient>) {
+  void queryClient.invalidateQueries({ queryKey: qk.focusSummary('week') });
+  void queryClient.invalidateQueries({ queryKey: qk.focusSummary('month') });
+  void queryClient.invalidateQueries({ queryKey: qk.focusSessions('week') });
+  void queryClient.invalidateQueries({ queryKey: qk.focusSessions('month') });
+}
+
 export function useStartFocusSession() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -357,8 +375,7 @@ export function useStartFocusSession() {
         today: previous?.today ?? { focus_seconds: 0, completed_sessions: 0, streak_days: 0 },
         recent_sessions: previous?.recent_sessions ?? [],
       });
-      void queryClient.invalidateQueries({ queryKey: qk.focusSummary('week') });
-      void queryClient.invalidateQueries({ queryKey: qk.focusSummary('month') });
+      invalidateFocusDerivedQueries(queryClient);
     },
   });
 }
@@ -368,9 +385,7 @@ export function useLogFocusSession() {
   return useMutation({
     mutationFn: (input: LogFocusSessionInput) => api.logFocusSession(input),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: qk.focus });
-      void queryClient.invalidateQueries({ queryKey: qk.focusSummary('week') });
-      void queryClient.invalidateQueries({ queryKey: qk.focusSummary('month') });
+      invalidateFocusQueries(queryClient);
     },
   });
 }
@@ -380,9 +395,17 @@ export function useFinishFocusSession() {
   return useMutation({
     mutationFn: ({ id, input }: { id: string; input: FinishFocusSessionInput }) => api.finishFocusSession(id, input),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: qk.focus });
-      void queryClient.invalidateQueries({ queryKey: qk.focusSummary('week') });
-      void queryClient.invalidateQueries({ queryKey: qk.focusSummary('month') });
+      invalidateFocusQueries(queryClient);
+    },
+  });
+}
+
+export function useUpdateFocusSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: UpdateFocusSessionInput }) => api.updateFocusSession(id, input),
+    onSuccess: () => {
+      invalidateFocusQueries(queryClient);
     },
   });
 }
@@ -392,9 +415,7 @@ export function useAbandonFocusSession() {
   return useMutation({
     mutationFn: (id: string) => api.abandonFocusSession(id),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: qk.focus });
-      void queryClient.invalidateQueries({ queryKey: qk.focusSummary('week') });
-      void queryClient.invalidateQueries({ queryKey: qk.focusSummary('month') });
+      invalidateFocusQueries(queryClient);
     },
   });
 }

@@ -9,20 +9,25 @@ import {
   Flame,
   Folder,
   ListChecks,
+  Loader2,
   Pencil,
   Plus,
   Search,
   Timer,
+  TrendingDown,
+  TrendingUp,
   X,
 } from 'lucide-react';
 import {
   useAbandonFocusSession,
   useFinishFocusSession,
+  useFocusSessions,
   useFocusState,
   useFocusSummary,
   useLogFocusSession,
   useStartFocusSession,
   useTasks,
+  useUpdateFocusSession,
 } from '../api/hooks';
 import type { FocusDailyActivity, FocusSession, FocusSummaryResponse, Task } from '../api/types';
 import { Button } from '../components/ui/Button';
@@ -80,7 +85,9 @@ const COPY = {
     detailsHistoryBody: 'See analytics, projects and past sessions',
     editSession: 'Review session',
     finishSession: 'Finish session',
+    stopReview: 'Stop & review',
     overtime: 'over plan',
+    timeIsUp: 'time is up',
     remaining: 'left',
     plan: 'plan',
     finish: 'Finish',
@@ -106,6 +113,17 @@ const COPY = {
     projectsEmpty: 'Projects appear after completed sessions.',
     history: 'History',
     details: 'Details',
+    sessionDetails: 'Session details',
+    editReview: 'Edit review',
+    noReflection: 'No review yet.',
+    avgDay: 'Avg/day',
+    total: 'Total',
+    mostFocused: 'Most focused',
+    vsAverage: 'vs 4-week avg',
+    morning: 'Morning',
+    afternoon: 'Afternoon',
+    evening: 'Evening',
+    night: 'Night',
     historyEmpty: 'Completed sessions appear here.',
     historyDetails: 'Session history',
     days: 'Days',
@@ -164,7 +182,9 @@ const COPY = {
     detailsHistoryBody: 'Аналитика, проекты и прошлые сессии',
     editSession: 'Итоги сессии',
     finishSession: 'Завершить сессию',
+    stopReview: 'Стоп и итог',
     overtime: 'сверх плана',
+    timeIsUp: 'время вышло',
     remaining: 'осталось',
     plan: 'план',
     finish: 'Завершить',
@@ -190,6 +210,17 @@ const COPY = {
     projectsEmpty: 'Проекты появятся после завершенных сессий.',
     history: 'История',
     details: 'Детали',
+    sessionDetails: 'Детали сессии',
+    editReview: 'Редактировать итог',
+    noReflection: 'Итог пока не заполнен.',
+    avgDay: 'Сред/день',
+    total: 'Всего',
+    mostFocused: 'Лучший слот',
+    vsAverage: 'к 4-нед. среднему',
+    morning: 'Утро',
+    afternoon: 'День',
+    evening: 'Вечер',
+    night: 'Ночь',
     historyEmpty: 'Завершенные сессии появятся здесь.',
     historyDetails: 'История сессий',
     days: 'Дни',
@@ -223,6 +254,17 @@ function secondsLabel(seconds: number, locale: AppLocale): string {
   }
   if (hours > 0) return `${hours}ч ${String(minutes).padStart(2, '0')}м`;
   return `${minutes}м`;
+}
+
+function daypartLabel(daypart: FocusSummaryResponse['most_focused_daypart'], copy: (typeof COPY)[AppLocale]): string {
+  if (!daypart) return '—';
+  return copy[daypart];
+}
+
+function deltaLabel(value: number | null): string {
+  if (value === null) return '—';
+  const arrow = value >= 0 ? '↑' : '↓';
+  return `${arrow} ${Math.abs(value)}%`;
 }
 
 function timerLabel(seconds: number): string {
@@ -382,7 +424,7 @@ function TaskPickerSheet({ open, onClose, tasks, selectedTaskId, locale, onSelec
             />
           </div>
         </label>
-        <div className="max-h-[56dvh] overflow-y-auto rounded-2xl border border-hairline">
+        <div className="max-h-[68dvh] overflow-y-auto rounded-2xl border border-hairline">
           <button
             type="button"
             onClick={() => choose(null)}
@@ -706,7 +748,7 @@ function ReflectionSheet({
   locale: AppLocale;
 }) {
   const copy = COPY[locale];
-  const finish = useFinishFocusSession();
+  const update = useUpdateFocusSession();
   const { show } = useToast();
   const [accomplished, setAccomplished] = useState('');
   const [distraction, setDistraction] = useState('');
@@ -714,22 +756,21 @@ function ReflectionSheet({
   const [score, setScore] = useState(4);
 
   useEffect(() => {
-    if (open) {
-      setAccomplished('');
-      setDistraction('');
-      setNextStep('');
-      setScore(4);
+    if (open && session) {
+      setAccomplished(session.reflection.accomplished_text ?? '');
+      setDistraction(session.reflection.distraction_text ?? '');
+      setNextStep(session.reflection.next_step_text ?? '');
+      setScore(session.reflection.focus_score ?? 4);
     }
-  }, [open]);
+  }, [open, session]);
 
   if (!session) return null;
 
   const submit = () => {
-    finish.mutate(
+    update.mutate(
       {
         id: session.id,
         input: {
-          ended_at: new Date().toISOString(),
           accomplished_text: accomplished,
           distraction_text: distraction,
           next_step_text: nextStep,
@@ -766,7 +807,7 @@ function ReflectionSheet({
           <Textarea value={nextStep} onChange={setNextStep} rows={2} placeholder={copy.nextStepPlaceholder} />
         </label>
         <ScorePicker value={score} onChange={setScore} label={copy.score} />
-        <Button fullWidth busy={finish.isPending} onClick={submit} icon={<Check size={16} />}>
+        <Button fullWidth busy={update.isPending} onClick={submit} icon={<Check size={16} />}>
           {copy.saveSession}
         </Button>
       </div>
@@ -964,15 +1005,15 @@ function BreathingOrbTimer({ session, now, locale }: { session: FocusSession; no
       }
     : {
         background:
-          'radial-gradient(circle at 50% 38%, rgba(140, 171, 255, 0.48) 0%, rgba(64, 105, 213, 0.27) 43%, rgba(17, 31, 70, 0.7) 71%, rgba(7, 12, 26, 0.22) 100%)',
+          'radial-gradient(circle at 50% 38%, rgba(176, 203, 255, 0.72) 0%, rgba(78, 126, 238, 0.36) 44%, rgba(46, 99, 231, 0.58) 72%, rgba(46, 99, 231, 0.16) 100%)',
         boxShadow:
-          '0 0 52px rgba(101, 139, 255, 0.42), inset 0 0 64px rgba(148, 176, 255, 0.22), inset 0 -26px 58px rgba(55, 88, 185, 0.28)',
+          '0 0 54px rgba(46, 99, 231, 0.30), inset 0 0 66px rgba(207, 224, 255, 0.34), inset 0 -28px 58px rgba(46, 99, 231, 0.26)',
       };
 
   return (
     <div
       aria-label={copy.progressLabel}
-      className="relative mx-auto mt-5 flex aspect-square w-[min(64vw,286px)] max-w-[286px] items-center justify-center rounded-full"
+      className="orb-breathe relative mx-auto mt-5 flex aspect-square w-[min(64vw,286px)] max-w-[286px] items-center justify-center rounded-full"
       style={orbStyle}
     >
       <div
@@ -995,25 +1036,43 @@ function BreathingOrbTimer({ session, now, locale }: { session: FocusSession; no
   );
 }
 
-function ActiveSessionCard({ session, locale }: { session: FocusSession; locale: AppLocale }) {
+function ActiveSessionCard({ session, locale, onReviewSession }: { session: FocusSession; locale: AppLocale; onReviewSession: (session: FocusSession) => void }) {
   const copy = COPY[locale];
   const now = useNow();
   const abandon = useAbandonFocusSession();
-  const [reflectionOpen, setReflectionOpen] = useState(false);
+  const finish = useFinishFocusSession();
   const [notifiedFor, setNotifiedFor] = useState<string | null>(null);
   const overtime = now >= new Date(session.target_end_at).getTime();
 
   useEffect(() => {
-    if (overtime && notifiedFor !== session.id) {
+    if (!overtime || finish.isPending) return undefined;
+    if (notifiedFor !== session.id) {
       setNotifiedFor(session.id);
       haptic('success');
-      playFocusDoneSound();
     }
-  }, [notifiedFor, overtime, session.id]);
+    playFocusDoneSound();
+    const timer = window.setInterval(playFocusDoneSound, 1200);
+    return () => window.clearInterval(timer);
+  }, [finish.isPending, notifiedFor, overtime, session.id]);
+
+  const stopAndReview = () => {
+    if (finish.isPending) return;
+    finish.mutate(
+      {
+        id: session.id,
+        input: { ended_at: new Date().toISOString() },
+      },
+      {
+        onSuccess: (response) => {
+          haptic('success');
+          onReviewSession(response.session);
+        },
+      },
+    );
+  };
 
   return (
-    <>
-      <Card className="relative overflow-hidden px-4 py-4 sm:px-5 sm:py-5">
+    <Card className="relative overflow-hidden px-4 py-4 sm:px-5 sm:py-5">
         <div aria-hidden className="dawn-glow opacity-50" />
         <div className="relative">
           <div className="flex items-center justify-between gap-3">
@@ -1044,7 +1103,7 @@ function ActiveSessionCard({ session, locale }: { session: FocusSession; locale:
               </div>
               <button
                 type="button"
-                onClick={() => setReflectionOpen(true)}
+                onClick={stopAndReview}
                 aria-label={copy.editSession}
                 className="flex h-11 w-16 shrink-0 items-center justify-center rounded-full border border-hairline text-hint"
               >
@@ -1053,17 +1112,22 @@ function ActiveSessionCard({ session, locale }: { session: FocusSession; locale:
             </div>
           </div>
           <div className="mt-4 grid grid-cols-2 gap-3">
-            <Button onClick={() => setReflectionOpen(true)} icon={<Check size={16} />} className="min-w-0">
-              {copy.finishSession}
-            </Button>
+            <button
+              type="button"
+              onClick={stopAndReview}
+              disabled={finish.isPending}
+              aria-label={overtime ? copy.stopReview : copy.finishSession}
+              className="relative inline-flex h-11 min-w-0 select-none items-center justify-center gap-2 whitespace-nowrap rounded-full bg-accent px-5 text-[14.5px] font-medium text-white shadow-[0_6px_18px_rgba(46,99,231,0.3)] transition-opacity disabled:opacity-55"
+            >
+              {finish.isPending ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
+              {overtime ? copy.stopReview : copy.finishSession}
+            </button>
             <Button variant="ghost" busy={abandon.isPending} onClick={() => abandon.mutate(session.id)} icon={<X size={16} />} className="min-w-0">
               {copy.cancel}
             </Button>
           </div>
         </div>
       </Card>
-      <ReflectionSheet session={session} open={reflectionOpen} onClose={() => setReflectionOpen(false)} locale={locale} />
-    </>
   );
 }
 
@@ -1109,29 +1173,30 @@ function ActivityStrip({
   onSelectDate?: (date: string) => void;
 }) {
   const max = Math.max(1, ...items.map((item) => item.focus_seconds));
+  const isMonth = items.length > 14;
   return (
-    <div className="flex h-16 items-end gap-2 rounded-2xl border border-hairline px-3 py-3">
+    <div className={`rounded-2xl border border-hairline p-3 ${isMonth ? 'grid grid-cols-10 gap-1.5' : 'grid grid-cols-7 gap-2'}`}>
       {items.map((item) => {
         const hasWork = item.focus_seconds > 0;
         const selected = selectedDate === item.date;
-        const height = hasWork ? 10 + Math.round((item.focus_seconds / max) * 32) : 6;
+        const intensity = hasWork ? 0.18 + (item.focus_seconds / max) * 0.82 : 0;
         return (
           <button
             key={item.date}
             type="button"
             onClick={() => onSelectDate?.(item.date)}
-            className="flex min-w-0 flex-1 flex-col items-center gap-1.5 rounded-xl outline-none focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+            className={`flex min-w-0 flex-col items-center gap-1.5 rounded-xl p-1 outline-none focus:shadow-[0_0_0_3px_var(--accent-soft)] ${selected ? 'bg-[var(--accent-soft)]' : ''}`}
             aria-label={`${item.date}: ${secondsLabel(item.focus_seconds, locale)}`}
           >
             <div
-              className={`w-full rounded-full transition-colors ${
+              className={`${isMonth ? 'h-5 w-5' : 'h-9 w-full'} rounded-lg border transition-colors ${
                 selected
-                  ? 'bg-accent'
+                  ? 'border-[var(--accent-border)] bg-accent'
                   : hasWork
-                    ? 'bg-[var(--accent-soft)]'
-                    : 'bg-[var(--hairline)] opacity-60'
+                    ? 'border-transparent bg-accent'
+                    : 'border-hairline bg-[var(--surface)]'
               }`}
-              style={{ height }}
+              style={hasWork && !selected ? { opacity: intensity } : undefined}
               title={`${item.date}: ${secondsLabel(item.focus_seconds, locale)}`}
             />
             <span className={`tnum text-[10px] ${selected || hasWork ? 'text-ink' : 'text-hint'}`}>{new Date(item.date).getDate()}</span>
@@ -1148,12 +1213,14 @@ function HistoryDetailsSheet({
   locale,
   summary,
   sessions,
+  onSelectSession,
 }: {
   open: boolean;
   onClose: () => void;
   locale: AppLocale;
   summary: FocusSummaryResponse | undefined;
   sessions: FocusSession[];
+  onSelectSession: (session: FocusSession) => void;
 }) {
   const copy = COPY[locale];
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
@@ -1202,7 +1269,7 @@ function HistoryDetailsSheet({
           <div className="max-h-[34dvh] overflow-y-auto rounded-2xl border border-hairline">
             {sessionsForDay.length > 0 ? (
               sessionsForDay.map((item) => (
-                <div key={item.id} className="border-b border-hairline px-4 py-3 last:border-b-0">
+                <button key={item.id} type="button" onClick={() => onSelectSession(item)} className="block w-full border-b border-hairline px-4 py-3 text-left last:border-b-0">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="truncate text-[14px] font-medium text-ink">{item.intention}</p>
@@ -1217,7 +1284,7 @@ function HistoryDetailsSheet({
                       {item.reflection.accomplished_text ?? item.reflection.next_step_text}
                     </p>
                   )}
-                </div>
+                </button>
               ))
             ) : (
               <p className="px-4 py-4 text-[13px] text-hint">{copy.noSessionsForDay}</p>
@@ -1229,18 +1296,117 @@ function HistoryDetailsSheet({
   );
 }
 
+function KpiDelta({ value }: { value: number | null }) {
+  const positive = (value ?? 0) >= 0;
+  if (value === null) return <span className="text-hint">—</span>;
+  const Icon = positive ? TrendingUp : TrendingDown;
+  return (
+    <span className={`inline-flex items-center gap-1 text-[12px] font-medium ${positive ? 'text-success' : 'text-danger'}`}>
+      <Icon size={13} />
+      {deltaLabel(value)}
+    </span>
+  );
+}
+
+function AnalyticsKpis({ summary, locale }: { summary: FocusSummaryResponse | undefined; locale: AppLocale }) {
+  const copy = COPY[locale];
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      <div className="rounded-2xl border border-hairline bg-[var(--surface)] px-3 py-3">
+        <p className="text-[11px] font-medium text-hint">{copy.avgDay}</p>
+        <p className="tnum mt-1 text-[18px] font-semibold text-ink">{secondsLabel(summary?.average_daily_focus_seconds ?? 0, locale)}</p>
+        <KpiDelta value={summary?.average_daily_focus_delta_percent ?? null} />
+      </div>
+      <div className="rounded-2xl border border-hairline bg-[var(--surface)] px-3 py-3">
+        <p className="text-[11px] font-medium text-hint">{copy.total}</p>
+        <p className="tnum mt-1 text-[18px] font-semibold text-ink">{secondsLabel(summary?.total_focus_seconds ?? 0, locale)}</p>
+        <KpiDelta value={summary?.total_focus_delta_percent ?? null} />
+      </div>
+      <div className="rounded-2xl border border-hairline bg-[var(--surface)] px-3 py-3">
+        <p className="text-[11px] font-medium text-hint">{copy.mostFocused}</p>
+        <p className="mt-1 truncate text-[18px] font-semibold text-ink">{daypartLabel(summary?.most_focused_daypart ?? null, copy)}</p>
+        <p className="truncate text-[11px] text-hint">{copy.vsAverage}</p>
+      </div>
+    </div>
+  );
+}
+
+function SessionDetailsSheet({
+  open,
+  onClose,
+  session,
+  locale,
+}: {
+  open: boolean;
+  onClose: () => void;
+  session: FocusSession | null;
+  locale: AppLocale;
+}) {
+  const copy = COPY[locale];
+  const [editOpen, setEditOpen] = useState(false);
+  if (!session) return null;
+  const reflection = session.reflection;
+  return (
+    <>
+      <Sheet open={open} onClose={onClose} title={copy.sessionDetails}>
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-hairline bg-[var(--surface)] p-4">
+            <p className="text-[19px] font-semibold text-ink">{session.intention}</p>
+            <p className="mt-1 text-[13px] text-hint">
+              {session.project ?? copy.noProject}{session.task ? ` · ${session.task.title}` : ''}
+            </p>
+            <div className="mt-4 grid grid-cols-2 gap-2 text-[13px]">
+              <div className="rounded-xl bg-[var(--surface-strong)] px-3 py-2">
+                <p className="text-hint">{copy.startEndPreview}</p>
+                <p className="tnum mt-0.5 text-ink">{formatTime(session.started_at)} — {formatTime(session.ended_at ?? session.target_end_at)}</p>
+              </div>
+              <div className="rounded-xl bg-[var(--surface-strong)] px-3 py-2">
+                <p className="text-hint">{copy.duration}</p>
+                <p className="tnum mt-0.5 text-ink">{secondsLabel(session.duration_seconds ?? 0, locale)}</p>
+              </div>
+            </div>
+          </div>
+          <div className="rounded-2xl border border-hairline bg-[var(--surface)] p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-[14px] font-semibold text-ink">{copy.reflectionTitle}</h3>
+              <span className="tnum text-[13px] text-hint">{reflection.focus_score ? `${reflection.focus_score}/5` : '—'}</span>
+            </div>
+            {reflection.accomplished_text || reflection.distraction_text || reflection.next_step_text ? (
+              <div className="space-y-3 text-[13px] leading-relaxed">
+                {reflection.accomplished_text && <p><span className="font-medium text-ink">{copy.doneQuestion}</span><br /><span className="text-hint">{reflection.accomplished_text}</span></p>}
+                {reflection.distraction_text && <p><span className="font-medium text-ink">{copy.blockersQuestion}</span><br /><span className="text-hint">{reflection.distraction_text}</span></p>}
+                {reflection.next_step_text && <p><span className="font-medium text-ink">{copy.nextStep}</span><br /><span className="text-hint">{reflection.next_step_text}</span></p>}
+              </div>
+            ) : (
+              <p className="text-[13px] text-hint">{copy.noReflection}</p>
+            )}
+          </div>
+          <Button fullWidth onClick={() => setEditOpen(true)} icon={<Pencil size={16} />}>
+            {copy.editReview}
+          </Button>
+        </div>
+      </Sheet>
+      <ReflectionSheet session={session} open={editOpen} onClose={() => setEditOpen(false)} locale={locale} />
+    </>
+  );
+}
+
 export default function FocusPage() {
   const locale = useAppLocale();
   const copy = COPY[locale];
   const [startOpen, setStartOpen] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [reviewSession, setReviewSession] = useState<FocusSession | null>(null);
+  const [detailsSession, setDetailsSession] = useState<FocusSession | null>(null);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [period, setPeriod] = useState<'week' | 'month'>('week');
   const state = useFocusState();
   const summary = useFocusSummary(period);
+  const sessionsQuery = useFocusSessions(period);
   const active = state.data?.active_session ?? null;
   const today = state.data?.today;
+  const sessions = sessionsQuery.data?.items ?? state.data?.recent_sessions ?? [];
   const daily = summary.data?.daily_activity ?? [];
   const activeDate = selectedDate ?? [...daily].reverse().find((item) => item.focus_seconds > 0)?.date ?? null;
   const summaryProjects = useMemo(() => summary.data?.project_breakdown.map((item) => item.project) ?? [], [summary.data]);
@@ -1251,7 +1417,7 @@ export default function FocusPage() {
         <SkeletonList count={4} lines={2} />
       ) : active ? (
         <Rise>
-          <ActiveSessionCard session={active} locale={locale} />
+          <ActiveSessionCard session={active} locale={locale} onReviewSession={setReviewSession} />
         </Rise>
       ) : (
         <Rise>
@@ -1322,6 +1488,9 @@ export default function FocusPage() {
             </div>
           </div>
           <div className="mt-4">
+            <AnalyticsKpis summary={summary.data} locale={locale} />
+          </div>
+          <div className="mt-4">
             <ActivityStrip items={daily} locale={locale} selectedDate={activeDate} onSelectDate={(date) => {
               setSelectedDate(date);
               setHistoryOpen(true);
@@ -1330,12 +1499,22 @@ export default function FocusPage() {
           {summary.data?.project_breakdown.length ? (
             <div className="mt-4 divide-y divide-hairline">
               {summary.data.project_breakdown.map((item) => (
-                <div key={item.project} className="flex items-center justify-between py-2.5">
-                  <span className="flex items-center gap-2 text-[13.5px] font-medium text-ink">
-                    <CircleDot size={14} className="text-accent-text" />
-                    {item.project}
-                  </span>
-                  <span className="tnum text-[13px] text-hint">{secondsLabel(item.focus_seconds, locale)}</span>
+                <div key={item.project} className="py-2.5">
+                  <div className="mb-1 flex items-center justify-between gap-3">
+                    <span className="flex min-w-0 items-center gap-2 text-[13.5px] font-medium text-ink">
+                      <CircleDot size={14} className="shrink-0 text-accent-text" />
+                      <span className="truncate">{item.project}</span>
+                    </span>
+                    <span className="tnum shrink-0 text-[13px] text-hint">{secondsLabel(item.focus_seconds, locale)}</span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-[var(--hairline)]">
+                    <div
+                      className="h-full rounded-full bg-accent"
+                      style={{
+                        width: `${Math.max(4, Math.round((item.focus_seconds / Math.max(1, summary.data.project_breakdown[0]?.focus_seconds ?? 1)) * 100))}%`,
+                      }}
+                    />
+                  </div>
                 </div>
               ))}
             </div>
@@ -1360,15 +1539,12 @@ export default function FocusPage() {
           }
         />
         <Card className="divide-y divide-hairline overflow-hidden !p-0" strong>
-          {(state.data?.recent_sessions ?? []).length > 0 ? (
-            state.data?.recent_sessions.map((item) => (
+          {sessions.length > 0 ? (
+            sessions.map((item) => (
               <button
                 key={item.id}
                 type="button"
-                onClick={() => {
-                  setSelectedDate(sessionDateKey(item));
-                  setHistoryOpen(true);
-                }}
+                onClick={() => setDetailsSession(item)}
                 className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
               >
                 <div className="min-w-0">
@@ -1399,12 +1575,23 @@ export default function FocusPage() {
 
       <StartSheet open={startOpen} onClose={() => setStartOpen(false)} locale={locale} summaryProjects={summaryProjects} />
       <ManualLogSheet open={logOpen} onClose={() => setLogOpen(false)} locale={locale} summaryProjects={summaryProjects} />
+      <ReflectionSheet session={reviewSession} open={reviewSession !== null} onClose={() => setReviewSession(null)} locale={locale} />
+      <SessionDetailsSheet
+        open={detailsSession !== null}
+        onClose={() => setDetailsSession(null)}
+        session={detailsSession}
+        locale={locale}
+      />
       <HistoryDetailsSheet
         open={historyOpen}
         onClose={() => setHistoryOpen(false)}
         locale={locale}
         summary={summary.data}
-        sessions={state.data?.recent_sessions ?? []}
+        sessions={sessions}
+        onSelectSession={(session) => {
+          setHistoryOpen(false);
+          setDetailsSession(session);
+        }}
       />
     </Stagger>
   );
