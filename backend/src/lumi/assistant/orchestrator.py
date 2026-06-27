@@ -6,10 +6,11 @@ final LLM reply -> save reply -> (maybe) compaction flag.
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from difflib import SequenceMatcher
 from html import escape
 from typing import Any
@@ -43,6 +44,11 @@ from lumi.assistant.schemas import (
     PlannedToolCall,
     TaskPatchRequest,
     TaskUpdate,
+)
+from lumi.bot.schedule_messages import (
+    render_schedule_message,
+    schedule_items_from_calendar_events,
+    schedule_window_title,
 )
 from lumi.db.models import (
     AgentRunType,
@@ -84,7 +90,7 @@ from lumi.services.task_update_replies import (
 from lumi.services.tasks import TaskService
 from lumi.services.users import UserService
 from lumi.utils.text import normalize_for_match, truncate
-from lumi.utils.time import fmt_local, local_to_utc, utc_now, utc_to_local
+from lumi.utils.time import fmt_local, local_now, local_to_utc, utc_now, utc_to_local
 from lumi.worker.queue import enqueue_job
 
 log = get_logger(__name__)
@@ -139,6 +145,103 @@ MULTI_STEP_INTENT_MARKERS = (
     "finché",
     "finche",
 )
+SCHEDULE_READ_KEYWORDS = (
+    r"\bschedule\b",
+    r"\bcalendar\b",
+    r"\bagenda\b",
+    r"\bmeetings?\b",
+    r"\bevents?\b",
+    r"распис",
+    r"календар",
+    r"встреч",
+    r"событ",
+)
+SCHEDULE_DATE_REF_KEYWORDS = (
+    r"\btoday\b",
+    r"\btomorrow\b",
+    r"сегодня",
+    r"завтра",
+    r"\bweek\b",
+    r"\bнедел(?:я|ю|е|и|ь)?\b",
+)
+SCHEDULE_CONTEXT_KEYWORDS = (
+    *SCHEDULE_READ_KEYWORDS,
+    r"external calendar sync",
+    r"scheduled events",
+    r"событ[ийя].*календар",
+    r"внешн.*синхронизац",
+)
+SCHEDULE_MUTATION_KEYWORDS = (
+    r"\bschedule\s+(?:a|an|the|my|our)?\s*(?:meeting|call|event|block|focus|task|appointment)\b",
+    r"\bbook\s+(?:a|an|the)?\s*(?:meeting|call|event|appointment)\b",
+    r"\bcreate\s+(?:a|an|the)?\s*(?:meeting|call|event|block|focus|task|appointment)\b",
+    r"\badd\s+(?:a|an|the)?\s*(?:meeting|call|event|block|focus|task|appointment)\b",
+    r"заплан",
+    r"созд",
+    r"добав",
+    r"назнач",
+    r"заброни",
+)
+WEEKDAY_ALIASES = {
+    0: (r"\bmonday\b", r"\bmon\b", r"понедел[ьд]*ник", r"\bпн\b"),
+    1: (r"\btuesday\b", r"\btue\b", r"вторник", r"\bвт\b"),
+    2: (r"\bwednesday\b", r"\bwed\b", r"сред", r"\bср\b"),
+    3: (r"\bthursday\b", r"\bthu\b", r"четверг", r"\bчт\b"),
+    4: (r"\bfriday\b", r"\bfri\b", r"пятниц", r"\bпт\b"),
+    5: (r"\bsaturday\b", r"\bsat\b", r"суббот", r"\bсб\b"),
+    6: (r"\bsunday\b", r"\bsun\b", r"воскрес", r"\bвс\b"),
+}
+MONTH_ALIASES = {
+    "января": 1,
+    "январь": 1,
+    "january": 1,
+    "jan": 1,
+    "февраля": 2,
+    "февраль": 2,
+    "february": 2,
+    "feb": 2,
+    "марта": 3,
+    "март": 3,
+    "march": 3,
+    "mar": 3,
+    "апреля": 4,
+    "апрель": 4,
+    "april": 4,
+    "apr": 4,
+    "мая": 5,
+    "май": 5,
+    "may": 5,
+    "июня": 6,
+    "июнь": 6,
+    "june": 6,
+    "jun": 6,
+    "июля": 7,
+    "июль": 7,
+    "july": 7,
+    "jul": 7,
+    "августа": 8,
+    "август": 8,
+    "august": 8,
+    "aug": 8,
+    "сентября": 9,
+    "сентябрь": 9,
+    "september": 9,
+    "sep": 9,
+    "sept": 9,
+    "октября": 10,
+    "октябрь": 10,
+    "october": 10,
+    "oct": 10,
+    "ноября": 11,
+    "ноябрь": 11,
+    "november": 11,
+    "nov": 11,
+    "декабря": 12,
+    "декабрь": 12,
+    "december": 12,
+    "dec": 12,
+}
+WEEK_DATE_REF_PATTERNS = (r"\bweek\b", r"\bнедел(?:я|ю|е|и|ь)?\b")
 FLEXIBLE_CALENDAR_SLOT_MARKERS = (
     "after",
     "first free",
@@ -410,6 +513,183 @@ def _with_reply_language(user: User, text: str, plan: AgentPlan) -> AgentPlan:
     return plan if plan.language == language else plan.model_copy(update={"language": language})
 
 
+def _with_schedule_read_guard(
+    user: User,
+    text: str,
+    plan: AgentPlan,
+    *,
+    allow_implicit_date: bool = False,
+) -> AgentPlan:
+    request = _schedule_read_request_from_text(text, user, allow_implicit=allow_implicit_date)
+    if plan.tool_calls:
+        if (
+            request is not None
+            and plan.mode == "tool_calls"
+            and all(call.name == "read_calendar_events" for call in plan.tool_calls)
+        ):
+            return plan.model_copy(update={
+                "tool_calls": [
+                    call.model_copy(update={
+                        "evidence": [*call.evidence, "backend_guard:schedule_read"],
+                    })
+                    for call in plan.tool_calls
+                ]
+            })
+        return plan
+    if plan.visual_intent != "none" or plan.needs_media_understanding:
+        return plan
+    if plan.mode not in {"final_answer", "ask_user"}:
+        return plan
+    if request is None:
+        return plan
+    return plan.model_copy(update={
+        "mode": "tool_calls",
+        "tool_calls": [
+            PlannedToolCall(
+                name="read_calendar_events",
+                args=request.model_dump(mode="json"),
+                confidence=0.9,
+                requires_confirmation=False,
+                evidence=["backend_guard:schedule_read"],
+            )
+        ],
+        "final_answer": None,
+        "should_answer_normally": False,
+        "user_visible_status": _text_for_language(
+            plan.language,
+            en="Checking your calendar...",
+            ru="Смотрю календарь...",
+            it="Controllo il calendario...",
+        ),
+        "progress_kind": "reading_calendar",
+    })
+
+
+def _is_schedule_read_guard_plan(plan: AgentPlan) -> bool:
+    return any(
+        call.name == "read_calendar_events" and "backend_guard:schedule_read" in call.evidence
+        for call in plan.tool_calls
+    )
+
+
+def _is_user_visible_schedule_read_plan(plan: AgentPlan, text: str, user: User) -> bool:
+    return (
+        plan.mode == "tool_calls"
+        and bool(plan.tool_calls)
+        and all(call.name == "read_calendar_events" for call in plan.tool_calls)
+        and (_is_schedule_read_guard_plan(plan) or _schedule_read_request_from_text(text, user) is not None)
+    )
+
+
+def _schedule_read_request_from_text(
+    text: str,
+    user: User,
+    *,
+    allow_implicit: bool = False,
+) -> CalendarEventsRequest | None:
+    lowered = text.lower()
+    if not lowered.strip():
+        return None
+    if _matches_any(lowered, SCHEDULE_MUTATION_KEYWORDS):
+        return None
+    has_schedule_keyword = _matches_any(lowered, SCHEDULE_READ_KEYWORDS)
+    if not has_schedule_keyword and not allow_implicit:
+        return None
+
+    today = local_now(user.timezone).date()
+    if _matches_any(lowered, WEEK_DATE_REF_PATTERNS):
+        start_day = today
+        end_day = today + timedelta(days=7)
+    else:
+        day = _requested_explicit_date(lowered, today)
+        if _matches_any(lowered, (r"\btomorrow\b", r"завтра")):
+            day = today + timedelta(days=1)
+        elif _matches_any(lowered, (r"\btoday\b", r"сегодня")):
+            day = today
+        elif day is None:
+            weekday = _requested_weekday(lowered)
+            if weekday is not None:
+                days_until = (weekday - today.weekday()) % 7
+                if days_until == 0 or _matches_any(lowered, (r"\bnext\b", r"следующ")):
+                    days_until = days_until or 7
+                day = today + timedelta(days=days_until)
+        if day is None:
+            return None
+        start_day = day
+        end_day = day + timedelta(days=1)
+
+    if not (_matches_any(lowered, SCHEDULE_DATE_REF_KEYWORDS) or _requested_weekday(lowered) is not None):
+        return None
+
+    return CalendarEventsRequest(
+        start_at_local=datetime.combine(start_day, time.min),
+        end_at_local=datetime.combine(end_day, time.min),
+        include_details=True,
+        sync_if_needed=True,
+    )
+
+
+def _requested_weekday(text: str) -> int | None:
+    for weekday, patterns in WEEKDAY_ALIASES.items():
+        if _matches_any(text, patterns):
+            return weekday
+    return None
+
+
+def _requested_explicit_date(text: str, today: date) -> date | None:
+    numeric = re.search(r"\b(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b", text)
+    if numeric:
+        return _build_requested_date(
+            day=int(numeric.group(1)),
+            month=int(numeric.group(2)),
+            year_text=numeric.group(3),
+            today=today,
+        )
+
+    month_names = "|".join(sorted((re.escape(month) for month in MONTH_ALIASES), key=len, reverse=True))
+    textual = re.search(rf"\b(\d{{1,2}})\s+({month_names})(?:\s+(\d{{2,4}}))?\b", text)
+    if textual:
+        return _build_requested_date(
+            day=int(textual.group(1)),
+            month=MONTH_ALIASES[textual.group(2)],
+            year_text=textual.group(3),
+            today=today,
+        )
+    return None
+
+
+def _build_requested_date(
+    *,
+    day: int,
+    month: int,
+    year_text: str | None,
+    today: date,
+) -> date | None:
+    year = today.year
+    if year_text:
+        year = int(year_text)
+        if year < 100:
+            year += 2000
+    try:
+        requested = date(year, month, day)
+    except ValueError:
+        return None
+    if year_text is None and requested < today:
+        try:
+            requested = date(today.year + 1, month, day)
+        except ValueError:
+            return None
+    return requested
+
+
+def _matches_any(text: str, patterns: tuple[str, ...]) -> bool:
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+
+def _text_has_schedule_read_context(text: str) -> bool:
+    return _matches_any(text.lower(), SCHEDULE_CONTEXT_KEYWORDS)
+
+
 def _safe_action_failure_reply(language: str | None, reason: str) -> str:
     if reason == "low_confidence":
         return "Did not perform the action: planner confidence was too low."
@@ -596,20 +876,16 @@ def _calendar_window_title(language: str | None, *, start: datetime, end: dateti
     start_local = utc_to_local(start, tz)
     end_local = utc_to_local(end - timedelta(seconds=1), tz) if end > start else start_local
     same_day = start_local.date() == end_local.date()
-    if same_day:
-        label = start_local.strftime("%b %d") if normalize_reply_language(language) == "en" else start_local.strftime("%d.%m")
-        today = utc_to_local(utc_now(), tz).date() == start_local.date()
-        if today:
-            return _text_for_language(
-                language,
-                en=f"📅 Today, {label}",
-                ru=f"📅 Сегодня, {label}",
-                it=f"📅 Oggi, {label}",
-            )
-        return f"📅 {label}"
-    if normalize_reply_language(language) == "en":
-        return f"📅 {start_local.strftime('%b %d')} - {end_local.strftime('%b %d')}"
-    return f"📅 {start_local.strftime('%d.%m')} - {end_local.strftime('%d.%m')}"
+    title = schedule_window_title(language=language, start=start, end=end, timezone=tz)
+    if same_day and utc_to_local(utc_now(), tz).date() == start_local.date():
+        label = title.removeprefix("📅 ").strip()
+        return _text_for_language(
+            language,
+            en=f"📅 Today, {label}",
+            ru=f"📅 Сегодня, {label}",
+            it=f"📅 Oggi, {label}",
+        )
+    return title
 
 
 def _calendar_event_when(event, tz: str) -> str:
@@ -935,6 +1211,10 @@ class AssistantOrchestrator:
             user=user,
             conversation=conversation,
         )
+        schedule_followup_context = await self._recent_schedule_read_context(
+            conversation_id=conversation.id,
+            exclude_message_id=inbound.id,
+        )
         plan = await self.planner.plan(
             user=user,
             text=text,
@@ -951,6 +1231,12 @@ class AssistantOrchestrator:
             planner_context=planner_context,
         )
         plan = _with_reply_language(user, text, plan)
+        plan = _with_schedule_read_guard(
+            user,
+            text,
+            plan,
+            allow_implicit_date=schedule_followup_context,
+        )
         selected_media = _selected_or_current_media(plan, available_media, current_media)
         focused_question_override: str | None = None
         if selected_media is None and available_media and text.strip():
@@ -1034,6 +1320,12 @@ class AssistantOrchestrator:
                 planner_context=planner_context,
             )
             plan = _with_reply_language(user, text, plan)
+            plan = _with_schedule_read_guard(
+                user,
+                text,
+                plan,
+                allow_implicit_date=schedule_followup_context,
+            )
             selected_media = _selected_or_current_media(plan, available_media, selected_media)
             if selected_media is not None:
                 selected_image = selected_media.image or selected_image
@@ -1414,6 +1706,8 @@ class AssistantOrchestrator:
                 reply_text = f"Done:\n{done}\n\nThe model is unavailable, so I could not write a richer reply."
             else:
                 reply_text = FALLBACK_REPLY
+            if reply_rich_html and len(action_results) == 1:
+                reply_text = action_results[0]
             outbound = Message(
                 conversation_id=conversation.id,
                 user_id=user.id,
@@ -1422,9 +1716,18 @@ class AssistantOrchestrator:
                 char_count=len(reply_text),
             )
             self.session.add(outbound)
-            return AssistantResult(reply_text=reply_text, buttons=buttons, agent_run_id=run.id)
+            return AssistantResult(
+                reply_text=reply_text,
+                buttons=buttons,
+                agent_run_id=run.id,
+                open_app_button=open_app_button,
+                open_app_button_label=open_app_button_label,
+                reply_rich_html=reply_rich_html if len(action_results) == 1 else None,
+            )
 
         # 8. Save assistant message
+        if reply_rich_html and len(action_results) == 1:
+            reply_text = action_results[0]
         outbound = Message(
             conversation_id=conversation.id,
             user_id=user.id,
@@ -1447,6 +1750,9 @@ class AssistantOrchestrator:
             buttons=buttons,
             agent_run_id=run.id,
             needs_compaction=needs_compaction,
+            open_app_button=open_app_button,
+            open_app_button_label=open_app_button_label,
+            reply_rich_html=reply_rich_html if len(action_results) == 1 else None,
         )
 
     # ------------------------------------------------------------------
@@ -1486,6 +1792,24 @@ class AssistantOrchestrator:
                 if len(candidates) >= limit:
                     return candidates
         return candidates
+
+    async def _recent_schedule_read_context(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        exclude_message_id: uuid.UUID,
+    ) -> bool:
+        result = await self.session.execute(
+            select(Message)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.id != exclude_message_id,
+                Message.role.in_([MessageRole.USER, MessageRole.ASSISTANT]),
+            )
+            .order_by(Message.created_at.desc())
+            .limit(6)
+        )
+        return any(_text_has_schedule_read_context(message.content or "") for message in result.scalars())
 
     async def _ensure_candidate_image(
         self,
@@ -1637,6 +1961,7 @@ class AssistantOrchestrator:
                 plan.mode == "tool_calls"
                 and all(call.name in READ_ONLY_LOOP_TOOLS for call in plan.tool_calls)
                 and _looks_like_multi_step_request(text)
+                and not _is_user_visible_schedule_read_plan(plan, text, user)
             )
             if not should_continue:
                 stop_reason = "completed"
@@ -1718,6 +2043,7 @@ class AssistantOrchestrator:
             plan.mode == "tool_calls"
             and all(call.name in READ_ONLY_LOOP_TOOLS for call in plan.tool_calls)
             and _looks_like_multi_step_request(text)
+            and not _is_user_visible_schedule_read_plan(plan, text, user)
         )
 
         for call in plan.tool_calls:
@@ -3051,13 +3377,32 @@ class AssistantOrchestrator:
             )
 
         lines = ["Calendar events:"]
-        reply_lines, rich_lines = _calendar_timeline_reply(
-            events=events,
+        schedule_items = schedule_items_from_calendar_events(events)
+        if not request.include_details:
+            schedule_items = [
+                item.__class__(
+                    title=item.title,
+                    start_at=item.start_at,
+                    end_at=item.end_at,
+                    kind=item.kind,
+                    action_id=item.action_id,
+                    busy=item.busy,
+                )
+                for item in schedule_items
+            ]
+        schedule_window_end = end - timedelta(seconds=1) if end > start else start
+        is_single_day = utc_to_local(start, user.timezone).date() == utc_to_local(
+            schedule_window_end, user.timezone
+        ).date()
+        rendered_schedule = render_schedule_message(
+            title=_calendar_window_title(language, start=start, end=end, tz=user.timezone),
+            items=schedule_items,
+            timezone=user.timezone,
             language=language,
-            start=start,
-            end=end,
-            tz=user.timezone,
-            include_details=request.include_details,
+            window_start=start,
+            window_end=end,
+            include_free_gaps=True,
+            max_items=CALENDAR_TELEGRAM_EVENT_LIMIT if is_single_day else None,
         )
         for event in events[:20]:
             when = _calendar_event_when(event, user.timezone)
@@ -3074,15 +3419,11 @@ class AssistantOrchestrator:
             lines.append(line)
         if len(events) > 20:
             lines.append(f"{len(events) - 20} more events not shown.")
-        if len(events) > CALENDAR_TELEGRAM_EVENT_LIMIT:
-            more = _calendar_more_text(language, len(events) - CALENDAR_TELEGRAM_EVENT_LIMIT)
-            reply_lines.append(more)
-            rich_lines.append(f"<i>{escape(more)}</i>")
         if user_visible:
-            results.append("\n".join(reply_lines))
+            results.append(rendered_schedule.plain_text)
         return CalendarReadResult(
             observation_summary="\n".join(lines),
-            reply_rich_html="\n\n".join(rich_lines) if user_visible else None,
+            reply_rich_html=rendered_schedule.rich_html if user_visible else None,
             open_app_button=user_visible,
         )
 

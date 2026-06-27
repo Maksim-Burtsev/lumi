@@ -151,6 +151,49 @@ async def test_send_turn_reply_falls_back_to_html_when_rich_send_fails(monkeypat
     assert fallback["link_preview_options"].is_disabled is True
 
 
+async def test_send_turn_reply_falls_back_to_plain_when_rich_html_needs_rich_message(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+
+    class FakeBot:
+        def __init__(self, token: str) -> None:
+            self.token = token
+            self.session = SimpleNamespace(close=self._close)
+
+        async def _close(self) -> None:
+            calls.append(("close", {}))
+
+        async def send_message(self, **kwargs):
+            calls.append(("send_message", kwargs))
+            return SimpleNamespace(message_id=12)
+
+    async def fake_telegram_api_post(token: str, method: str, payload: dict):
+        calls.append((method, payload | {"token": token}))
+        raise RuntimeError("rich unsupported")
+
+    monkeypatch.setattr("aiogram.Bot", FakeBot)
+    monkeypatch.setattr(jobs, "_telegram_api_post", fake_telegram_api_post)
+    monkeypatch.setattr(
+        jobs,
+        "get_settings",
+        lambda: SimpleNamespace(telegram_bot_token="123:test", telegram_use_rich_messages=True),
+    )
+
+    delivered = await jobs.send_turn_reply(
+        user=SimpleNamespace(telegram_chat_id=777, telegram_user_id=777),
+        turn=SimpleNamespace(telegram_chat_id=777, status_message_id=None),
+        reply_text="📅 Встречи\n🟦 13:00 Standup · 15м",
+        reply_rich_html="<p><b>📅 Встречи</b></p><p><b>🟦 13:00</b> Standup · 15м</p>",
+        buttons=[],
+    )
+
+    assert delivered is True
+    assert [name for name, _ in calls] == ["sendRichMessage", "send_message", "close"]
+    fallback = calls[1][1]
+    assert fallback["text"] == "📅 Встречи\n🟦 13:00 Standup · 15м"
+    assert "parse_mode" not in fallback
+    assert fallback["link_preview_options"].is_disabled is True
+
+
 async def test_send_turn_reply_can_attach_mini_app_button(monkeypatch):
     calls: list[tuple[str, dict]] = []
 
