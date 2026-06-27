@@ -1,4 +1,5 @@
 import { useHealth } from '../../api/hooks';
+import { useAppLocale } from '../../lib/useAppLocale';
 
 interface TopBarProps {
   title: string;
@@ -6,6 +7,7 @@ interface TopBarProps {
 
 export function TopBar({ title }: TopBarProps) {
   const health = useHealth();
+  const locale = useAppLocale();
 
   const dotColor = health.isPending
     ? 'bg-[var(--hint)]'
@@ -14,9 +16,9 @@ export function TopBar({ title }: TopBarProps) {
       : 'bg-success shadow-[0_0_6px_rgba(78,155,107,0.7)]';
 
   const dotTitle = health.isPending
-    ? 'Проверяем соединение…'
+    ? locale === 'en' ? 'Checking connection...' : 'Проверяем соединение…'
     : health.isError
-      ? 'Сервер недоступен'
+      ? locale === 'en' ? 'Server unavailable' : 'Сервер недоступен'
       : `Lumi · ${health.data?.env ?? ''} ${health.data?.version ?? ''}`.trim();
 
   return (

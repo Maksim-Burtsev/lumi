@@ -3,6 +3,8 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { Clock } from 'lucide-react';
 import type { Task, SnoozePreset, TaskPriority } from '../../api/types';
 import { formatDueLabel } from '../../lib/format';
+import type { AppLocale } from '../../lib/i18n';
+import { pickLocaleText } from '../../lib/i18n';
 import { useTimeDisplay } from '../../lib/useTimeDisplay';
 import { haptic } from '../../telegram/webapp';
 
@@ -13,27 +15,42 @@ interface TaskCardProps {
   onEdit?: (task: Task) => void;
 }
 
-const PRIORITY_DOTS: Record<TaskPriority, { className: string; label: string }> = {
-  low: { className: 'bg-[#7d8896]', label: 'низкий приоритет' },
-  medium: { className: 'bg-[rgba(46,99,231,0.55)]', label: 'средний приоритет' },
-  high: { className: 'bg-[#d97a2b]', label: 'высокий приоритет' },
-  urgent: { className: 'bg-[#c2553f]', label: 'срочно' },
+const PRIORITY_DOTS: Record<TaskPriority, { className: string; label: Record<AppLocale, string> }> = {
+  low: { className: 'bg-[#7d8896]', label: { en: 'low priority', ru: 'низкий приоритет' } },
+  medium: { className: 'bg-[rgba(46,99,231,0.55)]', label: { en: 'medium priority', ru: 'средний приоритет' } },
+  high: { className: 'bg-[#d97a2b]', label: { en: 'high priority', ru: 'высокий приоритет' } },
+  urgent: { className: 'bg-[#c2553f]', label: { en: 'urgent', ru: 'срочно' } },
 };
 
-const SNOOZE_PRESETS: { preset: SnoozePreset; label: string }[] = [
-  { preset: '1h', label: '1 ч' },
-  { preset: '3h', label: '3 ч' },
-  { preset: 'tomorrow', label: 'Завтра' },
-  { preset: 'next_week', label: 'След. неделя' },
+const SNOOZE_PRESETS: { preset: SnoozePreset; label: Record<AppLocale, string> }[] = [
+  { preset: '1h', label: { en: '1 h', ru: '1 ч' } },
+  { preset: '3h', label: { en: '3 h', ru: '3 ч' } },
+  { preset: 'tomorrow', label: { en: 'Tomorrow', ru: 'Завтра' } },
+  { preset: 'next_week', label: { en: 'Next week', ru: 'След. неделя' } },
 ];
 
 export function TaskCard({ task, onComplete, onSnooze, onEdit }: TaskCardProps) {
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const reduceMotion = useReducedMotion();
   const timeDisplay = useTimeDisplay();
+  const locale = timeDisplay.locale ?? 'en';
   const done = task.status === 'done';
   const overdue = !done && task.due_at !== null && new Date(task.due_at).getTime() < Date.now();
   const priority = PRIORITY_DOTS[task.priority];
+  const copy = pickLocaleText(locale, {
+    en: {
+      done: 'Task completed',
+      complete: 'Complete task',
+      snooze: 'Snooze task',
+      snoozePrefix: 'Snooze:',
+    },
+    ru: {
+      done: 'Задача выполнена',
+      complete: 'Выполнить задачу',
+      snooze: 'Отложить задачу',
+      snoozePrefix: 'Отложить:',
+    },
+  });
 
   return (
     <div className="card card-strong px-4 py-3">
@@ -41,7 +58,7 @@ export function TaskCard({ task, onComplete, onSnooze, onEdit }: TaskCardProps) 
         {/* Complete checkbox: 26px visual, ≥44px tap target */}
         <motion.button
           type="button"
-          aria-label={done ? 'Задача выполнена' : 'Выполнить задачу'}
+          aria-label={done ? copy.done : copy.complete}
           disabled={done}
           whileTap={reduceMotion || done ? undefined : { scale: 0.85 }}
           transition={{ type: 'spring', stiffness: 420, damping: 22 }}
@@ -93,8 +110,8 @@ export function TaskCard({ task, onComplete, onSnooze, onEdit }: TaskCardProps) 
           </p>
           <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
             <span
-              aria-label={priority.label}
-              title={priority.label}
+              aria-label={priority.label[locale]}
+              title={priority.label[locale]}
               className={`h-[6px] w-[6px] shrink-0 rounded-full ${priority.className}`}
             />
             {task.due_at && (
@@ -118,7 +135,7 @@ export function TaskCard({ task, onComplete, onSnooze, onEdit }: TaskCardProps) 
         {!done && (
           <button
             type="button"
-            aria-label="Отложить задачу"
+            aria-label={copy.snooze}
             onClick={() => {
               haptic('light');
               setSnoozeOpen((v) => !v);
@@ -142,7 +159,7 @@ export function TaskCard({ task, onComplete, onSnooze, onEdit }: TaskCardProps) 
             className="overflow-hidden"
           >
             <div className="mt-2.5 flex items-center gap-1.5 border-t border-hairline pt-2.5">
-              <span className="mr-1 text-[12px] text-hint">Отложить:</span>
+              <span className="mr-1 text-[12px] text-hint">{copy.snoozePrefix}</span>
               {SNOOZE_PRESETS.map(({ preset, label }) => (
                 <button
                   key={preset}
@@ -154,7 +171,7 @@ export function TaskCard({ task, onComplete, onSnooze, onEdit }: TaskCardProps) 
                   }}
                   className="relative rounded-full bg-[var(--secondary-bg)] px-2.5 py-1 text-[12px] font-medium text-ink after:absolute after:-inset-1.5 after:content-['']"
                 >
-                  {label}
+                  {label[locale]}
                 </button>
               ))}
             </div>

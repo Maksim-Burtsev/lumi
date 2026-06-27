@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   formatDateHeading,
+  formatDuration,
   formatDueLabel,
+  formatRelative,
+  formatSpanMinutes,
   formatTime,
   formatTimeRange,
   resolveTimeFormat,
@@ -50,5 +53,23 @@ describe('time formatting preferences', () => {
       timeFormat: '24h',
       timezone: 'UTC',
     })).toBe('19 Aug, 14:30');
+  });
+
+  it('formats relative time in English and Russian', () => {
+    const now = new Date('2026-06-17T12:00:00Z');
+    expect(formatRelative('2026-06-17T11:58:00Z', { locale: 'en', now })).toBe('2 min ago');
+    expect(formatRelative('2026-06-17T11:58:00Z', { locale: 'ru', now })).toBe('2 мин назад');
+    expect(formatRelative('2026-06-18T12:00:00Z', { locale: 'en', now, timeFormat: '24h', timezone: 'UTC' })).toBe('tomorrow at 12:00');
+    expect(formatRelative('2026-06-18T12:00:00Z', { locale: 'ru', now, timeFormat: '24h', timezone: 'UTC' })).toBe('завтра в 12:00');
+  });
+
+  it('formats durations and spans in the selected locale', () => {
+    expect(formatDuration(1234, 'en')).toBe('1.2 sec');
+    expect(formatDuration(1234, 'ru')).toBe('1,2 с');
+    expect(formatDuration(125_000, 'en')).toBe('2 min 05 sec');
+    expect(formatDuration(125_000, 'ru')).toBe('2 мин 05 с');
+
+    expect(formatSpanMinutes('2026-06-17T11:00:00Z', '2026-06-17T12:30:00Z', 'en')).toBe('1 h 30 min');
+    expect(formatSpanMinutes('2026-06-17T11:00:00Z', '2026-06-17T12:30:00Z', 'ru')).toBe('1 ч 30 мин');
   });
 });

@@ -70,6 +70,7 @@ export function PrivateNoteSection({
       pending: 'Summary is updating',
       failed: 'Summary failed to update',
       add: 'Add note',
+      summary: 'AI summary',
     },
     ru: {
       label: 'Личная заметка',
@@ -80,9 +81,10 @@ export function PrivateNoteSection({
       save: 'Сохранить',
       expand: 'Показать полностью',
       collapse: 'Свернуть',
-      pending: 'Summary обновляется',
-      failed: 'Summary не обновился',
+      pending: 'Резюме обновляется',
+      failed: 'Резюме не обновилось',
       add: 'Добавить заметку',
+      summary: 'AI-резюме',
     },
   });
   const note = event.private_note ?? '';
@@ -145,7 +147,7 @@ export function PrivateNoteSection({
           {showSummary && (
             <div className="inline-flex items-center gap-1.5 rounded-full border border-[var(--accent-border)] bg-[var(--accent-soft)] px-2.5 py-1 text-[11px] font-medium text-accent-text">
               <Sparkles size={12} aria-hidden="true" />
-              <span>AI summary</span>
+              <span>{copy.summary}</span>
             </div>
           )}
           <p className="whitespace-pre-wrap text-[14px] leading-relaxed text-ink">{body}</p>
