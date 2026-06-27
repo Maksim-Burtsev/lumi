@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timedelta
 from hashlib import sha256
@@ -80,6 +81,52 @@ def truncate_private_note_summary(summary: str, limit: int = PRIVATE_NOTE_SUMMAR
     if boundary >= limit // 2:
         head = head[:boundary].rstrip()
     return f"{head}…" if head else normalized[:limit]
+
+
+_SUMMARY_PREFIX_RE = re.compile(r"^(?:ai\s+summary|summary|резюме|саммари)\s*[:—-]\s*", re.I)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。！？])\s+")
+_ORDINAL_PREFIX_RE = re.compile(
+    r"^(?:first|second|third|fourth|первое|второе|третье|четвертое)\s*[:—-]\s*",
+    re.I,
+)
+
+
+def fallback_private_note_summary(note: str) -> str:
+    normalized = normalize_private_note_for_threshold(note)
+    if not normalized:
+        return ""
+    parts = [part.strip(" -•\t") for part in _SENTENCE_SPLIT_RE.split(normalized) if part.strip()]
+    candidates: list[str] = []
+    for part in parts:
+        cleaned = _ORDINAL_PREFIX_RE.sub("", part).strip()
+        if ":" in cleaned and len(cleaned.split(":", 1)[0]) <= 32:
+            cleaned = cleaned.split(":", 1)[1].strip()
+        if cleaned:
+            candidates.append(cleaned)
+        if len(candidates) >= 3:
+            break
+    return truncate_private_note_summary("; ".join(candidates or [normalized]))
+
+
+def clean_private_note_summary(note: str, summary: str) -> str:
+    candidate = normalize_private_note_for_threshold(summary).strip("\"'“”«»")
+    while True:
+        cleaned = _SUMMARY_PREFIX_RE.sub("", candidate).strip()
+        if cleaned == candidate:
+            break
+        candidate = cleaned
+
+    note_normalized = normalize_private_note_for_threshold(note)
+    candidate_prefix = candidate.rstrip("…").strip()
+    repeats_note_start = (
+        len(candidate_prefix) >= 80
+        and note_normalized[: len(candidate_prefix)].casefold() == candidate_prefix.casefold()
+    )
+    too_long = len(candidate) > 2000
+    contains_prompt = "personal note:" in candidate.casefold()
+    if not candidate or repeats_note_start or too_long or contains_prompt:
+        return fallback_private_note_summary(note)
+    return truncate_private_note_summary(candidate)
 
 
 def clean_private_note(note: str | None) -> str | None:
@@ -268,7 +315,7 @@ class CalendarService:
             metadata.pop("private_note_summary", None)
             metadata.pop("private_note_summary_updated_at", None)
         else:
-            clean_summary = truncate_private_note_summary(summary)
+            clean_summary = clean_private_note_summary(note, summary)
             metadata["private_note_summary"] = clean_summary or calendar_private_note_summary_text(event)
             metadata["private_note_summary_status"] = "ready"
             metadata["private_note_summary_updated_at"] = utc_now().isoformat()
@@ -288,6 +335,8 @@ class CalendarService:
     ) -> CalendarEvent:
         metadata = dict(event.metadata_ or {})
         if event.user_id == user.id and metadata.get("private_note_hash") == note_hash:
+            if metadata.get("private_note_summary_status") == "ready" and metadata.get("private_note_summary"):
+                return event
             metadata["private_note_summary_status"] = "failed"
             metadata["private_note_summary_error"] = error[:300]
             event.metadata_ = metadata

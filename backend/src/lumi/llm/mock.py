@@ -184,6 +184,11 @@ class MockLLMProvider:
             )
         if request_kind == "news_digest":
             return "Главное за сегодня\n\nПо вашим темам пока без громких событий. Дайджест собран в тестовом режиме."
+        if request_kind == "calendar_private_note_summary":
+            return json.dumps(
+                {"summary": "Проверить UX заметок, summary длинных заметок и правило для chat dump."},
+                ensure_ascii=False,
+            )
         if request_kind == "daily_planning":
             return json.dumps(
                 {

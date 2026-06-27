@@ -741,11 +741,17 @@ async def summarize_calendar_private_note(
         await calendar.set_private_note(user, event, note)
         return "summary not needed"
     try:
-        response = await LLMGateway().complete(
+        response = await LLMGateway().complete_json(
             messages=[LLMMessage(role="user", content=f"Personal note:\n{note}")],
             system=CALENDAR_PRIVATE_NOTE_SUMMARY_SYSTEM,
+            json_schema_hint={
+                "type": "object",
+                "properties": {"summary": {"type": "string", "maxLength": 160}},
+                "required": ["summary"],
+                "additionalProperties": False,
+            },
             temperature=0.1,
-            max_tokens=1024,
+            max_tokens=256,
             request_kind="calendar_private_note_summary",
             user_id=user.id,
             agent_run_id=run.id,
@@ -763,7 +769,7 @@ async def summarize_calendar_private_note(
         user,
         event,
         note_hash=private_note_hash,
-        summary=response.text,
+        summary=str(response.get("summary") or ""),
     )
     return f"summarized {event.id}"
 
