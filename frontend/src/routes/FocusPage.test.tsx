@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
 import type { FocusSession, FocusStateResponse, FocusSummaryResponse, SettingsResponse, TasksResponse, User } from '../api/types';
 import { ToastProvider } from '../components/ui/Toast';
@@ -73,6 +73,11 @@ const SUMMARY: FocusSummaryResponse = {
   total_sessions: 0,
   streak_days: 0,
   average_focus_score: null,
+  average_daily_focus_seconds: 0,
+  average_daily_focus_delta_percent: null,
+  total_focus_delta_percent: null,
+  most_focused_daypart: null,
+  daypart_breakdown: [],
   daily_activity: [],
   project_breakdown: [],
   next_steps: [],
@@ -135,6 +140,10 @@ function makeSession(overrides: Partial<FocusSession> = {}): FocusSession {
 
 function renderFocusPage(locale = 'en') {
   vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettings(locale));
+  const sessionsSpy = vi.spyOn(api, 'listFocusSessions');
+  if (!sessionsSpy.getMockImplementation()) {
+    sessionsSpy.mockResolvedValue({ items: [] });
+  }
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -152,6 +161,10 @@ function renderFocusPage(locale = 'en') {
 }
 
 describe('FocusPage', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('keeps the dial progress proportional to elapsed time', () => {
     const started = new Date('2026-06-24T10:00:00Z').getTime();
     const metrics = getDialMetrics({
@@ -267,6 +280,7 @@ describe('FocusPage', () => {
       ...SUMMARY,
       project_breakdown: [{ project: 'QA Project', focus_seconds: 39 * 60, session_count: 1 }],
     });
+    vi.spyOn(api, 'listFocusSessions').mockResolvedValue({ items: [] });
     vi.spyOn(api, 'listTasks').mockResolvedValue(TASKS);
     const start = vi.spyOn(api, 'startFocusSession').mockResolvedValue({
       session: makeSession({
@@ -368,6 +382,7 @@ describe('FocusPage', () => {
       recent_sessions: [makeSession({ intention: 'Past block', started_at: '2026-06-24T10:00:00Z' })],
     });
     vi.spyOn(api, 'getFocusSummary').mockResolvedValue({
+      ...SUMMARY,
       period: 'week',
       total_focus_seconds: 50 * 60,
       total_sessions: 1,
@@ -377,6 +392,7 @@ describe('FocusPage', () => {
       project_breakdown: [{ project: 'Lumi', focus_seconds: 50 * 60, session_count: 1 }],
       next_steps: [],
     });
+    vi.spyOn(api, 'listFocusSessions').mockResolvedValue({ items: [] });
     vi.spyOn(api, 'listTasks').mockResolvedValue(TASKS);
 
     renderFocusPage('en');
@@ -405,6 +421,7 @@ describe('FocusPage', () => {
       recent_sessions: [],
     });
     vi.spyOn(api, 'getFocusSummary').mockResolvedValue(SUMMARY);
+    vi.spyOn(api, 'listFocusSessions').mockResolvedValue({ items: [] });
     vi.spyOn(api, 'listTasks').mockResolvedValue(TASKS);
 
     renderFocusPage('en');
@@ -467,6 +484,7 @@ describe('FocusPage', () => {
       recent_sessions: [recentSession],
     });
     vi.spyOn(api, 'getFocusSummary').mockResolvedValue({
+      ...SUMMARY,
       period: 'week',
       total_focus_seconds: 39 * 60,
       total_sessions: 1,
@@ -480,6 +498,7 @@ describe('FocusPage', () => {
       project_breakdown: [{ project: 'QA Project', focus_seconds: 39 * 60, session_count: 1 }],
       next_steps: [],
     });
+    vi.spyOn(api, 'listFocusSessions').mockResolvedValue({ items: [recentSession] });
     vi.spyOn(api, 'listTasks').mockResolvedValue(TASKS);
 
     renderFocusPage('en');
@@ -492,5 +511,96 @@ describe('FocusPage', () => {
     expect(screen.getAllByText('QA custom session').length).toBeGreaterThan(0);
     expect(screen.getByText('Checked timer start and history')).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: /2026-06-24: 39m/i }).length).toBeGreaterThan(0);
+  });
+
+  it('renders weekly KPI strip with baseline deltas and most focused daypart', async () => {
+    vi.spyOn(api, 'getFocusState').mockResolvedValue(EMPTY_STATE);
+    vi.spyOn(api, 'getFocusSummary').mockResolvedValue({
+      ...SUMMARY,
+      total_focus_seconds: 18 * 3600 + 40 * 60,
+      total_sessions: 42,
+      average_focus_score: 4.2,
+      average_daily_focus_seconds: 2 * 3600 + 40 * 60,
+      average_daily_focus_delta_percent: 18,
+      total_focus_delta_percent: -6,
+      most_focused_daypart: 'morning',
+      daily_activity: [{ date: '2026-06-27', focus_seconds: 2 * 3600, session_count: 3 }],
+      project_breakdown: [{ project: 'Lumi', focus_seconds: 6 * 3600, session_count: 10 }],
+    });
+    vi.spyOn(api, 'listFocusSessions').mockResolvedValue({ items: [] });
+    vi.spyOn(api, 'listTasks').mockResolvedValue(TASKS);
+
+    renderFocusPage('en');
+
+    expect(await screen.findByText('Avg/day')).toBeInTheDocument();
+    expect(screen.getByText('Most focused')).toBeInTheDocument();
+    expect(await screen.findByText('Morning')).toBeInTheDocument();
+    expect(await screen.findByText('↑ 18%')).toBeInTheDocument();
+    expect(await screen.findByText('↓ 6%')).toBeInTheDocument();
+  });
+
+  it('opens session details instead of history when a history row is clicked', async () => {
+    const user = userEvent.setup();
+    const session = makeSession({
+      intention: 'Clicked session',
+      project: 'Lumi',
+      reflection: {
+        accomplished_text: 'Filled later',
+        distraction_text: null,
+        next_step_text: 'Retest',
+        focus_score: 5,
+      },
+    });
+    vi.spyOn(api, 'getFocusState').mockResolvedValue({ ...EMPTY_STATE, recent_sessions: [session] });
+    vi.spyOn(api, 'getFocusSummary').mockResolvedValue(SUMMARY);
+    vi.spyOn(api, 'listFocusSessions').mockResolvedValue({ items: [session] });
+    vi.spyOn(api, 'listTasks').mockResolvedValue(TASKS);
+
+    renderFocusPage('en');
+
+    await user.click(await screen.findByRole('button', { name: /clicked session/i }));
+
+    expect(await screen.findByText('Session details')).toBeInTheDocument();
+    expect(screen.getByText('Filled later')).toBeInTheDocument();
+    expect(screen.queryByText('Session history')).not.toBeInTheDocument();
+  });
+
+  it('stops an overtime session before opening review so duration no longer grows', async () => {
+    const user = userEvent.setup();
+    const session = makeSession({
+      status: 'active',
+      intention: 'Ringing session',
+      started_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+      target_end_at: new Date(Date.now() - 60_000).toISOString(),
+      ended_at: null,
+      duration_seconds: null,
+    });
+    vi.spyOn(api, 'getFocusState').mockResolvedValue({
+      active_session: session,
+      today: { focus_seconds: 0, completed_sessions: 0, streak_days: 0 },
+      recent_sessions: [],
+    });
+    vi.spyOn(api, 'getFocusSummary').mockResolvedValue(SUMMARY);
+    vi.spyOn(api, 'listFocusSessions').mockResolvedValue({ items: [] });
+    vi.spyOn(api, 'listTasks').mockResolvedValue(TASKS);
+    const finish = vi.spyOn(api, 'finishFocusSession').mockResolvedValue({
+      session: makeSession({
+        ...session,
+        status: 'completed',
+        ended_at: new Date().toISOString(),
+        duration_seconds: 5 * 60,
+      }),
+    });
+
+    renderFocusPage('en');
+
+    const stopButton = await screen.findByRole('button', { name: /stop & review/i });
+    expect(stopButton).not.toBeDisabled();
+    await user.click(stopButton);
+
+    await waitFor(() => {
+      expect(finish).toHaveBeenCalledWith(session.id, expect.objectContaining({ ended_at: expect.any(String) }));
+    });
+    expect(await screen.findByText('Session review')).toBeInTheDocument();
   });
 });

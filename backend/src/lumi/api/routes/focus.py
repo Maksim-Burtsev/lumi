@@ -32,6 +32,16 @@ class FocusFinish(BaseModel):
     focus_score: int | None = Field(default=None, ge=1, le=5)
 
 
+class FocusUpdate(BaseModel):
+    task_id: uuid.UUID | None = None
+    project: str | None = Field(default=None, max_length=120)
+    intention: str | None = Field(default=None, min_length=1, max_length=300)
+    accomplished_text: str | None = Field(default=None, max_length=2000)
+    distraction_text: str | None = Field(default=None, max_length=2000)
+    next_step_text: str | None = Field(default=None, max_length=1000)
+    focus_score: int | None = Field(default=None, ge=1, le=5)
+
+
 class FocusLog(BaseModel):
     task_id: uuid.UUID | None = None
     project: str | None = Field(default=None, max_length=120)
@@ -88,10 +98,27 @@ async def focus_summary(
         "total_sessions": summary.total_sessions,
         "streak_days": summary.streak_days,
         "average_focus_score": summary.average_focus_score,
+        "average_daily_focus_seconds": summary.average_daily_focus_seconds,
+        "average_daily_focus_delta_percent": summary.average_daily_focus_delta_percent,
+        "total_focus_delta_percent": summary.total_focus_delta_percent,
+        "most_focused_daypart": summary.most_focused_daypart,
+        "daypart_breakdown": summary.daypart_breakdown,
         "daily_activity": summary.daily_activity,
         "project_breakdown": summary.project_breakdown,
         "next_steps": summary.next_steps,
     }
+
+
+@router.get("/focus/sessions")
+async def list_focus_sessions(
+    period: str = Query(default="week", pattern="^(week|month)$"),
+    limit: int = Query(default=100, ge=1, le=300),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    service = FocusService(session)
+    sessions = await service.list_sessions(user, period=period, limit=limit)
+    return {"items": [await _with_task(service, user, item) for item in sessions]}
 
 
 @router.post("/focus/sessions", status_code=201)
@@ -162,6 +189,34 @@ async def finish_focus_session(
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"session": await _with_task(service, user, focus_session)}
+
+
+@router.patch("/focus/sessions/{session_id}")
+async def update_focus_session(
+    session_id: str,
+    payload: FocusUpdate,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    service = FocusService(session)
+    focus_session = await _session_or_404(service, user, session_id)
+    try:
+        focus_session = await service.update_completed_session(
+            user,
+            focus_session,
+            intention=payload.intention,
+            task_id=payload.task_id,
+            project=payload.project,
+            accomplished_text=payload.accomplished_text,
+            distraction_text=payload.distraction_text,
+            next_step_text=payload.next_step_text,
+            focus_score=payload.focus_score,
+        )
+    except ValueError as exc:
+        code = str(exc)
+        status = 404 if code == "task_not_found" else 409
+        raise HTTPException(status_code=status, detail=code) from exc
     return {"session": await _with_task(service, user, focus_session)}
 
 

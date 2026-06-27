@@ -405,6 +405,16 @@ export interface FinishFocusSessionInput {
   focus_score?: number | null;
 }
 
+export interface UpdateFocusSessionInput {
+  task_id?: string | null;
+  project?: string | null;
+  intention?: string;
+  accomplished_text?: string | null;
+  distraction_text?: string | null;
+  next_step_text?: string | null;
+  focus_score?: number | null;
+}
+
 export interface LogFocusSessionInput {
   task_id?: string | null;
   project?: string | null;
@@ -419,6 +429,10 @@ export interface LogFocusSessionInput {
 
 export interface FocusSessionResponse {
   session: FocusSession;
+}
+
+export interface FocusSessionsResponse {
+  items: FocusSession[];
 }
 
 export interface FocusDailyActivity {
@@ -439,6 +453,11 @@ export interface FocusSummaryResponse {
   total_sessions: number;
   streak_days: number;
   average_focus_score: number | null;
+  average_daily_focus_seconds: number;
+  average_daily_focus_delta_percent: number | null;
+  total_focus_delta_percent: number | null;
+  most_focused_daypart: 'morning' | 'afternoon' | 'evening' | 'night' | null;
+  daypart_breakdown: Array<{ daypart: 'morning' | 'afternoon' | 'evening' | 'night'; focus_seconds: number }>;
   daily_activity: FocusDailyActivity[];
   project_breakdown: FocusProjectBreakdown[];
   next_steps: string[];

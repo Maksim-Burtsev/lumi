@@ -14,6 +14,7 @@ import type {
   CreateNewsTopicInput,
   CreateTaskInput,
   FinishFocusSessionInput,
+  FocusSessionsResponse,
   FocusSessionResponse,
   FocusStateResponse,
   FocusSummaryResponse,
@@ -48,6 +49,7 @@ import type {
   TasksResponse,
   TimezonesResponse,
   TodayResponse,
+  UpdateFocusSessionInput,
 } from './types';
 
 /** Errors: non-2xx responses return {"error": "<machine_code>", "detail": "<text>"} */
@@ -214,6 +216,10 @@ export class LumiApiClient {
     return request('GET', '/api/focus/summary', { query: { period } });
   }
 
+  listFocusSessions(period: 'week' | 'month' = 'week', limit = 100): Promise<FocusSessionsResponse> {
+    return request('GET', '/api/focus/sessions', { query: { period, limit } });
+  }
+
   startFocusSession(input: StartFocusSessionInput): Promise<FocusSessionResponse> {
     return request('POST', '/api/focus/sessions', { body: input });
   }
@@ -224,6 +230,10 @@ export class LumiApiClient {
 
   finishFocusSession(id: string, input: FinishFocusSessionInput): Promise<FocusSessionResponse> {
     return request('POST', `/api/focus/sessions/${id}/finish`, { body: input });
+  }
+
+  updateFocusSession(id: string, input: UpdateFocusSessionInput): Promise<FocusSessionResponse> {
+    return request('PATCH', `/api/focus/sessions/${id}`, { body: input });
   }
 
   abandonFocusSession(id: string): Promise<FocusSessionResponse> {
