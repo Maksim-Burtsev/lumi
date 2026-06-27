@@ -51,6 +51,7 @@ const INIT_PARAMS_STORAGE_KEY = '__telegram__initParams';
 const THEME_PARAMS_STORAGE_KEY = '__telegram__themeParams';
 
 let telegramSdkLoad: Promise<void> | null = null;
+let cachedInitParams: TelegramInitParams = {};
 
 export function getTelegramWebApp(): TelegramWebApp | null {
   if (typeof window === 'undefined') return null;
@@ -90,8 +91,9 @@ function readHashInitParams(): TelegramInitParams {
 function getTelegramInitParams(): TelegramInitParams {
   if (typeof window === 'undefined') return {};
 
-  const params = { ...readStoredInitParams(), ...readHashInitParams() };
+  const params = { ...cachedInitParams, ...readStoredInitParams(), ...readHashInitParams() };
   if (Object.keys(params).length > 0) {
+    cachedInitParams = params;
     try {
       window.sessionStorage.setItem(INIT_PARAMS_STORAGE_KEY, JSON.stringify(params));
     } catch {
@@ -99,6 +101,10 @@ function getTelegramInitParams(): TelegramInitParams {
     }
   }
   return params;
+}
+
+export function captureTelegramInitParams(): void {
+  void getTelegramInitParams();
 }
 
 function hasTelegramBridge(): boolean {
