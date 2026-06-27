@@ -2319,6 +2319,77 @@ async def test_agent_schedule_guard_ignores_schedule_mutation_text():
     assert request is None
 
 
+async def test_agent_schedule_guard_uses_recent_schedule_context_for_weekday_followup(monkeypatch):
+    async def fake_sync_all_calendars(
+        self,
+        user,
+        *,
+        start_at=None,
+        end_at=None,
+        days_ahead: int | None = None,
+        days_back: int | None = None,
+    ):
+        event_start = start_at + timedelta(hours=13)
+        await CalendarService(self.session).upsert_external_event(
+            user,
+            source=CalendarSource.YANDEX,
+            external_calendar_id="work",
+            external_event_id=f"follow-up-{start_at.date().isoformat()}",
+            title="Follow-up schedule check",
+            start_at=event_start,
+            end_at=event_start + timedelta(minutes=30),
+        )
+        return {"yandex": 1}
+
+    monkeypatch.setattr(
+        "lumi.services.planning.CalendarSyncService.sync_all_calendars",
+        fake_sync_all_calendars,
+    )
+    provider = AgentPlannerProvider([
+        {
+            "mode": "final_answer",
+            "tool_calls": [],
+            "final_answer": "Я бы ответил обычным текстом.",
+            "should_answer_normally": True,
+            "language": "ru",
+        },
+        {
+            "mode": "ask_user",
+            "tool_calls": [],
+            "final_answer": "Уточните, что именно нужно на понедельник?",
+            "should_answer_normally": True,
+            "language": "ru",
+        },
+    ])
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID, language_code="ru")
+        user.locale = "ru"
+        user.settings = {"locale_source": "manual", "reply_language_mode": "auto"}
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=48,
+            text="Покажи расписание на завтра",
+        )
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=49,
+            text="что насчет понедельника?",
+        )
+        tool_calls = (await session.execute(select(ToolCall).order_by(ToolCall.created_at))).scalars().all()
+
+    assert provider.final_chat_calls == 0
+    assert [call.tool_name for call in tool_calls] == ["read_calendar_events", "read_calendar_events"]
+    assert result.reply_text.startswith("📅")
+    assert "Follow-up schedule check" in result.reply_text
+    assert "Уточните" not in result.reply_text
+    assert result.reply_rich_html is not None
+    assert result.open_app_button is True
+
+
 async def test_agent_loop_reads_calendar_then_creates_block_with_localized_progress():
     progress_updates: list[str] = []
     provider = AgentPlannerProvider([

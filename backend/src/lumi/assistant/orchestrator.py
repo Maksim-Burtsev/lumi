@@ -157,6 +157,13 @@ SCHEDULE_DATE_REF_KEYWORDS = (
     r"завтра",
     r"недел",
 )
+SCHEDULE_CONTEXT_KEYWORDS = (
+    *SCHEDULE_READ_KEYWORDS,
+    r"external calendar sync",
+    r"scheduled events",
+    r"событ[ийя].*календар",
+    r"внешн.*синхронизац",
+)
 SCHEDULE_MUTATION_KEYWORDS = (
     r"\bschedule\s+(?:a|an|the|my|our)?\s*(?:meeting|call|event|block|focus|task|appointment)\b",
     r"\bbook\s+(?:a|an|the)?\s*(?:meeting|call|event|appointment)\b",
@@ -406,12 +413,33 @@ def _with_reply_language(user: User, text: str, plan: AgentPlan) -> AgentPlan:
     return plan if plan.language == language else plan.model_copy(update={"language": language})
 
 
-def _with_schedule_read_guard(user: User, text: str, plan: AgentPlan) -> AgentPlan:
-    if plan.tool_calls or plan.visual_intent != "none" or plan.needs_media_understanding:
+def _with_schedule_read_guard(
+    user: User,
+    text: str,
+    plan: AgentPlan,
+    *,
+    allow_implicit_date: bool = False,
+) -> AgentPlan:
+    request = _schedule_read_request_from_text(text, user, allow_implicit=allow_implicit_date)
+    if plan.tool_calls:
+        if (
+            request is not None
+            and plan.mode == "tool_calls"
+            and all(call.name == "read_calendar_events" for call in plan.tool_calls)
+        ):
+            return plan.model_copy(update={
+                "tool_calls": [
+                    call.model_copy(update={
+                        "evidence": [*call.evidence, "backend_guard:schedule_read"],
+                    })
+                    for call in plan.tool_calls
+                ]
+            })
+        return plan
+    if plan.visual_intent != "none" or plan.needs_media_understanding:
         return plan
     if plan.mode not in {"final_answer", "ask_user"}:
         return plan
-    request = _schedule_read_request_from_text(text, user)
     if request is None:
         return plan
     return plan.model_copy(update={
@@ -453,13 +481,19 @@ def _is_user_visible_schedule_read_plan(plan: AgentPlan, text: str, user: User) 
     )
 
 
-def _schedule_read_request_from_text(text: str, user: User) -> CalendarEventsRequest | None:
+def _schedule_read_request_from_text(
+    text: str,
+    user: User,
+    *,
+    allow_implicit: bool = False,
+) -> CalendarEventsRequest | None:
     lowered = text.lower()
     if not lowered.strip():
         return None
     if _matches_any(lowered, SCHEDULE_MUTATION_KEYWORDS):
         return None
-    if not _matches_any(lowered, SCHEDULE_READ_KEYWORDS):
+    has_schedule_keyword = _matches_any(lowered, SCHEDULE_READ_KEYWORDS)
+    if not has_schedule_keyword and not allow_implicit:
         return None
 
     today = local_now(user.timezone).date()
@@ -504,6 +538,10 @@ def _requested_weekday(text: str) -> int | None:
 
 def _matches_any(text: str, patterns: tuple[str, ...]) -> bool:
     return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+
+def _text_has_schedule_read_context(text: str) -> bool:
+    return _matches_any(text.lower(), SCHEDULE_CONTEXT_KEYWORDS)
 
 
 def _safe_action_failure_reply(language: str | None, reason: str) -> str:
@@ -995,6 +1033,10 @@ class AssistantOrchestrator:
             user=user,
             conversation=conversation,
         )
+        schedule_followup_context = await self._recent_schedule_read_context(
+            conversation_id=conversation.id,
+            exclude_message_id=inbound.id,
+        )
         plan = await self.planner.plan(
             user=user,
             text=text,
@@ -1011,7 +1053,12 @@ class AssistantOrchestrator:
             planner_context=planner_context,
         )
         plan = _with_reply_language(user, text, plan)
-        plan = _with_schedule_read_guard(user, text, plan)
+        plan = _with_schedule_read_guard(
+            user,
+            text,
+            plan,
+            allow_implicit_date=schedule_followup_context,
+        )
         selected_media = _selected_or_current_media(plan, available_media, current_media)
         focused_question_override: str | None = None
         if selected_media is None and available_media and text.strip():
@@ -1095,7 +1142,12 @@ class AssistantOrchestrator:
                 planner_context=planner_context,
             )
             plan = _with_reply_language(user, text, plan)
-            plan = _with_schedule_read_guard(user, text, plan)
+            plan = _with_schedule_read_guard(
+                user,
+                text,
+                plan,
+                allow_implicit_date=schedule_followup_context,
+            )
             selected_media = _selected_or_current_media(plan, available_media, selected_media)
             if selected_media is not None:
                 selected_image = selected_media.image or selected_image
@@ -1562,6 +1614,24 @@ class AssistantOrchestrator:
                 if len(candidates) >= limit:
                     return candidates
         return candidates
+
+    async def _recent_schedule_read_context(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        exclude_message_id: uuid.UUID,
+    ) -> bool:
+        result = await self.session.execute(
+            select(Message)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.id != exclude_message_id,
+                Message.role.in_([MessageRole.USER, MessageRole.ASSISTANT]),
+            )
+            .order_by(Message.created_at.desc())
+            .limit(6)
+        )
+        return any(_text_has_schedule_read_context(message.content or "") for message in result.scalars())
 
     async def _ensure_candidate_image(
         self,
