@@ -49,11 +49,6 @@ const STATUS_CLASSES: Record<GoogleStatus['status'], string> = {
   needs_reauth: 'bg-[var(--danger-soft)] text-danger',
 };
 
-const LANGUAGE_OPTIONS = [
-  { value: 'en', label: 'English' },
-  { value: 'ru', label: 'Русский' },
-];
-
 type PlanningSettings = {
   work_days: number[];
   work_hours: { start: string; end: string };
@@ -186,14 +181,6 @@ const COPY = {
     noPushes: 'No pushes',
     allSuggestions: 'All',
     rhythmSaved: 'Work rhythm saved',
-    appLanguage: 'App language',
-    botReplies: 'Bot replies',
-    replyAuto: 'Auto: match each message',
-    replyAppLocale: 'Use app language',
-    languageSaved: 'Language saved',
-    languageSaveFailed: 'Could not save language',
-    replyLanguageSaved: 'Reply language saved',
-    replyLanguageSaveFailed: 'Could not save reply language',
     timezoneSaved: 'Time zone saved',
     timeFormatSaved: 'Time format saved',
     saveFailed: 'Could not save',
@@ -266,14 +253,6 @@ const COPY = {
     noPushes: 'Без пушей',
     allSuggestions: 'Все',
     rhythmSaved: 'Рабочий ритм сохранён',
-    appLanguage: 'Язык приложения',
-    botReplies: 'Ответы бота',
-    replyAuto: 'Авто: язык каждого сообщения',
-    replyAppLocale: 'Язык приложения',
-    languageSaved: 'Язык сохранен',
-    languageSaveFailed: 'Не удалось сохранить язык',
-    replyLanguageSaved: 'Язык ответов сохранен',
-    replyLanguageSaveFailed: 'Не удалось сохранить язык ответов',
     timezoneSaved: 'Часовой пояс сохранён',
     timeFormatSaved: 'Формат времени сохранён',
     saveFailed: 'Не удалось сохранить',
@@ -385,9 +364,6 @@ export default function SettingsPage() {
   const googleStatus = { label: statusLabels[google.status], className: STATUS_CLASSES[google.status] };
   const yandexStatus = { label: statusLabels[yandex.status], className: STATUS_CLASSES[yandex.status] };
   const yandexConnected = yandex.status === 'connected' || yandex.status === 'needs_reauth';
-  const replyLanguageMode = typeof user.settings.reply_language_mode === 'string'
-    ? user.settings.reply_language_mode
-    : 'auto';
   const timeFormat = normalizeTimeFormat(user.settings.time_format);
   const themeMode = optimisticThemeMode ?? normalizeThemeMode(user.settings.theme_mode);
   const timeDisplay = { locale, timeFormat, timezone: user.timezone };
@@ -424,27 +400,6 @@ export default function SettingsPage() {
           if (data.run_id) setYandexSyncRunId(data.run_id);
         },
         onError: () => show(copy.yandexRejected, 'error'),
-      },
-    );
-  };
-
-  const handleLocale = (locale: string) => {
-    const targetCopy = COPY[normalizeAppLocale(locale)];
-    patchSettings.mutate(
-      { locale },
-      {
-        onSuccess: () => show(targetCopy.languageSaved, 'success'),
-        onError: () => show(targetCopy.languageSaveFailed, 'error'),
-      },
-    );
-  };
-
-  const handleReplyLanguageMode = (reply_language_mode: string) => {
-    patchSettings.mutate(
-      { reply_language_mode: reply_language_mode as 'auto' | 'app_locale' },
-      {
-        onSuccess: () => show(copy.replyLanguageSaved, 'success'),
-        onError: () => show(copy.replyLanguageSaveFailed, 'error'),
       },
     );
   };
@@ -546,18 +501,6 @@ export default function SettingsPage() {
               {user.username && <p className="truncate text-[13px] text-hint">@{user.username}</p>}
             </div>
           </div>
-          <label className="mt-4 block">
-            <FieldLabel>{copy.botReplies}</FieldLabel>
-            <Select
-              value={replyLanguageMode}
-              ariaLabel={copy.botReplies}
-              onChange={handleReplyLanguageMode}
-              options={[
-                { value: 'auto', label: copy.replyAuto },
-                { value: 'app_locale', label: copy.replyAppLocale },
-              ]}
-            />
-          </label>
         </Card>
       </Rise>
 
@@ -600,17 +543,6 @@ export default function SettingsPage() {
               timezone={user.timezone}
             />
           </div>
-          <label className="flex min-h-[68px] items-center justify-between gap-3 border-t border-hairline px-4 py-3">
-            <span className="min-w-0 text-[13.5px] font-medium text-ink">{copy.appLanguage}</span>
-            <span className="w-[132px] shrink-0">
-              <Select
-                value={user.locale || 'en'}
-                ariaLabel={copy.appLanguage}
-                onChange={handleLocale}
-                options={LANGUAGE_OPTIONS}
-              />
-            </span>
-          </label>
         </Card>
       </Rise>
 

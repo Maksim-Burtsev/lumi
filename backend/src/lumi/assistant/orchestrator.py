@@ -87,8 +87,6 @@ from lumi.i18n import (
     ensure_language_settings,
     format_language_settings_reply,
     normalize_reply_language,
-    normalize_reply_language_mode,
-    validate_app_locale,
     validate_time_format,
 )
 from lumi.llm.gateway import LLMGateway
@@ -166,7 +164,7 @@ AGENT_LOOP_MAX_MODEL_STEPS = 4
 AGENT_LOOP_MAX_TOOL_CALLS = 8
 CALENDAR_TELEGRAM_EVENT_LIMIT = 5
 CALENDAR_TELEGRAM_FREE_GAP_MINUTES = 15
-NEUTRAL_PROGRESS_STATUS = "⏳"
+NEUTRAL_PROGRESS_STATUS = "Working on it..."
 READ_ONLY_LOOP_TOOLS = {
     "read_tasks",
     "read_calendar_events",
@@ -592,12 +590,6 @@ def _reply_result(reply_text: str, *, run_id: uuid.UUID, needs_compaction: bool)
 
 
 def _reply_language_for_turn(user: User, text: str, planner_language: str | None) -> str:
-    language_settings = ensure_language_settings(user.settings)
-    mode = language_settings.get("reply_language_mode")
-    if mode == "fixed":
-        return normalize_reply_language(str(language_settings.get("reply_language") or "en"))
-    if mode == "app_locale":
-        return normalize_reply_language(user.locale)
     return normalize_reply_language(planner_language)
 
 
@@ -795,20 +787,37 @@ def _safe_no_answer_reply(language: str | None) -> str:
     return "I could not choose a safe response. Please rephrase."
 
 
-def _safe_user_visible_status(status: str | None, *, language: str | None = None) -> str:
+def _progress_status_for_kind(progress_kind: str | None) -> str:
+    return {
+        "understanding": "Reading message...",
+        "reading_calendar": "Checking your calendar...",
+        "resolving": "Working on it...",
+        "writing": "Making changes...",
+        "answering": "Preparing reply...",
+    }.get(str(progress_kind or ""), NEUTRAL_PROGRESS_STATUS)
+
+
+def _safe_user_visible_status(
+    status: str | None,
+    *,
+    language: str | None = None,
+    progress_kind: str | None = None,
+) -> str:
+    fallback = _progress_status_for_kind(progress_kind)
     if status is None:
-        return NEUTRAL_PROGRESS_STATUS
+        return fallback
+    if (language or "").split("-", 1)[0].lower() != "en":
+        return fallback
     text = " ".join(str(status).split()).strip()
     if not text or len(text) > 80:
-        return NEUTRAL_PROGRESS_STATUS
+        return fallback
     lower = text.lower()
     if any(marker in lower for marker in ("http://", "https://", "www.")):
-        return NEUTRAL_PROGRESS_STATUS
+        return fallback
     if any(marker in text for marker in ("[", "](", "<", ">")):
-        return NEUTRAL_PROGRESS_STATUS
-    if (language or "").split("-", 1)[0].lower() in {"en", "it", "es", "de", "fr", "pt"}:
-        if any("а" <= char.lower() <= "я" or char.lower() == "ё" for char in text):
-            return NEUTRAL_PROGRESS_STATUS
+        return fallback
+    if any(ord(char) > 127 for char in text):
+        return fallback
     done_claims = (
         "done",
         "created",
@@ -826,7 +835,7 @@ def _safe_user_visible_status(status: str | None, *, language: str | None = None
         "completato",
     )
     if any(marker in lower for marker in done_claims):
-        return NEUTRAL_PROGRESS_STATUS
+        return fallback
     return text
 
 
@@ -1526,7 +1535,7 @@ class AssistantOrchestrator:
         current_media: MediaCandidate | None = None
         selected_image = image
         if image:
-            await progress("👁️ Inspecting image…")
+            await progress("Inspecting image...")
             media_context = await self.media_understanding.analyze(
                 user_id=user.id,
                 timezone=user.timezone,
@@ -1657,7 +1666,7 @@ class AssistantOrchestrator:
                 needs_compaction = await self._needs_compaction(conversation)
                 return _reply_result(reply_text, run_id=run.id, needs_compaction=needs_compaction)
 
-            await progress("👁️ Inspecting image…")
+            await progress("Inspecting image...")
             media_context = await self.media_understanding.analyze(
                 user_id=user.id,
                 timezone=user.timezone,
@@ -1797,7 +1806,7 @@ class AssistantOrchestrator:
             if selected_media is not None and selected_image is None:
                 selected_image = await self._ensure_candidate_image(selected_media, image_loader)
             if selected_media is not None and media_context is None and selected_image is not None:
-                await progress("👁️ Inspecting image…")
+                await progress("Inspecting image...")
                 media_context = await self.media_understanding.analyze(
                     user_id=user.id,
                     timezone=user.timezone,
@@ -1828,7 +1837,7 @@ class AssistantOrchestrator:
                     needs_compaction=needs_compaction,
                 )
 
-            await progress("🔎 Checking image detail…")
+            await progress("Checking image detail...")
             focused_result = await self.focused_vision.analyze(
                 user_id=user.id,
                 timezone=user.timezone,
@@ -2044,8 +2053,8 @@ class AssistantOrchestrator:
 
         # 6-7. Final reply
         await progress(
-            "✍️ Writing reply…" if not action_results
-            else "✍️ Action done. Writing reply…"
+            "Writing reply..." if not action_results
+            else "Action done. Writing reply..."
         )
         try:
             context = await self.context_builder.build(
@@ -2296,7 +2305,11 @@ class AssistantOrchestrator:
                 stop_reason = "tool_call_limit_reached"
                 break
 
-            await progress(_safe_user_visible_status(plan.user_visible_status, language=plan.language))
+            await progress(_safe_user_visible_status(
+                plan.user_visible_status,
+                language=plan.language,
+                progress_kind=plan.progress_kind,
+            ))
             (
                 step_results,
                 step_outcomes,
@@ -2331,7 +2344,11 @@ class AssistantOrchestrator:
                 "tool_names": [call.name for call in plan.tool_calls],
                 "tool_count": len(plan.tool_calls),
                 "progress_kind": plan.progress_kind,
-                "status": _safe_user_visible_status(plan.user_visible_status, language=plan.language),
+                "status": _safe_user_visible_status(
+                    plan.user_visible_status,
+                    language=plan.language,
+                    progress_kind=plan.progress_kind,
+                ),
                 "observation_count": len(step_observations),
                 "requires_confirmation": has_confirmation,
             })
@@ -2751,77 +2768,14 @@ class AssistantOrchestrator:
         outcomes: list[ActionOutcome],
     ) -> None:
         args = dict(call.args)
-        updates: dict[str, str] = {}
-        current_settings = ensure_language_settings(user.settings)
-        app_locale_raw = args.get("app_locale") or args.get("locale")
-        if app_locale_raw is not None:
-            try:
-                app_locale = validate_app_locale(str(app_locale_raw))
-            except ValueError:
-                await self.runs.log_tool_call(
-                    run=run,
-                    tool_name="set_language",
-                    status="skipped",
-                    args=args,
-                    result={"reason": "unsupported_locale"},
-                )
-                fallback = "Unsupported app language. Use English or Russian."
-                results.append(fallback)
-                outcomes.append(ActionOutcome(
-                    action_type="set_language",
-                    status="skipped",
-                    fallback_text=fallback,
-                    error_code="unsupported_locale",
-                ))
-                return
-            user.locale = app_locale
-            current_settings["locale_source"] = "manual"
-            updates["app_locale"] = app_locale
-        mode_raw = args.get("reply_language_mode")
-        if mode_raw is not None:
-            mode = normalize_reply_language_mode(str(mode_raw))
-            current_settings["reply_language_mode"] = mode
-            updates["reply_language_mode"] = mode
-        reply_language_raw = args.get("reply_language")
-        if reply_language_raw is not None:
-            reply_language = normalize_reply_language(str(reply_language_raw))
-            current_settings["reply_language"] = reply_language
-            updates["reply_language"] = reply_language
-        if not updates:
-            await self.runs.log_tool_call(
-                run=run,
-                tool_name="set_language",
-                status="skipped",
-                args=args,
-                result={"reason": "no_language_updates"},
-            )
-            fallback = "I did not understand which language setting to change."
-            results.append(fallback)
-            outcomes.append(ActionOutcome(
-                action_type="set_language",
-                status="skipped",
-                fallback_text=fallback,
-                error_code="no_language_updates",
-            ))
-            return
-
-        user.settings = current_settings
+        user.locale = "en"
+        user.settings = ensure_language_settings(user.settings)
         await self.runs.log_tool_call(
             run=run,
             tool_name="set_language",
-            status="completed",
+            status="skipped",
             args=args,
-            result={
-                "locale": user.locale,
-                "reply_language_mode": user.settings["reply_language_mode"],
-                "reply_language": user.settings.get("reply_language"),
-            },
-        )
-        await RealtimeEventService(self.session).emit(
-            user_id=user.id,
-            topics=["settings"],
-            event_type="settings.updated",
-            payload={},
+            result={"reason": "language_settings_not_configurable"},
         )
         fallback = format_language_settings_reply(
             app_locale=user.locale,
@@ -2832,10 +2786,10 @@ class AssistantOrchestrator:
         results.append(fallback)
         outcomes.append(ActionOutcome(
             action_type="set_language",
-            status="completed",
+            status="skipped",
             fallback_text=fallback,
+            error_code="language_settings_not_configurable",
             details={
-                "updates": updates,
                 "app_locale": user.locale,
                 "reply_language_mode": user.settings.get("reply_language_mode"),
                 "reply_language": user.settings.get("reply_language"),
@@ -3858,6 +3812,12 @@ class AssistantOrchestrator:
         args = {**request.model_dump(mode="json"), **_call_source_payload(call)}
         updates: dict[str, Any] = {}
         settings = ensure_language_settings(user.settings)
+        user.locale = "en"
+        language_update_requested = any((
+            request.locale,
+            request.reply_language_mode,
+            request.reply_language,
+        ))
         if request.timezone:
             try:
                 user.timezone = validate_timezone_name(request.timezone)
@@ -3869,24 +3829,6 @@ class AssistantOrchestrator:
                 results.append("Invalid timezone.")
                 return
             updates["timezone"] = user.timezone
-        if request.locale:
-            try:
-                user.locale = validate_app_locale(request.locale)
-            except ValueError:
-                await self.runs.log_tool_call(
-                    run=run, tool_name="update_settings", status="skipped",
-                    args=args, result={"reason": "invalid_locale"},
-                )
-                results.append("Invalid app locale.")
-                return
-            settings["locale_source"] = "manual"
-            updates["locale"] = user.locale
-        if request.reply_language_mode:
-            settings["reply_language_mode"] = normalize_reply_language_mode(request.reply_language_mode)
-            updates["reply_language_mode"] = settings["reply_language_mode"]
-        if request.reply_language:
-            settings["reply_language"] = normalize_reply_language(request.reply_language)
-            updates["reply_language"] = settings["reply_language"]
         if request.time_format is not None:
             try:
                 settings["time_format"] = validate_time_format(request.time_format)
@@ -3899,11 +3841,21 @@ class AssistantOrchestrator:
                 return
             updates["time_format"] = settings["time_format"]
         if not updates:
+            reason = "language_settings_not_configurable" if language_update_requested else "no_updates"
             await self.runs.log_tool_call(
                 run=run, tool_name="update_settings", status="skipped",
-                args=args, result={"reason": "no_updates"},
+                args=args, result={"reason": reason},
             )
-            results.append("No settings updates provided.")
+            results.append(
+                format_language_settings_reply(
+                    app_locale=user.locale,
+                    reply_language_mode=str(settings.get("reply_language_mode") or "auto"),
+                    reply_language=str(settings.get("reply_language") or "en"),
+                    language=None,
+                )
+                if language_update_requested
+                else "No settings updates provided."
+            )
             return
         user.settings = ensure_language_settings(settings)
         await RealtimeEventService(self.session).emit(

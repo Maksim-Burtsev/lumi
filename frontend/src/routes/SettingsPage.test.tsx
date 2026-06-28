@@ -91,36 +91,31 @@ beforeEach(() => {
 });
 
 describe('SettingsPage language settings', () => {
-  it('lets the user change app language and bot reply mode', async () => {
-    const user = userEvent.setup();
+  it('always renders English settings and hides language controls', async () => {
     vi.spyOn(api, 'health').mockResolvedValue({ status: 'ok', app: 'Lumi', env: 'local', version: '0.1.0' });
-    vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettingsResponse());
+    vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettingsResponse(makeUser({
+      locale: 'ru',
+      settings: {
+        reply_language_mode: 'app_locale',
+        reply_language: 'ru',
+        time_format: 'auto',
+        theme_mode: 'telegram',
+      },
+    })));
     vi.spyOn(api, 'getTimezones').mockResolvedValue(TIMEZONES_RESPONSE);
-    const patchSpy = vi.spyOn(api, 'patchSettings').mockImplementation(async (input): Promise<MeResponse> => ({
-      user: makeUser({
-        locale: input.locale ?? 'en',
-        settings: {
-          reply_language_mode: input.reply_language_mode ?? 'auto',
-          time_format: '24h',
-          locale_source: input.locale ? 'manual' : 'telegram',
-        },
-      }),
-    }));
+    const patchSpy = vi.spyOn(api, 'patchSettings');
 
     renderSettingsPage();
 
-    expect(await screen.findByText('App language')).toBeInTheDocument();
-    await user.selectOptions(screen.getByDisplayValue('English'), 'ru');
-
-    await waitFor(() => {
-      expect(patchSpy).toHaveBeenCalledWith({ locale: 'ru' });
-    });
-
-    await user.selectOptions(screen.getByDisplayValue('Auto: match each message'), 'app_locale');
-
-    await waitFor(() => {
-      expect(patchSpy).toHaveBeenCalledWith({ reply_language_mode: 'app_locale' });
-    });
+    expect(await screen.findByText('Appearance')).toBeInTheDocument();
+    expect(screen.getByText('Regional settings')).toBeInTheDocument();
+    expect(screen.getByText('Work rhythm')).toBeInTheDocument();
+    expect(screen.queryByText('App language')).not.toBeInTheDocument();
+    expect(screen.queryByText('Bot replies')).not.toBeInTheDocument();
+    expect(screen.queryByText('Русский')).not.toBeInTheDocument();
+    expect(screen.queryByText('Auto: match each message')).not.toBeInTheDocument();
+    expect(screen.queryByText('Use app language')).not.toBeInTheDocument();
+    expect(patchSpy).not.toHaveBeenCalled();
   });
 
   it('lets the user search and select a rare timezone', async () => {
@@ -369,12 +364,13 @@ describe('SettingsPage language settings', () => {
 
     renderSettingsPage();
 
-    expect(await screen.findByText('Рабочий ритм')).toBeInTheDocument();
-    expect(screen.getByText('Рабочие дни')).toBeInTheDocument();
-    expect(screen.getByText('Рабочие часы')).toBeInTheDocument();
-    expect(screen.getByText('Тихие часы')).toBeInTheDocument();
-    expect(screen.getByText('Проактивность Lumi')).toBeInTheDocument();
-    expect(screen.getByText('Показывать задачи для свободных окон от 5 минут')).toBeInTheDocument();
+    expect(await screen.findByText('Work rhythm')).toBeInTheDocument();
+    expect(screen.getByText('Work days')).toBeInTheDocument();
+    expect(screen.getByText('Work hours')).toBeInTheDocument();
+    expect(screen.getByText('Quiet hours')).toBeInTheDocument();
+    expect(screen.getByText('Lumi proactivity')).toBeInTheDocument();
+    expect(screen.getByText('Show tasks for free windows from 5 minutes')).toBeInTheDocument();
+    expect(screen.queryByText('Рабочий ритм')).not.toBeInTheDocument();
   });
 
   it('shows a distinct description for each Lumi proactivity mode', async () => {
