@@ -1344,14 +1344,27 @@ class AssistantOrchestrator:
             plan=plan,
             available_media=available_media,
         )
+        if (
+            should_resolve_media_reference
+            and selected_media is not None
+            and selected_media.source == "recent"
+            and plan.mode == "final_answer"
+            and not plan.needs_media_understanding
+            and not plan.tool_calls
+            and _text_likely_references_media(text)
+        ):
+            focused_question_override = text.strip()
+            plan = plan.model_copy(update={
+                "mode": "needs_focused_vision",
+                "visual_intent": "read_only" if plan.visual_intent == "none" else plan.visual_intent,
+                "focused_vision": FocusedVisionRequest(
+                    question=focused_question_override,
+                    reason="The user asks for a specific detail from the selected recent image.",
+                    confidence=0.8,
+                ),
+            })
         if should_resolve_media_reference and (
             selected_media is None
-            or (
-                selected_media.source == "recent"
-                and plan.mode == "final_answer"
-                and not plan.needs_media_understanding
-                and _text_likely_references_media(text)
-            )
         ):
             await progress(_backend_progress_status(
                 plan.language,

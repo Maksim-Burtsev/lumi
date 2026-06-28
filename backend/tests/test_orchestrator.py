@@ -879,7 +879,7 @@ async def test_text_followup_uses_media_path_for_explicit_recent_media_reference
         tasks = (await session.execute(select(Task))).scalars().all()
         tool_calls = (await session.execute(select(ToolCall))).scalars().all()
 
-    assert provider.calls == ["agent_planner", "media_reference", "focused_vision"]
+    assert provider.calls == ["agent_planner", "focused_vision"]
     assert "available_media" in provider.planner_prompts[0]
     assert "recent:telegram-unique" in provider.planner_prompts[0]
     assert "Serial number (S/N) highlighted in red: LXRJ00C058135065891601" in provider.planner_prompts[0]
