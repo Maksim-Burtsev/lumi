@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import calendar
 from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
 
 from lumi.api.deps import get_current_user
+from lumi.db.models import FocusSession, FocusSessionStatus
 from lumi.db.session import session_scope
 from lumi.main import app
 from lumi.services.tasks import TaskService
@@ -260,3 +262,66 @@ async def test_focus_sessions_list_and_patch_completed_review(client):
         "next_step_text": "Retest",
         "focus_score": 5,
     }
+
+
+async def test_focus_month_summary_uses_calendar_month_days(client):
+    now = datetime.now(UTC)
+    response = await client.get("/api/focus/summary", params={"period": "month"})
+
+    assert response.status_code == 200
+    body = response.json()
+    _, days_in_month = calendar.monthrange(now.year, now.month)
+    assert len(body["daily_activity"]) == days_in_month
+    assert body["daily_activity"][0]["date"] == datetime(now.year, now.month, 1).date().isoformat()
+    assert body["daily_activity"][-1]["date"] == datetime(now.year, now.month, days_in_month).date().isoformat()
+
+
+async def test_focus_delete_completed_session_updates_summary_and_forbids_active_or_other_user(client, db_session):
+    completed = await client.post(
+        "/api/focus/sessions/log",
+        json={
+            "project": "Delete QA",
+            "intention": "Delete me",
+            "logged_at": datetime.now(UTC).isoformat(),
+            "duration_minutes": 30,
+        },
+    )
+    assert completed.status_code == 201
+    completed_id = completed.json()["session"]["id"]
+
+    before = await client.get("/api/focus/summary", params={"period": "week"})
+    assert before.status_code == 200
+    assert before.json()["total_focus_seconds"] >= 30 * 60
+
+    delete_completed = await client.delete(f"/api/focus/sessions/{completed_id}")
+    assert delete_completed.status_code == 204
+
+    after = await client.get("/api/focus/summary", params={"period": "week"})
+    assert after.status_code == 200
+    assert after.json()["total_focus_seconds"] == before.json()["total_focus_seconds"] - 30 * 60
+
+    active = await client.post(
+        "/api/focus/sessions",
+        json={"project": "Delete QA", "intention": "Active cannot delete", "planned_minutes": 25},
+    )
+    assert active.status_code == 201
+    delete_active = await client.delete(f"/api/focus/sessions/{active.json()['session']['id']}")
+    assert delete_active.status_code == 409
+    assert delete_active.json() == {"error": "focus_session_active"}
+
+    other_user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID + 100)
+    other_session = FocusSession(
+        user_id=other_user.id,
+        intention="Other user",
+        planned_minutes=15,
+        status=FocusSessionStatus.COMPLETED,
+        started_at=datetime.now(UTC) - timedelta(minutes=20),
+        target_end_at=datetime.now(UTC) - timedelta(minutes=5),
+        ended_at=datetime.now(UTC) - timedelta(minutes=5),
+        duration_seconds=15 * 60,
+    )
+    db_session.add(other_session)
+    await db_session.commit()
+
+    delete_other = await client.delete(f"/api/focus/sessions/{other_session.id}")
+    assert delete_other.status_code == 404

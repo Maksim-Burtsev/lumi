@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -218,6 +218,21 @@ async def update_focus_session(
         status = 404 if code == "task_not_found" else 409
         raise HTTPException(status_code=status, detail=code) from exc
     return {"session": await _with_task(service, user, focus_session)}
+
+
+@router.delete("/focus/sessions/{session_id}", status_code=204)
+async def delete_focus_session(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> Response:
+    service = FocusService(session)
+    focus_session = await _session_or_404(service, user, session_id)
+    try:
+        await service.delete_session(user, focus_session)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return Response(status_code=204)
 
 
 @router.post("/focus/sessions/{session_id}/abandon")

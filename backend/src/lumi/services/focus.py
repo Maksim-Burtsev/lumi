@@ -92,20 +92,29 @@ class FocusService:
         )
         return result.scalar_one_or_none()
 
-    async def list_sessions(self, user: User, *, period: str, limit: int = 100) -> list[FocusSession]:
+    def period_bounds(self, user: User, period: str) -> tuple[datetime, datetime, int]:
         now = utc_now()
         today_start, today_end = local_day_bounds(now, user.timezone)
         if period == "month":
-            start = today_start - timedelta(days=29)
-        else:
-            start = today_start - timedelta(days=6)
+            zone = get_zone(user.timezone)
+            local_now = now.astimezone(zone)
+            local_start = local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            if local_start.month == 12:
+                local_end = local_start.replace(year=local_start.year + 1, month=1)
+            else:
+                local_end = local_start.replace(month=local_start.month + 1)
+            return local_start, local_end, (local_end.date() - local_start.date()).days
+        return today_start - timedelta(days=6), today_end, 7
+
+    async def list_sessions(self, user: User, *, period: str, limit: int = 100) -> list[FocusSession]:
+        start, end, _ = self.period_bounds(user, period)
         result = await self.session.execute(
             select(FocusSession)
             .where(
                 FocusSession.user_id == user.id,
                 FocusSession.status == FocusSessionStatus.COMPLETED,
                 FocusSession.started_at >= start,
-                FocusSession.started_at < today_end,
+                FocusSession.started_at < end,
             )
             .order_by(FocusSession.started_at.desc())
             .limit(limit)
@@ -170,6 +179,14 @@ class FocusService:
         focus_session.focus_score = focus_score
         await self.session.flush()
         return focus_session
+
+    async def delete_session(self, user: User, focus_session: FocusSession) -> None:
+        if focus_session.user_id != user.id:
+            raise ValueError("focus_session_not_found")
+        if focus_session.status == FocusSessionStatus.ACTIVE:
+            raise ValueError("focus_session_active")
+        await self.session.delete(focus_session)
+        await self.session.flush()
 
     async def log_session(
         self,
@@ -278,16 +295,10 @@ class FocusService:
         return streak
 
     async def summary(self, user: User, *, period: str) -> FocusSummary:
-        now = utc_now()
-        today_start, today_end = local_day_bounds(now, user.timezone)
-        if period == "month":
-            start = today_start - timedelta(days=29)
-            bucket_count = 30
-        else:
+        if period != "month":
             period = "week"
-            start = today_start - timedelta(days=6)
-            bucket_count = 7
-        sessions = await self.completed_between(user, start, today_end)
+        start, end, bucket_count = self.period_bounds(user, period)
+        sessions = await self.completed_between(user, start, end)
 
         zone = get_zone(user.timezone)
         start_local_date = start.astimezone(zone).date()
@@ -297,6 +308,7 @@ class FocusService:
                 "date": (start_local_date + timedelta(days=i)).isoformat(),
                 "focus_seconds": 0,
                 "session_count": 0,
+                "_scores": [],
             }
             for i in range(bucket_count)
         }
@@ -324,6 +336,8 @@ class FocusService:
             if day_index in by_day:
                 by_day[day_index]["focus_seconds"] += seconds
                 by_day[day_index]["session_count"] += 1
+                if item.focus_score is not None:
+                    by_day[day_index]["_scores"].append(item.focus_score)
             if item.focus_score is not None:
                 scores.append(item.focus_score)
             if item.next_step_text:
@@ -358,6 +372,15 @@ class FocusService:
         ]
         most_focused_daypart = daypart_breakdown[0]["daypart"] if daypart_breakdown and daypart_breakdown[0]["focus_seconds"] else None
         avg_score = round(sum(scores) / len(scores), 1) if scores else None
+        daily_activity = []
+        for values in by_day.values():
+            day_scores = values.pop("_scores")
+            daily_activity.append(
+                {
+                    **values,
+                    "average_focus_score": round(sum(day_scores) / len(day_scores), 1) if day_scores else None,
+                }
+            )
         return FocusSummary(
             period=period,
             total_focus_seconds=total_seconds,
@@ -369,7 +392,7 @@ class FocusService:
             total_focus_delta_percent=total_delta,
             most_focused_daypart=most_focused_daypart,
             daypart_breakdown=daypart_breakdown,
-            daily_activity=list(by_day.values()),
+            daily_activity=daily_activity,
             project_breakdown=breakdown,
             next_steps=next_steps[:5],
         )

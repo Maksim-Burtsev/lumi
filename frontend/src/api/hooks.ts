@@ -410,6 +410,16 @@ export function useUpdateFocusSession() {
   });
 }
 
+export function useDeleteFocusSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteFocusSession(id),
+    onSuccess: () => {
+      invalidateFocusQueries(queryClient);
+    },
+  });
+}
+
 export function useAbandonFocusSession() {
   const queryClient = useQueryClient();
   return useMutation({

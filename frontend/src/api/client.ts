@@ -131,6 +131,7 @@ async function request<T>(method: Method, path: string, options: RequestOptions 
     throw new ApiError(response.status, code, detail);
   }
 
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 
@@ -215,6 +216,10 @@ export class LumiApiClient {
 
   updateFocusSession(id: string, input: UpdateFocusSessionInput): Promise<FocusSessionResponse> {
     return request('PATCH', `/api/focus/sessions/${id}`, { body: input });
+  }
+
+  deleteFocusSession(id: string): Promise<void> {
+    return request('DELETE', `/api/focus/sessions/${id}`);
   }
 
   abandonFocusSession(id: string): Promise<FocusSessionResponse> {
