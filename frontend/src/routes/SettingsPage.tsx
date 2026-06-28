@@ -1,7 +1,6 @@
-import { useEffect, useState, type FocusEvent } from 'react';
-import { Check, ChevronDown, Minus } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Check, Minus } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
-import { flushSync } from 'react-dom';
 import { ApiError, api } from '../api/client';
 import { openExternalLink } from '../telegram/webapp';
 import { qk, useConnectYandex, useDisconnectGoogle, useDisconnectYandex, useHealth, usePatchSettings, useRunPoller, useSettings } from '../api/hooks';
@@ -174,85 +173,6 @@ function shortScope(scope: string): string {
   return scope.replace('https://www.googleapis.com/auth/', '');
 }
 
-function ThemeModeControl({
-  value,
-  onChange,
-  copy,
-}: {
-  value: ThemeMode;
-  onChange: (value: ThemeMode) => void;
-  copy: { theme: string; themeTelegram: string; themeLight: string; themeDark: string };
-}) {
-  const [open, setOpen] = useState(false);
-  const options: { value: ThemeMode; label: string }[] = [
-    { value: 'telegram', label: copy.themeTelegram },
-    { value: 'light', label: copy.themeLight },
-    { value: 'dark', label: copy.themeDark },
-  ];
-  const selected = options.find((option) => option.value === value) ?? options[0];
-  const listboxId = 'theme-mode-options';
-
-  const handleBlur = (event: FocusEvent<HTMLDivElement>) => {
-    const nextTarget = event.relatedTarget;
-    if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
-      setOpen(false);
-    }
-  };
-
-  const handleSelect = (nextThemeMode: ThemeMode) => {
-    flushSync(() => setOpen(false));
-    onChange(nextThemeMode);
-  };
-
-  return (
-    <div
-      className="relative w-full sm:w-[178px]"
-      onBlur={handleBlur}
-    >
-      <button
-        type="button"
-        aria-label={copy.theme}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-controls={open ? listboxId : undefined}
-        onClick={() => setOpen((current) => !current)}
-        className="flex h-11 w-full items-center justify-between rounded-xl border border-hairline bg-[var(--surface-strong)] px-3.5 text-left text-[15px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
-      >
-        <span className="min-w-0 truncate">{selected.label}</span>
-        <ChevronDown
-          aria-hidden
-          size={16}
-          className={`ml-2 shrink-0 text-hint ${open ? 'rotate-180' : ''}`}
-        />
-      </button>
-      {open && (
-        <div
-          id={listboxId}
-          role="listbox"
-          aria-label={copy.theme}
-          className="absolute right-0 top-[calc(100%+6px)] z-[80] w-full overflow-hidden rounded-xl border border-hairline bg-[var(--surface-strong)] shadow-card"
-        >
-          {options.map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            role="option"
-            aria-selected={option.value === value}
-            onClick={() => handleSelect(option.value)}
-            className={`flex h-10 w-full items-center justify-between px-3.5 text-left text-[14px] outline-none hover:bg-[var(--secondary-bg)] focus:bg-[var(--secondary-bg)] ${
-              option.value === value ? 'font-medium text-ink' : 'text-hint'
-            }`}
-          >
-            <span>{option.label}</span>
-            {option.value === value && <Check size={14} className="text-accent-text" />}
-          </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function SettingsPage() {
   const settingsQuery = useSettings();
   const healthQuery = useHealth();
@@ -266,6 +186,8 @@ export default function SettingsPage() {
   const [yandexSyncRunId, setYandexSyncRunId] = useState<string | null>(null);
   const [googleConnecting, setGoogleConnecting] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [optimisticThemeMode, setOptimisticThemeMode] = useState<ThemeMode | null>(null);
+  const themeSaveVersion = useRef(0);
   const { show } = useToast();
   const yandexSyncPoller = useRunPoller(yandexSyncRunId, [qk.eventsAll, qk.settings, qk.today]);
   const queryClient = useQueryClient();
@@ -322,7 +244,7 @@ export default function SettingsPage() {
     ? user.settings.reply_language_mode
     : 'auto';
   const timeFormat = normalizeTimeFormat(user.settings.time_format);
-  const themeMode = normalizeThemeMode(user.settings.theme_mode);
+  const themeMode = optimisticThemeMode ?? normalizeThemeMode(user.settings.theme_mode);
   const timeDisplay = { locale, timeFormat, timezone: user.timezone };
 
   const handleGoogleConnect = () => {
@@ -418,13 +340,23 @@ export default function SettingsPage() {
   };
 
   const handleThemeMode = (theme_mode: ThemeMode) => {
+    const version = themeSaveVersion.current + 1;
+    themeSaveVersion.current = version;
     const previous = themeMode;
+    setOptimisticThemeMode(theme_mode);
     setThemeMode(theme_mode);
+    void queryClient.cancelQueries({ queryKey: qk.settings });
     cacheThemeMode(theme_mode);
     patchSettings.mutate(
       { theme_mode },
       {
+        onSuccess: () => {
+          if (themeSaveVersion.current !== version) return;
+          cacheThemeMode(theme_mode);
+        },
         onError: () => {
+          if (themeSaveVersion.current !== version) return;
+          setOptimisticThemeMode(previous);
           setThemeMode(previous);
           cacheThemeMode(previous);
           show(copy.themeSaveFailed, 'error');
@@ -465,11 +397,22 @@ export default function SettingsPage() {
       {/* Appearance */}
       <Rise>
         <SectionHeader title={copy.appearance} />
-        <Card className="relative z-30 card-strong !p-0 overflow-visible">
-          <div className="flex min-h-[68px] items-center justify-between gap-3 px-4 py-3">
+        <Card className="card-strong !p-0 overflow-hidden">
+          <label className="flex min-h-[68px] items-center justify-between gap-3 px-4 py-3">
             <span className="min-w-0 text-[13.5px] font-medium text-ink">{copy.theme}</span>
-            <ThemeModeControl value={themeMode} onChange={handleThemeMode} copy={copy} />
-          </div>
+            <span className="w-[178px] shrink-0">
+              <Select
+                value={themeMode}
+                ariaLabel={copy.theme}
+                onChange={(value) => handleThemeMode(normalizeThemeMode(value))}
+                options={[
+                  { value: 'telegram', label: copy.themeTelegram },
+                  { value: 'light', label: copy.themeLight },
+                  { value: 'dark', label: copy.themeDark },
+                ]}
+              />
+            </span>
+          </label>
         </Card>
       </Rise>
 

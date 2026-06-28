@@ -531,13 +531,22 @@ export function useDeleteMemory() {
 
 // ------------------------------------------------------------------ settings mutations
 
+function isThemeOnlyPatch(input: PatchSettingsInput): boolean {
+  const keys = Object.entries(input)
+    .filter(([, value]) => value !== undefined)
+    .map(([key]) => key);
+  return keys.length === 1 && keys[0] === 'theme_mode';
+}
+
 export function usePatchSettings() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: PatchSettingsInput) => api.patchSettings(input),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: qk.settings });
-      void queryClient.invalidateQueries({ queryKey: qk.today });
+    onSuccess: (_data, input) => {
+      if (!isThemeOnlyPatch(input)) {
+        void queryClient.invalidateQueries({ queryKey: qk.settings });
+        void queryClient.invalidateQueries({ queryKey: qk.today });
+      }
     },
   });
 }
