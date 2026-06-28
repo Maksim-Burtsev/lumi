@@ -9,6 +9,7 @@ const TITLES = {
   en: {
     '/': 'Today',
     '/tasks': 'Tasks',
+    '/focus': 'Sessions',
     '/calendar': 'Calendar',
     '/inbox': 'Inbox',
     '/more': 'More',
@@ -20,6 +21,7 @@ const TITLES = {
   ru: {
     '/': 'Сегодня',
     '/tasks': 'Задачи',
+    '/focus': 'Сессии',
     '/calendar': 'Календарь',
     '/inbox': 'Почта',
     '/more': 'Ещё',

@@ -9,6 +9,8 @@ import type {
   CreateEventInput,
   CreateNewsTopicInput,
   CreateTaskInput,
+  FinishFocusSessionInput,
+  LogFocusSessionInput,
   PatchAutomationInput,
   PatchNewsTopicInput,
   PatchSettingsInput,
@@ -16,11 +18,13 @@ import type {
   PrivateNoteInput,
   RunRef,
   SnoozeInput,
+  StartFocusSessionInput,
   Task,
   TaskFilter,
   TasksResponse,
   TimezonesResponse,
   TodayResponse,
+  UpdateFocusSessionInput,
 } from './types';
 import { haptic } from '../telegram/webapp';
 import { useToast } from '../components/ui/Toast';
@@ -34,6 +38,9 @@ export const qk = {
   today: ['today'] as const,
   tasksAll: ['tasks'] as const,
   tasks: (filter: TaskFilter) => ['tasks', filter] as const,
+  focus: ['focus'] as const,
+  focusSummary: (period: 'week' | 'month') => ['focus-summary', period] as const,
+  focusSessions: (period: 'week' | 'month') => ['focus-sessions', period] as const,
   eventsAll: ['calendar-events'] as const,
   events: (start: string, end: string) => ['calendar-events', start, end] as const,
   freeSlotsAll: ['free-slots'] as const,
@@ -168,7 +175,19 @@ export function useToday() {
 }
 
 export function useTasks(filter: TaskFilter) {
-  return useQuery({ queryKey: qk.tasks(filter), queryFn: () => api.listTasks(filter) });
+  return useQuery({ queryKey: qk.tasks(filter), queryFn: () => api.listTasks(filter, 300) });
+}
+
+export function useFocusState() {
+  return useQuery({ queryKey: qk.focus, queryFn: () => api.getFocusState() });
+}
+
+export function useFocusSummary(period: 'week' | 'month') {
+  return useQuery({ queryKey: qk.focusSummary(period), queryFn: () => api.getFocusSummary(period) });
+}
+
+export function useFocusSessions(period: 'week' | 'month') {
+  return useQuery({ queryKey: qk.focusSessions(period), queryFn: () => api.listFocusSessions(period, 200) });
 }
 
 export function useCalendarEvents(start: string, end: string) {
@@ -325,6 +344,88 @@ export function usePatchTask() {
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: qk.tasksAll });
       void queryClient.invalidateQueries({ queryKey: qk.today });
+    },
+  });
+}
+
+// ------------------------------------------------------------------ focus mutations
+
+function invalidateFocusQueries(queryClient: ReturnType<typeof useQueryClient>) {
+  void queryClient.invalidateQueries({ queryKey: qk.focus });
+  invalidateFocusDerivedQueries(queryClient);
+}
+
+function invalidateFocusDerivedQueries(queryClient: ReturnType<typeof useQueryClient>) {
+  void queryClient.invalidateQueries({ queryKey: qk.focusSummary('week') });
+  void queryClient.invalidateQueries({ queryKey: qk.focusSummary('month') });
+  void queryClient.invalidateQueries({ queryKey: qk.focusSessions('week') });
+  void queryClient.invalidateQueries({ queryKey: qk.focusSessions('month') });
+}
+
+export function useStartFocusSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: StartFocusSessionInput) => api.startFocusSession(input),
+    onSuccess: (response) => {
+      const previous = queryClient.getQueryData(qk.focus) as
+        | { today?: unknown; recent_sessions?: unknown[] }
+        | undefined;
+      queryClient.setQueryData(qk.focus, {
+        active_session: response.session,
+        today: previous?.today ?? { focus_seconds: 0, completed_sessions: 0, streak_days: 0 },
+        recent_sessions: previous?.recent_sessions ?? [],
+      });
+      invalidateFocusDerivedQueries(queryClient);
+    },
+  });
+}
+
+export function useLogFocusSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: LogFocusSessionInput) => api.logFocusSession(input),
+    onSuccess: () => {
+      invalidateFocusQueries(queryClient);
+    },
+  });
+}
+
+export function useFinishFocusSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: FinishFocusSessionInput }) => api.finishFocusSession(id, input),
+    onSuccess: () => {
+      invalidateFocusQueries(queryClient);
+    },
+  });
+}
+
+export function useUpdateFocusSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: UpdateFocusSessionInput }) => api.updateFocusSession(id, input),
+    onSuccess: () => {
+      invalidateFocusQueries(queryClient);
+    },
+  });
+}
+
+export function useDeleteFocusSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteFocusSession(id),
+    onSuccess: () => {
+      invalidateFocusQueries(queryClient);
+    },
+  });
+}
+
+export function useAbandonFocusSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.abandonFocusSession(id),
+    onSuccess: () => {
+      invalidateFocusQueries(queryClient);
     },
   });
 }
