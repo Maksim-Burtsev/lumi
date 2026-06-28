@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { ApiError, api } from '../api/client';
 import { openExternalLink } from '../telegram/webapp';
 import { qk, useConnectYandex, useDisconnectGoogle, useDisconnectYandex, useHealth, usePatchSettings, useRunPoller, useSettings } from '../api/hooks';
-import type { GoogleStatus, ThemeMode, TimeFormat } from '../api/types';
+import type { GoogleStatus, SettingsResponse, ThemeMode, TimeFormat } from '../api/types';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { ErrorState } from '../components/ui/ErrorState';
@@ -190,7 +190,7 @@ export default function SettingsPage() {
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const { show } = useToast();
   const yandexSyncPoller = useRunPoller(yandexSyncRunId, [qk.eventsAll, qk.settings, qk.today]);
-  const queryClientForGoogle = useQueryClient();
+  const queryClient = useQueryClient();
   const locale = normalizeAppLocale(settingsQuery.data?.user.locale);
   const copy = COPY[locale];
 
@@ -213,7 +213,7 @@ export default function SettingsPage() {
       return;
     }
     const interval = setInterval(() => {
-      void queryClientForGoogle.invalidateQueries({ queryKey: qk.settings });
+      void queryClient.invalidateQueries({ queryKey: qk.settings });
     }, 3000);
     const stop = setTimeout(() => setGoogleConnecting(false), 180_000);
     return () => {
@@ -323,15 +323,33 @@ export default function SettingsPage() {
     );
   };
 
+  const cacheThemeMode = (nextThemeMode: ThemeMode) => {
+    queryClient.setQueryData<SettingsResponse | undefined>(qk.settings, (current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        user: {
+          ...current.user,
+          settings: {
+            ...current.user.settings,
+            theme_mode: nextThemeMode,
+          },
+        },
+      };
+    });
+  };
+
   const handleThemeMode = (theme_mode: ThemeMode) => {
     const previous = themeMode;
     setThemeMode(theme_mode);
+    cacheThemeMode(theme_mode);
     patchSettings.mutate(
       { theme_mode },
       {
         onSuccess: () => show(copy.themeSaved, 'success'),
         onError: () => {
           setThemeMode(previous);
+          cacheThemeMode(previous);
           show(copy.themeSaveFailed, 'error');
         },
       },

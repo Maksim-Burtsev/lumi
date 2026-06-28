@@ -243,4 +243,41 @@ describe('SettingsPage language settings', () => {
     });
     expect(document.documentElement.classList.contains('dark')).toBe(true);
   });
+
+  it('keeps the selected theme visible while saving', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'health').mockResolvedValue({ status: 'ok', app: 'Lumi', env: 'local', version: '0.1.0' });
+    vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettingsResponse());
+    vi.spyOn(api, 'getTimezones').mockResolvedValue(TIMEZONES_RESPONSE);
+    let resolvePatch: (response: MeResponse) => void = () => {};
+    const patchSpy = vi.spyOn(api, 'patchSettings').mockImplementation(
+      () => new Promise<MeResponse>((resolve) => {
+        resolvePatch = resolve;
+      }),
+    );
+
+    renderSettingsPage();
+
+    expect(await screen.findByText('Appearance')).toBeInTheDocument();
+    const themeSelect = screen.getByLabelText('Theme');
+    expect(themeSelect).toHaveDisplayValue('Use Telegram theme');
+    await user.selectOptions(themeSelect, 'dark');
+
+    expect(themeSelect).toHaveDisplayValue('Dark');
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+    expect(patchSpy).toHaveBeenCalledWith({ theme_mode: 'dark' });
+
+    resolvePatch({
+      user: makeUser({
+        settings: {
+          reply_language_mode: 'auto',
+          time_format: 'auto',
+          theme_mode: 'dark',
+        },
+      }),
+    });
+    await waitFor(() => {
+      expect(screen.getByText('Theme saved')).toBeInTheDocument();
+    });
+  });
 });
