@@ -17,5 +17,5 @@ createRoot(container).render(
 
 window.setTimeout(() => {
   setupTelegramTheme();
-  void loadTelegramSdk().then(setupTelegramTheme);
+  void loadTelegramSdk().then(() => setupTelegramTheme());
 }, 0);

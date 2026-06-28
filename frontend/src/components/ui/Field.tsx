@@ -1,4 +1,5 @@
 import type { ReactNode, ChangeEvent } from 'react';
+import { ChevronDown } from 'lucide-react';
 
 /** Consistent form controls for sheets and settings. */
 
@@ -61,22 +62,24 @@ interface SelectProps {
 
 export function Select({ value, onChange, options, ariaLabel }: SelectProps) {
   return (
-    <select
-      value={value}
-      aria-label={ariaLabel}
-      onChange={(e: ChangeEvent<HTMLSelectElement>) => onChange(e.target.value)}
-      className={`${CONTROL} h-11 appearance-none bg-no-repeat pr-9`}
-      style={{
-        backgroundImage:
-          "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238A8478' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E\")",
-        backgroundPosition: 'right 12px center',
-      }}
-    >
-      {options.map((opt) => (
-        <option key={opt.value} value={opt.value}>
-          {opt.label}
-        </option>
-      ))}
-    </select>
+    <span className="relative block w-full">
+      <select
+        value={value}
+        aria-label={ariaLabel}
+        onChange={(e: ChangeEvent<HTMLSelectElement>) => onChange(e.target.value)}
+        className={`${CONTROL} h-11 appearance-none pr-9`}
+      >
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+      <ChevronDown
+        aria-hidden
+        size={16}
+        className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-hint"
+      />
+    </span>
   );
 }

@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { ApiError, api } from '../api/client';
 import { openExternalLink } from '../telegram/webapp';
 import { qk, useConnectYandex, useDisconnectGoogle, useDisconnectYandex, useHealth, usePatchSettings, useRunPoller, useSettings } from '../api/hooks';
-import type { GoogleStatus, TimeFormat } from '../api/types';
+import type { GoogleStatus, ThemeMode, TimeFormat } from '../api/types';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { ErrorState } from '../components/ui/ErrorState';
@@ -17,6 +17,8 @@ import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
 import { formatRelative, normalizeTimeFormat } from '../lib/format';
 import { normalizeAppLocale } from '../lib/i18n';
+import { normalizeThemeMode } from '../lib/theme';
+import { setThemeMode } from '../telegram/webapp';
 
 function BoolRow({ label, value }: { label: string; value: boolean }) {
   return (
@@ -54,6 +56,13 @@ const LANGUAGE_OPTIONS = [
 
 const COPY = {
   en: {
+    appearance: 'Appearance',
+    theme: 'Theme',
+    themeTelegram: 'Use Telegram theme',
+    themeLight: 'Light',
+    themeDark: 'Dark',
+    themeSaved: 'Theme saved',
+    themeSaveFailed: 'Could not save theme',
     loadError: 'Could not load settings.',
     timezone: 'Time zone',
     timeFormat: 'Time format',
@@ -104,6 +113,13 @@ const COPY = {
     userFallback: 'User',
   },
   ru: {
+    appearance: 'Внешний вид',
+    theme: 'Тема',
+    themeTelegram: 'Как в Telegram',
+    themeLight: 'Светлая',
+    themeDark: 'Тёмная',
+    themeSaved: 'Тема сохранена',
+    themeSaveFailed: 'Не удалось сохранить тему',
     loadError: 'Не удалось загрузить настройки.',
     timezone: 'Часовой пояс',
     timeFormat: 'Формат времени',
@@ -228,6 +244,7 @@ export default function SettingsPage() {
     ? user.settings.reply_language_mode
     : 'auto';
   const timeFormat = normalizeTimeFormat(user.settings.time_format);
+  const themeMode = normalizeThemeMode(user.settings.theme_mode);
   const timeDisplay = { locale, timeFormat, timezone: user.timezone };
 
   const handleGoogleConnect = () => {
@@ -306,6 +323,21 @@ export default function SettingsPage() {
     );
   };
 
+  const handleThemeMode = (theme_mode: ThemeMode) => {
+    const previous = themeMode;
+    setThemeMode(theme_mode);
+    patchSettings.mutate(
+      { theme_mode },
+      {
+        onSuccess: () => show(copy.themeSaved, 'success'),
+        onError: () => {
+          setThemeMode(previous);
+          show(copy.themeSaveFailed, 'error');
+        },
+      },
+    );
+  };
+
   return (
     <Stagger>
       {/* Profile */}
@@ -331,6 +363,28 @@ export default function SettingsPage() {
                 { value: 'app_locale', label: copy.replyAppLocale },
               ]}
             />
+          </label>
+        </Card>
+      </Rise>
+
+      {/* Appearance */}
+      <Rise>
+        <SectionHeader title={copy.appearance} />
+        <Card className="card-strong !p-0 overflow-hidden">
+          <label className="flex min-h-[68px] items-center justify-between gap-3 px-4 py-3">
+            <span className="min-w-0 text-[13.5px] font-medium text-ink">{copy.theme}</span>
+            <span className="w-[178px] shrink-0">
+              <Select
+                value={themeMode}
+                ariaLabel={copy.theme}
+                onChange={(value) => handleThemeMode(normalizeThemeMode(value))}
+                options={[
+                  { value: 'telegram', label: copy.themeTelegram },
+                  { value: 'light', label: copy.themeLight },
+                  { value: 'dark', label: copy.themeDark },
+                ]}
+              />
+            </span>
           </label>
         </Card>
       </Rise>

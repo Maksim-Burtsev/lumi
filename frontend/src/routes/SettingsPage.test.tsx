@@ -40,7 +40,7 @@ function makeUser(overrides: Partial<User> = {}): User {
     last_name: 'User',
     timezone: 'Asia/Yerevan',
     locale: 'en',
-    settings: { reply_language_mode: 'auto', time_format: 'auto' },
+    settings: { reply_language_mode: 'auto', time_format: 'auto', theme_mode: 'telegram' },
     created_at: '2026-06-12T00:00:00Z',
     last_seen_at: null,
     ...overrides,
@@ -214,5 +214,33 @@ describe('SettingsPage language settings', () => {
     await waitFor(() => {
       expect(patchSpy).toHaveBeenCalledWith({ time_format: '24h' });
     });
+  });
+
+  it('lets the user force the dark theme from appearance settings', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'health').mockResolvedValue({ status: 'ok', app: 'Lumi', env: 'local', version: '0.1.0' });
+    vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettingsResponse());
+    vi.spyOn(api, 'getTimezones').mockResolvedValue(TIMEZONES_RESPONSE);
+    const patchSpy = vi.spyOn(api, 'patchSettings').mockImplementation(async (input): Promise<MeResponse> => ({
+      user: makeUser({
+        settings: {
+          reply_language_mode: 'auto',
+          time_format: 'auto',
+          theme_mode: input.theme_mode ?? 'telegram',
+        },
+      }),
+    }));
+
+    renderSettingsPage();
+
+    expect(await screen.findByText('Appearance')).toBeInTheDocument();
+    const themeSelect = screen.getByLabelText('Theme');
+    expect(themeSelect).toHaveDisplayValue('Use Telegram theme');
+    await user.selectOptions(themeSelect, 'dark');
+
+    await waitFor(() => {
+      expect(patchSpy).toHaveBeenCalledWith({ theme_mode: 'dark' });
+    });
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
   });
 });

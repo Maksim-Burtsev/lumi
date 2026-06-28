@@ -26,7 +26,7 @@ export interface TimelineEntry {
 
 const DOTS: Record<TimelineEntryKind, string> = {
   event: 'bg-[var(--hint)]',
-  focus: 'bg-accent shadow-[0_0_6px_rgba(46,99,231,0.5)]',
+  focus: 'bg-accent shadow-[0_0_6px_var(--accent-shadow)]',
   proposed: 'border-2 border-[var(--accent)] bg-transparent',
   free: 'border border-[var(--hint)] bg-transparent opacity-60',
   task: 'bg-[var(--success)]',

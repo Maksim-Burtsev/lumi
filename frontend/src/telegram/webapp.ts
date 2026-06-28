@@ -4,6 +4,9 @@
  * (window.Telegram absent) so the app never crashes outside Telegram.
  */
 
+import { cacheThemeMode, normalizeThemeMode, readCachedThemeMode, resolveIsDarkTheme } from '../lib/theme';
+import type { ThemeMode } from '../lib/theme';
+
 export interface TelegramThemeParams {
   bg_color?: string;
   text_color?: string;
@@ -236,14 +239,21 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
   return { r: (v >> 16) & 255, g: (v >> 8) & 255, b: v & 255 };
 }
 
-function applyTheme(): void {
+function prefersDarkTheme(): boolean {
+  if (typeof window.matchMedia !== 'function') return false;
+  return window.matchMedia('(prefers-color-scheme: dark)')?.matches ?? false;
+}
+
+function applyTheme(mode?: ThemeMode): void {
   const root = document.documentElement;
   const tg = getTelegramWebApp();
 
-  const prefersDark =
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(prefers-color-scheme: dark)').matches;
-  const isDark = tg ? tg.colorScheme === 'dark' : prefersDark;
+  const themeMode = normalizeThemeMode(mode ?? readCachedThemeMode());
+  const isDark = resolveIsDarkTheme({
+    mode: themeMode,
+    telegramColorScheme: tg?.colorScheme ?? null,
+    prefersDark: prefersDarkTheme(),
+  });
   root.classList.toggle('dark', isDark);
 
   const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
@@ -269,11 +279,16 @@ function applyTheme(): void {
   }
 }
 
-export function setupTelegramTheme(): void {
+export function setThemeMode(mode: ThemeMode): void {
+  cacheThemeMode(mode);
+  applyTheme(mode);
+}
+
+export function setupTelegramTheme(mode?: ThemeMode): void {
   const tg = getTelegramWebApp();
   scheduleReadyFallbacks();
 
-  applyTheme();
+  applyTheme(mode);
 
   try {
     tg?.onEvent?.('themeChanged', applyTheme);

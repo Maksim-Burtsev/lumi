@@ -122,6 +122,28 @@ async def test_patch_settings_accepts_auto_time_format(client):
     assert response.json()["user"]["settings"]["time_format"] == "auto"
 
 
+@pytest.mark.parametrize("theme_mode", ["telegram", "light", "dark"])
+async def test_patch_settings_accepts_theme_mode(client, theme_mode):
+    response = await client.patch("/api/settings", json={"theme_mode": theme_mode})
+
+    assert response.status_code == 200
+    assert response.json()["user"]["settings"]["theme_mode"] == theme_mode
+
+
+async def test_patch_settings_rejects_invalid_theme_mode(client):
+    response = await client.patch("/api/settings", json={"theme_mode": "system"})
+
+    assert response.status_code == 422
+    assert response.json() == {"error": "invalid_theme_mode"}
+
+
+async def test_patch_settings_rejects_invalid_theme_mode_in_settings_payload(client):
+    response = await client.patch("/api/settings", json={"settings": {"theme_mode": "system"}})
+
+    assert response.status_code == 422
+    assert response.json() == {"error": "invalid_theme_mode"}
+
+
 async def test_patch_settings_rejects_invalid_time_format(client):
     response = await client.patch("/api/settings", json={"time_format": "ampm"})
 
