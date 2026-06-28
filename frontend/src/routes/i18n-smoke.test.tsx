@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -88,9 +88,9 @@ describe('Mini App English UI smoke', () => {
 
     renderWithProviders(<TasksPage />);
 
-    expect(await screen.findByPlaceholderText('New task... (Enter to create)')).toBeInTheDocument();
+    expect(await screen.findByPlaceholderText('Search tasks')).toBeInTheDocument();
     expect(screen.getByText('Today')).toBeInTheDocument();
-    expect(await screen.findByText('No active tasks yet')).toBeInTheDocument();
+    expect(await screen.findByText('No tasks for today')).toBeInTheDocument();
     expect(screen.queryByText('Сегодня')).not.toBeInTheDocument();
   });
 
@@ -160,8 +160,24 @@ describe('Mini App English UI smoke', () => {
 
     expect(await screen.findByText('Sync')).toBeInTheDocument();
     expect(screen.getByText('Plan day')).toBeInTheDocument();
-    expect(await screen.findByText('Free day')).toBeInTheDocument();
+    expect(await screen.findByText('No meetings scheduled')).toBeInTheDocument();
+    expect(await screen.findByText('08:00')).toBeInTheDocument();
+    expect(screen.queryByText('Free day')).not.toBeInTheDocument();
     expect(screen.queryByText('Синхронизировать')).not.toBeInTheDocument();
+  });
+
+  it('localizes Calendar empty schedule marker in Russian', async () => {
+    vi.spyOn(api, 'listCalendarEvents').mockResolvedValue({
+      items: [],
+      sync: { connected: false, last_sync_at: null, stale: false, refresh_queued: false },
+    } satisfies CalendarEventsResponse);
+
+    renderWithProviders(<CalendarPage />, 'ru');
+
+    await waitFor(() => expect(screen.getByText('Синхронизировать')).toBeInTheDocument());
+    expect(screen.getByText('Нет запланированных встреч')).toBeInTheDocument();
+    expect(screen.getByText('08:00')).toBeInTheDocument();
+    expect(screen.queryByText('No meetings scheduled')).not.toBeInTheDocument();
   });
 
   it('opens English automation sheet', async () => {
