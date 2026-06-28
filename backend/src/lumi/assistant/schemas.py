@@ -74,13 +74,22 @@ class TaskUpdate(BaseModel):
 class TaskPatchRequest(BaseModel):
     task_id: uuid.UUID | None = None
     task_query: str | None = None
-    recency_hint: Literal["last_created_task", "last_touched_task"] | None = None
+    recency_hint: Literal[
+        "last_created_task",
+        "last_touched_task",
+        "last_notified_task",
+        "replied_task",
+    ] | None = None
     title: str | None = None
     description: str | None = None
     project: str | None = None
     tags: list[str] | None = None
     priority: Literal["low", "medium", "high", "urgent"] | None = None
     status_update: Literal["active", "inbox", "done", "cancelled"] | None = None
+    due_at_local: datetime | None = None
+    due_time_local: str | None = None
+    reminder_at_local: datetime | None = None
+    reminder_time_local: str | None = None
     confidence: float = 0.0
     requires_confirmation: bool = False
 
@@ -93,7 +102,18 @@ class TaskPatchRequest(BaseModel):
         if not isinstance(updates, dict):
             return data
         merged = {key: value for key, value in data.items() if key != "updates"}
-        for key in ("title", "description", "project", "tags", "priority", "status_update"):
+        for key in (
+            "title",
+            "description",
+            "project",
+            "tags",
+            "priority",
+            "status_update",
+            "due_at_local",
+            "due_time_local",
+            "reminder_at_local",
+            "reminder_time_local",
+        ):
             if key in updates and key not in merged:
                 merged[key] = updates[key]
         if "status" in updates and "status_update" not in merged:
@@ -120,6 +140,16 @@ class TaskPatchRequest(BaseModel):
             return None
         return v[:100]
 
+    @field_validator("due_time_local", "reminder_time_local")
+    @classmethod
+    def clean_optional_time(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = " ".join(v.split()).strip()
+        if not v:
+            return None
+        return v[:8]
+
     @field_validator("description")
     @classmethod
     def clean_optional_description(cls, v: str | None) -> str | None:
@@ -144,7 +174,17 @@ class TaskPatchRequest(BaseModel):
 
     def update_fields(self) -> dict[str, Any]:
         fields: dict[str, Any] = {}
-        for key in ("title", "description", "project", "tags", "priority"):
+        for key in (
+            "title",
+            "description",
+            "project",
+            "tags",
+            "priority",
+            "due_at_local",
+            "due_time_local",
+            "reminder_at_local",
+            "reminder_time_local",
+        ):
             if key in self.model_fields_set:
                 fields[key] = getattr(self, key)
         if "status_update" in self.model_fields_set:
@@ -345,6 +385,218 @@ class CalendarEventsRequest(BaseModel):
         if self.end_at_local <= self.start_at_local:
             raise ValueError("end_at_local must be after start_at_local")
         return self
+
+
+class EntityResolveRequest(BaseModel):
+    query: str
+    domains: list[Literal[
+        "tasks",
+        "calendar",
+        "memories",
+        "automations",
+        "news",
+        "email",
+        "settings",
+        "connectors",
+    ]] = Field(default_factory=list)
+    time_window_local: TimeWindow | None = None
+    confidence: float = 0.0
+    requires_confirmation: bool = False
+
+    @field_validator("query")
+    @classmethod
+    def query_not_empty(cls, v: str) -> str:
+        v = " ".join(v.split()).strip()
+        if not v:
+            raise ValueError("empty query")
+        return v[:300]
+
+
+class CalendarEventUpdateRequest(BaseModel):
+    event_id: uuid.UUID | None = None
+    event_query: str | None = None
+    recency_hint: Literal["last_created_calendar_block", "last_touched_calendar_event"] | None = None
+    start_at_local: datetime | None = None
+    start_time_local: str | None = None
+    shift_minutes: int | None = None
+    end_at_local: datetime | None = None
+    duration_minutes: int | None = None
+    title: str | None = None
+    description: str | None = None
+    confidence: float = 0.0
+    requires_confirmation: bool = False
+
+    @field_validator("event_query", "title", "description", "start_time_local")
+    @classmethod
+    def clean_optional_text(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = " ".join(v.split()).strip()
+        return v[:2000] or None
+
+    @field_validator("shift_minutes")
+    @classmethod
+    def clamp_shift_minutes(cls, v: int | None) -> int | None:
+        if v is None:
+            return None
+        return max(-24 * 60, min(24 * 60, int(v)))
+
+    @field_validator("duration_minutes")
+    @classmethod
+    def clamp_duration_minutes(cls, v: int | None) -> int | None:
+        if v is None:
+            return None
+        return max(5, min(24 * 60, int(v)))
+
+    @model_validator(mode="after")
+    def has_target_and_update(self) -> CalendarEventUpdateRequest:
+        if not (self.event_id or self.event_query or self.recency_hint):
+            raise ValueError("calendar event target is required")
+        has_update = any(
+            value is not None
+            for value in (
+                self.start_at_local,
+                self.start_time_local,
+                self.shift_minutes,
+                self.end_at_local,
+                self.duration_minutes,
+                self.title,
+                self.description,
+            )
+        )
+        if not has_update:
+            raise ValueError("calendar event update is required")
+        return self
+
+
+class CalendarEventCancelRequest(BaseModel):
+    event_id: uuid.UUID | None = None
+    event_query: str | None = None
+    recency_hint: Literal["last_created_calendar_block", "last_touched_calendar_event"] | None = None
+    confidence: float = 0.0
+    requires_confirmation: bool = False
+
+    @field_validator("event_query")
+    @classmethod
+    def clean_event_query(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = " ".join(v.split()).strip()
+        return v[:300] or None
+
+    @model_validator(mode="after")
+    def has_target(self) -> CalendarEventCancelRequest:
+        if not (self.event_id or self.event_query or self.recency_hint):
+            raise ValueError("calendar event target is required")
+        return self
+
+
+class MemoryReadRequest(BaseModel):
+    query: str | None = None
+    kind: str | None = None
+    limit: int = 10
+    confidence: float = 0.0
+
+
+class MemoryUpdateRequest(BaseModel):
+    memory_id: uuid.UUID
+    text: str | None = None
+    kind: str | None = None
+    importance: float | None = None
+    confidence: float = 0.0
+
+    @field_validator("text", "kind")
+    @classmethod
+    def clean_optional_text(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = " ".join(v.split()).strip()
+        return v[:2000] or None
+
+
+class MemoryDeleteRequest(BaseModel):
+    memory_id: uuid.UUID
+    confidence: float = 0.0
+
+
+class AutomationReadRequest(BaseModel):
+    include_system: bool = False
+    confidence: float = 0.0
+
+
+class AutomationUpdateRequest(BaseModel):
+    automation_id: uuid.UUID
+    title: str | None = None
+    cron_expression: str | None = None
+    timezone: str | None = None
+    enabled: bool | None = None
+    config: dict[str, Any] | None = None
+    confidence: float = 0.0
+
+
+class AutomationRunRequest(BaseModel):
+    automation_id: uuid.UUID
+    confidence: float = 0.0
+
+
+class NewsTopicReadRequest(BaseModel):
+    include_disabled: bool = True
+    confidence: float = 0.0
+
+
+class NewsTopicCreateRequest(BaseModel):
+    title: str
+    query: str
+    language: str = "ru"
+    config: dict[str, Any] = Field(default_factory=dict)
+    confidence: float = 0.0
+
+
+class NewsTopicUpdateRequest(BaseModel):
+    topic_id: uuid.UUID
+    title: str | None = None
+    query: str | None = None
+    language: str | None = None
+    enabled: bool | None = None
+    config: dict[str, Any] | None = None
+    confidence: float = 0.0
+
+
+class NewsDigestRunRequest(BaseModel):
+    confidence: float = 0.0
+
+
+class InboxReadRequest(BaseModel):
+    limit: int = 10
+    confidence: float = 0.0
+
+
+class EmailThreadReadRequest(BaseModel):
+    thread_id: uuid.UUID
+    confidence: float = 0.0
+
+
+class EmailTaskCreateRequest(BaseModel):
+    thread_id: uuid.UUID
+    title: str | None = None
+    confidence: float = 0.0
+
+
+class SettingsReadRequest(BaseModel):
+    confidence: float = 0.0
+
+
+class SettingsUpdateRequest(BaseModel):
+    timezone: str | None = None
+    locale: str | None = None
+    reply_language_mode: Literal["auto", "fixed", "app_locale"] | None = None
+    reply_language: str | None = None
+    time_format: str | None = None
+    confidence: float = 0.0
+
+
+class ConnectorsReadRequest(BaseModel):
+    confidence: float = 0.0
 
 
 class AutomationRequest(BaseModel):

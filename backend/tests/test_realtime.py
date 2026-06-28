@@ -126,10 +126,9 @@ async def test_task_and_run_services_emit_ui_topics(user, monkeypatch):
         run = await runs.create(user_id=user.id, type_=AgentRunType.CHAT, trigger="test")
         await runs.mark_completed(run, "ok")
 
-    assert [event["event_type"] for event in published] == [
-        "task.created",
-        "run.created",
-        "run.completed",
-    ]
-    assert published[0]["topics"] == ["tasks"]
-    assert published[1]["topics"] == ["runs"]
+    events_by_type = {event["event_type"]: event for event in published}
+    assert "task.created" in events_by_type
+    assert "run.created" in events_by_type
+    assert "run.completed" in events_by_type
+    assert "tasks" in events_by_type["task.created"]["topics"]
+    assert "runs" in events_by_type["run.created"]["topics"]

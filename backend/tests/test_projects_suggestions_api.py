@@ -16,9 +16,9 @@ from lumi.db.models import (
 )
 from lumi.db.session import session_scope
 from lumi.main import app
+from lumi.services import today as today_module
 from lumi.services.assistant_suggestions import AssistantSuggestionService
 from lumi.services.users import UserService
-from lumi.services import today as today_module
 from lumi.utils.time import utc_now
 
 from .conftest import TEST_TELEGRAM_ID

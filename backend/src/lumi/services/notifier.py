@@ -76,10 +76,11 @@ async def send_telegram_message(
     text: str,
     *,
     reply_markup=None,
+    capture_message_ids: bool = False,
     rich_html: str | None = None,
     open_app_button: bool = False,
     open_app_button_label: str | None = None,
-) -> bool:
+) -> bool | list[int]:
     """Send a message to the user's private chat. Returns False on failure."""
     settings = get_settings()
     if not settings.telegram_bot_token:
@@ -129,14 +130,17 @@ async def send_telegram_message(
                 )
             return True
         chunks = chunk_telegram(telegram_plain_text(text))
+        message_ids: list[int] = []
         for i, chunk in enumerate(chunks):
-            await bot.send_message(
+            sent = await bot.send_message(
                 chat_id=chat_id,
                 text=chunk,
                 # Buttons only on the last chunk.
                 reply_markup=markup if i == len(chunks) - 1 else None,
             )
-        return True
+            if capture_message_ids:
+                message_ids.append(sent.message_id)
+        return message_ids if capture_message_ids else True
     except Exception:  # noqa: BLE001
         log.exception("telegram notification failed")
         return False

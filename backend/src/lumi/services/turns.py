@@ -210,12 +210,17 @@ class TelegramIntakeService:
         payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
         data = dict(payload or {})
-        data["text"] = text
+        data.setdefault("text", text)
+        data.setdefault("user_comment", data.get("text") or text)
         if image_metadata:
             data["image"] = image_metadata
         if ignored_attachments:
             data["ignored_attachments"] = list(ignored_attachments)
-        data["messages"] = [{"text": text, "image": image_metadata}]
+        data["messages"] = [self._message_payload(
+            text=text,
+            image_metadata=image_metadata,
+            payload=data,
+        )]
         return data
 
     def _merged_payload(
@@ -227,8 +232,33 @@ class TelegramIntakeService:
         ignored_attachments: list[dict[str, Any]] | None,
         payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        merged = {**(existing or {}), **(payload or {})}
-        merged["text"] = self._append_text(str((existing or {}).get("text") or ""), text)
+        existing = existing or {}
+        incoming = dict(payload or {})
+        merged = {**existing, **incoming}
+        incoming_text = str(incoming.get("text") if "text" in incoming else text)
+        merged["text"] = self._append_text(str(existing.get("text") or ""), incoming_text)
+        incoming_comment = str(
+            incoming.get("user_comment")
+            if "user_comment" in incoming
+            else incoming_text
+        )
+        merged["user_comment"] = self._append_text(
+            str(existing.get("user_comment") or ""),
+            incoming_comment,
+        )
+        merged["forwarded_messages"] = [
+            *(existing.get("forwarded_messages") or []),
+            *(incoming.get("forwarded_messages") or []),
+        ]
+        if not merged["forwarded_messages"]:
+            merged.pop("forwarded_messages", None)
+        if "reply_context" not in incoming and "reply_context" in existing:
+            merged["reply_context"] = existing["reply_context"]
+        if "telegram_message_ids" in existing or "telegram_message_ids" in incoming:
+            merged["telegram_message_ids"] = self._append_many_unique(
+                existing.get("telegram_message_ids") or [],
+                incoming.get("telegram_message_ids") or [],
+            )
         if image_metadata:
             merged["image"] = image_metadata
         if ignored_attachments:
@@ -237,10 +267,31 @@ class TelegramIntakeService:
                 *ignored_attachments,
             ]
         merged["messages"] = [
-            *((existing or {}).get("messages") or []),
-            {"text": text, "image": image_metadata},
+            *(existing.get("messages") or []),
+            self._message_payload(
+                text=text,
+                image_metadata=image_metadata,
+                payload=incoming,
+            ),
         ]
         return merged
+
+    def _message_payload(
+        self,
+        *,
+        text: str,
+        image_metadata: dict[str, Any] | None,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        message = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"messages", "image", "ignored_attachments"}
+        }
+        message.setdefault("text", text)
+        if image_metadata:
+            message["image"] = image_metadata
+        return message
 
     def _append_text(self, current: str, new: str) -> str:
         current = current.strip()
@@ -255,6 +306,13 @@ class TelegramIntakeService:
         if value is None or value in values:
             return list(values)
         return [*values, value]
+
+    def _append_many_unique(self, values: list, new_values: list) -> list:
+        result = list(values)
+        for value in new_values:
+            if value not in result:
+                result.append(value)
+        return result
 
 
 class TurnService:

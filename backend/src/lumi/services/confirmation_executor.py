@@ -13,6 +13,7 @@ from lumi.i18n import normalize_app_locale
 from lumi.logging import get_logger
 from lumi.services.automations import AutomationService
 from lumi.services.calendar import CalendarService
+from lumi.services.task_update_fields import resolve_task_update_fields
 from lumi.services.task_update_replies import format_task_bulk_update_reply, format_task_update_reply
 from lumi.services.tasks import TaskService
 from lumi.utils.time import fmt_local, local_to_utc
@@ -77,6 +78,10 @@ class ConfirmationExecutor:
                 updates = payload.get("updates")
                 if not isinstance(updates, dict) or not updates:
                     return _text(locale, "I didn't understand what to change in the task. Clarify the update.", "Не понял, что изменить в задаче. Уточни изменение.")
+                raw_updates = updates
+                updates = resolve_task_update_fields(user=user, task=task, updates=raw_updates)
+                if not updates:
+                    return _text(locale, "I didn't understand what to change in the task. Clarify the update.", "Не понял, что изменить в задаче. Уточни изменение.")
                 agent_run_id = None
                 if payload.get("agent_run_id"):
                     try:
@@ -94,6 +99,7 @@ class ConfirmationExecutor:
                     task,
                     updates,
                     language=str(payload.get("language") or locale),
+                    timezone=user.timezone,
                 )
 
             if action == "update_task_choice":

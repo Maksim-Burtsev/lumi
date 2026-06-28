@@ -249,6 +249,18 @@ async def test_rename_active_task_by_title_returns_ambiguous_for_multiple_fuzzy_
     assert {candidate.id for candidate in result.candidates} == {first.id, second.id}
 
 
+async def test_exact_substring_candidate_wins_over_similar_marker_tasks(user):
+    async with session_scope() as session:
+        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        service = TaskService(session)
+        await service.create_task(u, title="посмотреть ответ chatGPT по QA-TIME-FWD-2342")
+        exact = await service.create_task(u, title="посмотреть ответ chatGPT по QA-TIME-FWD-0011")
+
+        candidates = await service.find_open_rename_candidates(u, "QA-TIME-FWD-0011")
+
+    assert [task.id for task in candidates] == [exact.id]
+
+
 async def test_rename_open_task_by_id_renames_only_selected_candidate(user):
     async with session_scope() as session:
         u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
