@@ -439,6 +439,7 @@ export interface FocusDailyActivity {
   date: string;
   focus_seconds: number;
   session_count: number;
+  average_focus_score?: number | null;
 }
 
 export interface FocusProjectBreakdown {

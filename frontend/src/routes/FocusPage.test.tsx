@@ -138,6 +138,19 @@ function makeSession(overrides: Partial<FocusSession> = {}): FocusSession {
   };
 }
 
+function makeSessions(count: number): FocusSession[] {
+  return Array.from({ length: count }, (_, index) =>
+    makeSession({
+      id: `${String(index + 1).padStart(8, '0')}-7777-4777-8777-777777777777`,
+      intention: `History session ${index + 1}`,
+      started_at: new Date(Date.UTC(2026, 5, 27, 10, 0, 0) - index * 60 * 60_000).toISOString(),
+      target_end_at: new Date(Date.UTC(2026, 5, 27, 10, 45, 0) - index * 60 * 60_000).toISOString(),
+      ended_at: new Date(Date.UTC(2026, 5, 27, 10, 45, 0) - index * 60 * 60_000).toISOString(),
+      duration_seconds: (20 + index) * 60,
+    }),
+  );
+}
+
 function renderFocusPage(locale = 'en') {
   vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettings(locale));
   const sessionsSpy = vi.spyOn(api, 'listFocusSessions');
@@ -399,6 +412,9 @@ describe('FocusPage', () => {
 
     expect(await screen.findByText('Focus mode is on')).toBeInTheDocument();
     expect(screen.getByText('Details & History')).toBeInTheDocument();
+    expect(screen.getByText('sessions today')).toBeInTheDocument();
+    expect(screen.getByText('day streak')).toBeInTheDocument();
+    expect(screen.getByText('focus days')).toBeInTheDocument();
     expect(screen.queryByText('Analytics')).not.toBeInTheDocument();
     expect(screen.queryByText('History')).not.toBeInTheDocument();
 
@@ -407,7 +423,7 @@ describe('FocusPage', () => {
     expect(await screen.findByText('Session history')).toBeInTheDocument();
   });
 
-  it('renders overtime orb state', async () => {
+  it('renders overtime alarm state with dominant stop and review action', async () => {
     vi.spyOn(api, 'getFocusState').mockResolvedValue({
       active_session: makeSession({
         status: 'active',
@@ -426,7 +442,9 @@ describe('FocusPage', () => {
 
     renderFocusPage('en');
 
-    expect((await screen.findAllByText('over plan')).length).toBeGreaterThan(0);
+    expect(await screen.findByText('Timer ended')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /stop timer & review/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /keep counting/i })).toBeInTheDocument();
     expect(screen.getByLabelText('Session progress')).toHaveTextContent('+');
   });
 
@@ -503,7 +521,7 @@ describe('FocusPage', () => {
 
     renderFocusPage('en');
 
-    await user.click(await screen.findByRole('button', { name: /details/i }));
+    await user.click(await screen.findByRole('button', { name: /view all/i }));
 
     expect(await screen.findByText('Session history')).toBeInTheDocument();
     expect(screen.getByText('Days')).toBeInTheDocument();
@@ -539,6 +557,64 @@ describe('FocusPage', () => {
     expect(await screen.findByText('↓ 6%')).toBeInTheDocument();
   });
 
+  it('renders month analytics as 31 daily bars with scoped session copy and selected day summary', async () => {
+    const user = userEvent.setup();
+    const monthSummary: FocusSummaryResponse = {
+      ...SUMMARY,
+      period: 'month',
+      total_focus_seconds: 112 * 3600 + 20 * 60,
+      total_sessions: 146,
+      average_focus_score: 4.1,
+      average_daily_focus_seconds: 3 * 3600 + 37 * 60,
+      daily_activity: Array.from({ length: 30 }, (_, index) => ({
+        date: `2026-06-${String(index + 1).padStart(2, '0')}`,
+        focus_seconds: index === 26 ? 7 * 3600 + 10 * 60 : (index % 6) * 1800,
+        session_count: index === 26 ? 9 : index % 4,
+      })),
+      project_breakdown: [{ project: 'Lumi', focus_seconds: 7 * 3600, session_count: 12 }],
+    };
+    vi.spyOn(api, 'getFocusState').mockResolvedValue(EMPTY_STATE);
+    vi.spyOn(api, 'getFocusSummary').mockImplementation((period = 'week') =>
+      Promise.resolve(period === 'month' ? monthSummary : SUMMARY),
+    );
+    vi.spyOn(api, 'listFocusSessions').mockResolvedValue({ items: [] });
+    vi.spyOn(api, 'listTasks').mockResolvedValue(TASKS);
+
+    renderFocusPage('en');
+
+    await user.click(await screen.findByRole('button', { name: /month/i }));
+
+    expect(await screen.findByText('146 sessions this month')).toBeInTheDocument();
+    expect(screen.getByText('4.1 avg focus score')).toBeInTheDocument();
+    expect(await screen.findAllByTestId('focus-day-bar')).toHaveLength(30);
+
+    await user.click(screen.getByRole('button', { name: /2026-06-27: 7h 10m/i }));
+
+    expect(await screen.findByText('Jun 27')).toBeInTheDocument();
+    expect(screen.getByText('7h 10m')).toBeInTheDocument();
+    expect(screen.getByText('9 sessions')).toBeInTheDocument();
+  });
+
+  it('caps main history preview at five sessions and opens full history', async () => {
+    const user = userEvent.setup();
+    const sessions = makeSessions(8);
+    vi.spyOn(api, 'getFocusState').mockResolvedValue({ ...EMPTY_STATE, recent_sessions: sessions });
+    vi.spyOn(api, 'getFocusSummary').mockResolvedValue(SUMMARY);
+    vi.spyOn(api, 'listFocusSessions').mockResolvedValue({ items: sessions });
+    vi.spyOn(api, 'listTasks').mockResolvedValue(TASKS);
+
+    renderFocusPage('en');
+
+    expect(await screen.findByText('History session 1')).toBeInTheDocument();
+    expect(screen.getByText('History session 5')).toBeInTheDocument();
+    expect(screen.queryByText('History session 6')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /view all history/i }));
+
+    expect(await screen.findByText('Session history')).toBeInTheDocument();
+    expect(screen.getByText('History session 8')).toBeInTheDocument();
+  });
+
   it('opens session details instead of history when a history row is clicked', async () => {
     const user = userEvent.setup();
     const session = makeSession({
@@ -563,6 +639,32 @@ describe('FocusPage', () => {
     expect(await screen.findByText('Session details')).toBeInTheDocument();
     expect(screen.getByText('Filled later')).toBeInTheDocument();
     expect(screen.queryByText('Session history')).not.toBeInTheDocument();
+  });
+
+  it('deletes a completed session after confirmation', async () => {
+    const user = userEvent.setup();
+    const session = makeSession({ intention: 'Delete target' });
+    vi.spyOn(api, 'getFocusState').mockResolvedValue({ ...EMPTY_STATE, recent_sessions: [session] });
+    vi.spyOn(api, 'getFocusSummary').mockResolvedValue(SUMMARY);
+    vi.spyOn(api, 'listFocusSessions').mockResolvedValue({ items: [session] });
+    vi.spyOn(api, 'listTasks').mockResolvedValue(TASKS);
+    const deleteFocusSession = vi
+      .spyOn(api as typeof api & { deleteFocusSession: (id: string) => Promise<void> }, 'deleteFocusSession')
+      .mockResolvedValue(undefined);
+
+    renderFocusPage('en');
+
+    await user.click(await screen.findByRole('button', { name: /delete target/i }));
+    await user.click(await screen.findByRole('button', { name: /delete session/i }));
+
+    expect(await screen.findByText('Delete session?')).toBeInTheDocument();
+    expect(screen.getByText('This removes the time block from analytics and history.')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /^delete$/i }));
+
+    await waitFor(() => {
+      expect(deleteFocusSession).toHaveBeenCalledWith(session.id);
+    });
   });
 
   it('stops an overtime session before opening review so duration no longer grows', async () => {
@@ -594,7 +696,7 @@ describe('FocusPage', () => {
 
     renderFocusPage('en');
 
-    const stopButton = await screen.findByRole('button', { name: /stop & review/i });
+    const stopButton = await screen.findByRole('button', { name: /stop timer & review/i });
     expect(stopButton).not.toBeDisabled();
     await user.click(stopButton);
 

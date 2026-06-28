@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from lumi.config import get_settings
 from lumi.db.models import FocusSession, FocusSessionStatus, Task, TaskStatus
@@ -140,6 +140,15 @@ async def seed() -> None:
             "Update PR notes.",
             "Review analytics after more data.",
         ]
+        await session.execute(
+            delete(FocusSession).where(
+                FocusSession.user_id == user.id,
+                FocusSession.status == FocusSessionStatus.COMPLETED,
+                FocusSession.intention.in_(intentions),
+                FocusSession.accomplished_text.in_(results),
+                FocusSession.next_step_text.in_(next_steps),
+            )
+        )
         durations = [18, 22, 25, 32, 39, 45, 50, 55, 65, 75, 90]
         hours = [6, 7, 9, 10, 11, 13, 15, 17, 19, 21, 23]
         focus_seed = []
@@ -198,7 +207,7 @@ async def seed() -> None:
             session_created += 1
 
         created.append(f"focus tasks created={task_created}")
-        created.append(f"focus sessions created={session_created}")
+        created.append(f"focus sessions seeded={session_created}")
 
     print("Seed готов. Создано/проверено:")
     for line in created:
