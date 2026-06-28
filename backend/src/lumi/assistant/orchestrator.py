@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from difflib import SequenceMatcher
 from html import escape
+from time import perf_counter
 from typing import Any
 
 from sqlalchemy import select
@@ -125,6 +126,16 @@ AGENT_LOOP_MAX_TOOL_CALLS = 8
 CALENDAR_TELEGRAM_EVENT_LIMIT = 5
 CALENDAR_TELEGRAM_FREE_GAP_MINUTES = 15
 NEUTRAL_PROGRESS_STATUS = "⏳"
+BACKEND_PROGRESS_LANGUAGES = {"en", "ru"}
+MEDIA_REFERENCE_TEXT_PATTERNS = (
+    r"\b(this|that|it|image|photo|picture|screenshot|attachment|attached|marked|highlighted|red|shown|visible|look|see|read)\b",
+    r"\b(on|in)\s+(the\s+)?(image|photo|picture|screenshot)\b",
+    r"\bwhat(?:'s| is)\s+(in|on)\b",
+    r"на\s+(фото|картин\w*|изображ\w*|скрин\w*|н[её]м|ней)",
+    r"(красн\w*|отмеч\w*|обвед\w*|видн\w*|показа\w*|прочитай|посмотри)",
+    r"\b(questa|questo|quella|quello|immagine|foto|screenshot|allegato|segnat\w*|rosso|rossa|visibile|leggi|vedi)\b",
+    r"\b(env[ií]a|enviar|marcad\w*|rojo|imagen|foto)\b",
+)
 READ_ONLY_LOOP_TOOLS = {"read_tasks", "read_calendar_events"}
 MULTI_STEP_INTENT_MARKERS = (
     "add",
@@ -737,6 +748,55 @@ def _safe_user_visible_status(status: str | None, *, language: str | None = None
     return text
 
 
+def _backend_progress_language_for_user(user: User) -> str | None:
+    language_settings = ensure_language_settings(user.settings)
+    mode = language_settings.get("reply_language_mode")
+    if mode == "fixed":
+        language = normalize_reply_language(str(language_settings.get("reply_language") or ""))
+    else:
+        language = normalize_reply_language(user.locale)
+    return language if language in BACKEND_PROGRESS_LANGUAGES else None
+
+
+def _backend_progress_status(language: str | None, *, en: str, ru: str) -> str:
+    return ru if normalize_reply_language(language) == "ru" else en
+
+
+def _initial_progress_status(user: User) -> str:
+    language = _backend_progress_language_for_user(user)
+    if language is None:
+        return NEUTRAL_PROGRESS_STATUS
+    return _backend_progress_status(
+        language,
+        en="⏳ Understanding request...",
+        ru="⏳ Понимаю запрос...",
+    )
+
+
+def _text_likely_references_media(text: str) -> bool:
+    lower = text.strip().lower()
+    if not lower:
+        return False
+    return any(re.search(pattern, lower, flags=re.IGNORECASE) for pattern in MEDIA_REFERENCE_TEXT_PATTERNS)
+
+
+def _should_resolve_media_reference(
+    *,
+    text: str,
+    plan: AgentPlan,
+    available_media: list[MediaCandidate],
+) -> bool:
+    if not available_media or not text.strip():
+        return False
+    if plan.referenced_media_id:
+        return True
+    if plan.mode == "needs_media_understanding" or plan.needs_media_understanding:
+        return True
+    if plan.visual_intent != "none":
+        return True
+    return _text_likely_references_media(text)
+
+
 def _looks_like_multi_step_request(text: str) -> bool:
     lower = text.lower()
     return any(marker in lower for marker in MULTI_STEP_INTENT_MARKERS)
@@ -1102,7 +1162,38 @@ class AssistantOrchestrator:
         on_reply_delta=None,
         touch_last_seen: bool = True,
     ) -> AssistantResult:
+        turn_started_at = perf_counter()
+        progress_timeline: list[dict[str, Any]] = []
+        latency_ms: dict[str, int] = {}
+        run = None
+
+        def store_latency_metadata() -> None:
+            if run is None:
+                return
+            run.metadata_ = {
+                **(run.metadata_ or {}),
+                "latency_ms": {**latency_ms, "total_so_far_ms": int((perf_counter() - turn_started_at) * 1000)},
+                "progress_timeline": progress_timeline[-20:],
+            }
+
+        def record_timing(stage: str, started_at: float) -> None:
+            elapsed_ms = int((perf_counter() - started_at) * 1000)
+            latency_ms[stage] = latency_ms.get(stage, 0) + elapsed_ms
+            store_latency_metadata()
+            log.info("assistant turn timing", fields={"stage": stage, "elapsed_ms": elapsed_ms})
+
         async def progress(stage: str) -> None:
+            status_text = str(stage or "").strip()
+            if status_text:
+                progress_timeline.append({
+                    "elapsed_ms": int((perf_counter() - turn_started_at) * 1000),
+                    "status": status_text[:120],
+                })
+                store_latency_metadata()
+                log.info(
+                    "assistant turn progress",
+                    fields={"status": status_text[:120], "elapsed_ms": progress_timeline[-1]["elapsed_ms"]},
+                )
             if on_progress is None:
                 return
             try:
@@ -1161,13 +1252,19 @@ class AssistantOrchestrator:
         )
         await self.runs.mark_running(run)
         agent_run_id_var.set(str(run.id))
+        await progress(_initial_progress_status(user))
 
         # 4. Image understanding must happen before planner/final-answer short-circuits.
         media_context: MediaUnderstanding | None = None
         current_media: MediaCandidate | None = None
         selected_image = image
         if image:
-            await progress("👁️ Inspecting image…")
+            await progress(_backend_progress_status(
+                _backend_progress_language_for_user(user),
+                en="👁️ Inspecting image...",
+                ru="👁️ Смотрю изображение...",
+            ))
+            media_started_at = perf_counter()
             media_context = await self.media_understanding.analyze(
                 user_id=user.id,
                 timezone=user.timezone,
@@ -1176,6 +1273,7 @@ class AssistantOrchestrator:
                 agent_run_id=run.id,
                 session=self.session,
             )
+            record_timing("media_understanding_ms", media_started_at)
             media_json = media_context.to_audit_json()
             inbound.content_json = {
                 **(inbound.content_json or {"text": text}),
@@ -1215,6 +1313,7 @@ class AssistantOrchestrator:
             conversation_id=conversation.id,
             exclude_message_id=inbound.id,
         )
+        planner_started_at = perf_counter()
         plan = await self.planner.plan(
             user=user,
             text=text,
@@ -1224,6 +1323,7 @@ class AssistantOrchestrator:
             agent_run_id=run.id,
             session=self.session,
         )
+        record_timing("planner_ms", planner_started_at)
         _store_planner_trace(
             run,
             self.planner.last_trace,
@@ -1239,7 +1339,26 @@ class AssistantOrchestrator:
         )
         selected_media = _selected_or_current_media(plan, available_media, current_media)
         focused_question_override: str | None = None
-        if selected_media is None and available_media and text.strip():
+        should_resolve_media_reference = _should_resolve_media_reference(
+            text=text,
+            plan=plan,
+            available_media=available_media,
+        )
+        if should_resolve_media_reference and (
+            selected_media is None
+            or (
+                selected_media.source == "recent"
+                and plan.mode == "final_answer"
+                and not plan.needs_media_understanding
+                and _text_likely_references_media(text)
+            )
+        ):
+            await progress(_backend_progress_status(
+                plan.language,
+                en="🔎 Checking recent image...",
+                ru="🔎 Проверяю недавнее изображение...",
+            ))
+            media_reference_started_at = perf_counter()
             media_reference = await self.media_reference.resolve(
                 user_id=user.id,
                 timezone=user.timezone,
@@ -1248,13 +1367,23 @@ class AssistantOrchestrator:
                 agent_run_id=run.id,
                 session=self.session,
             )
+            record_timing("media_reference_ms", media_reference_started_at)
             if media_reference.references_media:
                 referenced_media = _find_media_candidate(media_reference.media_id, available_media)
                 if referenced_media is not None:
                     selected_media = referenced_media
-                    focused_question_override = media_reference.question
+                    focused_question_override = media_reference.question or text.strip()
                     if plan.visual_intent == "none" and media_reference.visual_intent != "none":
                         plan = plan.model_copy(update={"visual_intent": media_reference.visual_intent})
+                    if selected_media.source == "recent" and plan.mode == "final_answer" and not plan.tool_calls:
+                        plan = plan.model_copy(update={
+                            "mode": "needs_focused_vision",
+                            "focused_vision": FocusedVisionRequest(
+                                question=focused_question_override,
+                                reason=media_reference.reason,
+                                confidence=media_reference.confidence,
+                            ),
+                        })
 
         if selected_media is not None:
             selected_image = selected_media.image
@@ -1293,7 +1422,12 @@ class AssistantOrchestrator:
                 needs_compaction = await self._needs_compaction(conversation)
                 return _reply_result(reply_text, run_id=run.id, needs_compaction=needs_compaction)
 
-            await progress("👁️ Inspecting image…")
+            await progress(_backend_progress_status(
+                plan.language,
+                en="👁️ Inspecting image...",
+                ru="👁️ Смотрю изображение...",
+            ))
+            media_started_at = perf_counter()
             media_context = await self.media_understanding.analyze(
                 user_id=user.id,
                 timezone=user.timezone,
@@ -1302,8 +1436,10 @@ class AssistantOrchestrator:
                 agent_run_id=run.id,
                 session=self.session,
             )
+            record_timing("media_understanding_ms", media_started_at)
             selected_media.media_context = media_context
             self._store_selected_media_audit(inbound, text, selected_media, media_context)
+            planner_started_at = perf_counter()
             plan = await self.planner.plan(
                 user=user,
                 text=text,
@@ -1313,6 +1449,7 @@ class AssistantOrchestrator:
                 agent_run_id=run.id,
                 session=self.session,
             )
+            record_timing("planner_ms", planner_started_at)
             _store_planner_trace(
                 run,
                 self.planner.last_trace,
@@ -1433,7 +1570,12 @@ class AssistantOrchestrator:
             if selected_media is not None and selected_image is None:
                 selected_image = await self._ensure_candidate_image(selected_media, image_loader)
             if selected_media is not None and media_context is None and selected_image is not None:
-                await progress("👁️ Inspecting image…")
+                await progress(_backend_progress_status(
+                    plan.language,
+                    en="👁️ Inspecting image...",
+                    ru="👁️ Смотрю изображение...",
+                ))
+                media_started_at = perf_counter()
                 media_context = await self.media_understanding.analyze(
                     user_id=user.id,
                     timezone=user.timezone,
@@ -1442,6 +1584,7 @@ class AssistantOrchestrator:
                     agent_run_id=run.id,
                     session=self.session,
                 )
+                record_timing("media_understanding_ms", media_started_at)
                 selected_media.media_context = media_context
                 self._store_selected_media_audit(inbound, text, selected_media, media_context)
 
@@ -1464,7 +1607,12 @@ class AssistantOrchestrator:
                     needs_compaction=needs_compaction,
                 )
 
-            await progress("🔎 Checking image detail…")
+            await progress(_backend_progress_status(
+                plan.language,
+                en="🔎 Checking image detail...",
+                ru="🔎 Проверяю деталь изображения...",
+            ))
+            focused_started_at = perf_counter()
             focused_result = await self.focused_vision.analyze(
                 user_id=user.id,
                 timezone=user.timezone,
@@ -1475,6 +1623,7 @@ class AssistantOrchestrator:
                 agent_run_id=run.id,
                 session=self.session,
             )
+            record_timing("focused_vision_ms", focused_started_at)
             focused_json = {
                 "request": plan.focused_vision.model_dump(mode="json"),
                 "result": focused_result.to_audit_json(),
@@ -1660,10 +1809,12 @@ class AssistantOrchestrator:
             )
 
         # 6-7. Final reply
-        await progress(
-            "✍️ Writing reply…" if not action_results
-            else "✍️ Action done. Writing reply…"
-        )
+        await progress(_backend_progress_status(
+            plan.language,
+            en="✍️ Preparing final reply...",
+            ru="✍️ Готовлю ответ...",
+        ))
+        final_started_at = perf_counter()
         try:
             context = await self.context_builder.build(
                 user=user,
@@ -1698,8 +1849,10 @@ class AssistantOrchestrator:
                 )
             reply_text = response.text.strip() or FALLBACK_REPLY
             run.metadata_ = {**run.metadata_, "context_snapshot": context.debug_snapshot}
+            record_timing("final_ms", final_started_at)
         except Exception as exc:  # noqa: BLE001 — chat must answer something
             log.exception("final LLM reply failed")
+            record_timing("final_ms", final_started_at)
             await self.runs.mark_failed(run, f"final_chat: {exc}")
             if action_results:
                 done = "\n".join(f"• {r}" for r in action_results)
@@ -1738,6 +1891,9 @@ class AssistantOrchestrator:
         )
         self.session.add(outbound)
 
+        latency_ms["total_ms"] = int((perf_counter() - turn_started_at) * 1000)
+        store_latency_metadata()
+        log.info("assistant turn timing", fields={"stage": "total_ms", "elapsed_ms": latency_ms["total_ms"]})
         await self.runs.mark_completed(
             run, result_summary="; ".join(action_results) if action_results else "chat reply"
         )
@@ -1914,6 +2070,7 @@ class AssistantOrchestrator:
                 break
 
             await progress(_safe_user_visible_status(plan.user_visible_status, language=plan.language))
+            tool_started_at = perf_counter()
             (
                 step_results,
                 step_outcomes,
@@ -1930,6 +2087,12 @@ class AssistantOrchestrator:
                 source_message_id=source_message_id,
                 planner_context=planner_context,
             )
+            tool_elapsed_ms = int((perf_counter() - tool_started_at) * 1000)
+            metadata = run.metadata_ or {}
+            latency_ms = dict(metadata.get("latency_ms") or {})
+            latency_ms["tool_ms"] = int(latency_ms.get("tool_ms") or 0) + tool_elapsed_ms
+            run.metadata_ = {**metadata, "latency_ms": latency_ms}
+            log.info("assistant turn timing", fields={"stage": "tool_ms", "elapsed_ms": tool_elapsed_ms})
             tool_call_count += len(plan.tool_calls)
             all_results.extend(step_results)
             all_outcomes.extend(step_outcomes)
