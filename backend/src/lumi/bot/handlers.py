@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandStart
@@ -27,6 +28,7 @@ from lumi.services.confirmation_executor import ConfirmationExecutor
 from lumi.services.confirmations import ConfirmationService
 from lumi.services.realtime import commit_with_realtime
 from lumi.services.runs import RunService
+from lumi.services.task_update_fields import resolve_task_update_fields
 from lumi.services.task_update_replies import format_task_update_reply
 from lumi.services.tasks import TaskService
 from lumi.services.today import TodayService
@@ -46,6 +48,113 @@ REJECTED_ATTACHMENT_REPLY = (
 
 def _deadline_job_id(turn_id: uuid.UUID, enqueue_at) -> str:
     return f"assistant-turn:{turn_id}:at:{int(enqueue_at.timestamp() * 1000)}"
+
+
+def _compact_text(value: object, *, limit: int = 4000) -> str:
+    text = " ".join(str(value or "").split()).strip()
+    return text[:limit]
+
+
+def _telegram_sender_name(sender: Any) -> str | None:
+    if sender is None:
+        return None
+    first = getattr(sender, "first_name", None)
+    last = getattr(sender, "last_name", None)
+    name = " ".join(part for part in (first, last) if part)
+    if name:
+        return name
+    title = getattr(sender, "title", None)
+    if title:
+        return str(title)
+    username = getattr(sender, "username", None)
+    return str(username) if username else None
+
+
+def _forwarded_message_context(message: TgMessage, *, text: str) -> list[dict[str, str]]:
+    origin = getattr(message, "forward_origin", None)
+    legacy_sender = getattr(message, "forward_from", None)
+    legacy_chat = getattr(message, "forward_from_chat", None)
+    legacy_sender_name = getattr(message, "forward_sender_name", None)
+    if origin is None and legacy_sender is None and legacy_chat is None and not legacy_sender_name:
+        return []
+
+    item: dict[str, str] = {}
+    if origin is not None:
+        source_type = str(getattr(origin, "type", "") or "").strip()
+        if source_type:
+            item["source_type"] = source_type
+        sender = getattr(origin, "sender_user", None)
+        chat = getattr(origin, "sender_chat", None) or getattr(origin, "chat", None)
+        sender_name = (
+            _telegram_sender_name(sender)
+            or str(getattr(origin, "sender_user_name", "") or "").strip()
+            or _telegram_sender_name(chat)
+        )
+        username = getattr(sender, "username", None) if sender is not None else getattr(chat, "username", None)
+        if sender_name:
+            item["sender_name"] = sender_name
+        if username:
+            item["sender_username"] = str(username)
+        chat_title = getattr(chat, "title", None) if chat is not None else None
+        if chat_title:
+            item["chat_title"] = str(chat_title)
+    elif legacy_sender is not None:
+        item["source_type"] = "user"
+        sender_name = _telegram_sender_name(legacy_sender)
+        if sender_name:
+            item["sender_name"] = sender_name
+        username = getattr(legacy_sender, "username", None)
+        if username:
+            item["sender_username"] = str(username)
+    elif legacy_chat is not None:
+        item["source_type"] = str(getattr(legacy_chat, "type", None) or "chat")
+        chat_title = _telegram_sender_name(legacy_chat)
+        if chat_title:
+            item["chat_title"] = chat_title
+    elif legacy_sender_name:
+        item["source_type"] = "hidden_user"
+        item["sender_name"] = str(legacy_sender_name)
+
+    forwarded_text = _compact_text(text)
+    if forwarded_text:
+        item["text"] = forwarded_text
+    return [item] if item.get("text") else []
+
+
+def _reply_message_context(message: TgMessage) -> dict[str, Any] | None:
+    replied = getattr(message, "reply_to_message", None)
+    if replied is None:
+        return None
+    text = _compact_text(getattr(replied, "text", None) or getattr(replied, "caption", None))
+    message_id = getattr(replied, "message_id", None)
+    if not text and message_id is None:
+        return None
+    context: dict[str, Any] = {"message_id": message_id}
+    if text:
+        context["text"] = text
+    return context
+
+
+def _message_context_payload(message: TgMessage, *, text: str) -> tuple[str, dict[str, Any]]:
+    forwarded_messages = _forwarded_message_context(message, text=text)
+    if forwarded_messages:
+        turn_text = "[forwarded message]"
+        payload: dict[str, Any] = {
+            "text": "",
+            "user_comment": "",
+            "forwarded_messages": forwarded_messages,
+        }
+    else:
+        turn_text = text
+        payload = {
+            "text": text,
+            "user_comment": text,
+        }
+
+    reply_context = _reply_message_context(message)
+    if reply_context is not None:
+        payload["reply_context"] = reply_context
+    return turn_text, payload
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +608,7 @@ async def on_chat_message(message: TgMessage, bot: Bot, telegram_update_id: int 
         logical_message = build_logical_message([batch_item])
 
     text = logical_message.text
+    turn_text, message_context = _message_context_payload(message, text=text)
     image_ref = logical_message.image_ref
     supported_images = [image.to_metadata() for image in (logical_message.supported_images or [])]
     unsupported_attachments = list(logical_message.unsupported_attachments or [])
@@ -528,10 +638,11 @@ async def on_chat_message(message: TgMessage, bot: Bot, telegram_update_id: int 
             language_code=_language_code(message),
         )
         if intro_step(user) is not None:
-            if not text:
+            intro_text = str(message_context.get("user_comment") or "").strip()
+            if not intro_text:
                 await message.answer("Сейчас идет /intro — ответь текстом или нажми /cancel.")
                 return
-            reply, _finished = await handle_intro_answer(session, user, text)
+            reply, _finished = await handle_intro_answer(session, user, intro_text)
             await commit_with_realtime(session)
             await message.answer(reply)
             return
@@ -552,7 +663,7 @@ async def on_chat_message(message: TgMessage, bot: Bot, telegram_update_id: int 
                 telegram_user_id=message.from_user.id,
                 telegram_chat_id=message.chat.id,
                 telegram_message_id=logical_message.primary_message_id,
-                text=text,
+                text=turn_text,
                 username=message.from_user.username,
                 first_name=message.from_user.first_name,
                 last_name=message.from_user.last_name,
@@ -560,6 +671,7 @@ async def on_chat_message(message: TgMessage, bot: Bot, telegram_update_id: int 
                 image_metadata=image_ref.to_metadata() if image_ref else None,
                 ignored_attachments=[],
                 payload={
+                    **message_context,
                     "media_group_id": logical_message.media_group_id,
                     "telegram_message_ids": list(
                         logical_message.telegram_message_ids or [logical_message.primary_message_id]
@@ -764,6 +876,11 @@ async def on_update_pick(callback: CallbackQuery) -> None:
         if task is None:
             await callback.answer("Задача не найдена")
             return
+        raw_updates = updates
+        updates = resolve_task_update_fields(user=user, task=task, updates=raw_updates)
+        if not updates:
+            await callback.answer("Неизвестное действие")
+            return
         task = await tasks.update_task(
             user,
             task,
@@ -786,6 +903,7 @@ async def on_update_pick(callback: CallbackQuery) -> None:
             task,
             updates,
             language=str(payload.get("language") or ""),
+            timezone=user.timezone,
         )
 
     await callback.answer("Готово")

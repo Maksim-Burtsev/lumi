@@ -9,9 +9,12 @@ SUPPORTED_APP_LOCALES = ("en", "ru")
 DEFAULT_REPLY_LANGUAGE_MODE = "auto"
 DEFAULT_REPLY_LANGUAGE = "en"
 DEFAULT_TIME_FORMAT = "auto"
+DEFAULT_THEME_MODE = "telegram"
 SUPPORTED_TIME_FORMATS = ("auto", "24h", "12h")
+SUPPORTED_THEME_MODES = ("telegram", "light", "dark")
 ReplyLanguageMode = Literal["auto", "fixed", "app_locale"]
 TimeFormat = Literal["auto", "24h", "12h"]
+ThemeMode = Literal["telegram", "light", "dark"]
 
 
 def primary_language_tag(value: str | None) -> str | None:
@@ -62,11 +65,26 @@ def normalize_time_format(value: str | None) -> TimeFormat:
     return DEFAULT_TIME_FORMAT
 
 
+def normalize_theme_mode(value: str | None) -> ThemeMode:
+    if value == "light":
+        return "light"
+    if value == "dark":
+        return "dark"
+    return DEFAULT_THEME_MODE
+
+
 def validate_time_format(value: str | None) -> TimeFormat:
     if value in SUPPORTED_TIME_FORMATS:
         return value
     supported = ", ".join(SUPPORTED_TIME_FORMATS)
     raise ValueError(f"unsupported time format; expected one of: {supported}")
+
+
+def validate_theme_mode(value: str | None) -> ThemeMode:
+    if value in SUPPORTED_THEME_MODES:
+        return value
+    supported = ", ".join(SUPPORTED_THEME_MODES)
+    raise ValueError(f"unsupported theme mode; expected one of: {supported}")
 
 
 def ensure_language_settings(settings: dict | None) -> dict:
@@ -75,6 +93,7 @@ def ensure_language_settings(settings: dict | None) -> dict:
     merged.setdefault("reply_language_mode", DEFAULT_REPLY_LANGUAGE_MODE)
     merged.setdefault("reply_language", DEFAULT_REPLY_LANGUAGE)
     merged.setdefault("time_format", DEFAULT_TIME_FORMAT)
+    merged.setdefault("theme_mode", DEFAULT_THEME_MODE)
     merged["reply_language_mode"] = normalize_reply_language_mode(
         str(merged.get("reply_language_mode") or "")
     )
@@ -82,6 +101,7 @@ def ensure_language_settings(settings: dict | None) -> dict:
         str(merged.get("reply_language") or DEFAULT_REPLY_LANGUAGE)
     )
     merged["time_format"] = normalize_time_format(str(merged.get("time_format") or ""))
+    merged["theme_mode"] = normalize_theme_mode(str(merged.get("theme_mode") or ""))
     return merged
 
 

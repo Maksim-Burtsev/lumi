@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
-import type { MeResponse, SettingsResponse, User } from '../api/types';
+import type { MeResponse, SettingsResponse, ThemeMode, User } from '../api/types';
 import { ToastProvider } from '../components/ui/Toast';
 import SettingsPage from './SettingsPage';
 
@@ -40,7 +40,7 @@ function makeUser(overrides: Partial<User> = {}): User {
     last_name: 'User',
     timezone: 'Asia/Yerevan',
     locale: 'en',
-    settings: { reply_language_mode: 'auto', time_format: 'auto' },
+    settings: { reply_language_mode: 'auto', time_format: 'auto', theme_mode: 'telegram' },
     created_at: '2026-06-12T00:00:00Z',
     last_seen_at: null,
     ...overrides,
@@ -214,6 +214,136 @@ describe('SettingsPage language settings', () => {
     await waitFor(() => {
       expect(patchSpy).toHaveBeenCalledWith({ time_format: '24h' });
     });
+  });
+
+  it('lets the user force the dark theme from appearance settings', async () => {
+    const user = userEvent.setup();
+    let savedThemeMode: ThemeMode = 'telegram';
+    vi.spyOn(api, 'health').mockResolvedValue({ status: 'ok', app: 'Lumi', env: 'local', version: '0.1.0' });
+    vi.spyOn(api, 'getSettings').mockImplementation(async () => makeSettingsResponse(makeUser({
+      settings: {
+        reply_language_mode: 'auto',
+        time_format: 'auto',
+        theme_mode: savedThemeMode,
+      },
+    })));
+    vi.spyOn(api, 'getTimezones').mockResolvedValue(TIMEZONES_RESPONSE);
+    const patchSpy = vi.spyOn(api, 'patchSettings').mockImplementation(async (input): Promise<MeResponse> => {
+      savedThemeMode = input.theme_mode ?? savedThemeMode;
+      return {
+        user: makeUser({
+          settings: {
+            reply_language_mode: 'auto',
+            time_format: 'auto',
+            theme_mode: savedThemeMode,
+          },
+        }),
+      };
+    });
+
+    renderSettingsPage();
+
+    expect(await screen.findByText('Appearance')).toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Theme' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('listbox', { name: 'Theme' })).not.toBeInTheDocument();
+    const themeSelect = screen.getByRole('combobox', { name: 'Theme' });
+    expect(themeSelect).toHaveDisplayValue('Telegram');
+    await user.selectOptions(themeSelect, 'dark');
+
+    await waitFor(() => {
+      expect(patchSpy).toHaveBeenCalledWith({ theme_mode: 'dark' });
+    });
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+    expect(screen.getByRole('combobox', { name: 'Theme' })).toHaveDisplayValue('Dark');
+    expect(screen.queryByText('Theme saved')).not.toBeInTheDocument();
+  });
+
+  it('keeps the selected theme visible while saving', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'health').mockResolvedValue({ status: 'ok', app: 'Lumi', env: 'local', version: '0.1.0' });
+    vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettingsResponse());
+    vi.spyOn(api, 'getTimezones').mockResolvedValue(TIMEZONES_RESPONSE);
+    let resolvePatch: (response: MeResponse) => void = () => {};
+    const patchSpy = vi.spyOn(api, 'patchSettings').mockImplementation(
+      () => new Promise<MeResponse>((resolve) => {
+        resolvePatch = resolve;
+      }),
+    );
+
+    renderSettingsPage();
+
+    expect(await screen.findByText('Appearance')).toBeInTheDocument();
+    const themeSelect = screen.getByRole('combobox', { name: 'Theme' });
+    expect(themeSelect).toHaveDisplayValue('Telegram');
+    await user.selectOptions(themeSelect, 'dark');
+
+    expect(themeSelect).toHaveDisplayValue('Dark');
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+    expect(patchSpy).toHaveBeenCalledWith({ theme_mode: 'dark' });
+
+    resolvePatch({
+      user: makeUser({
+        settings: {
+          reply_language_mode: 'auto',
+          time_format: 'auto',
+          theme_mode: 'dark',
+        },
+      }),
+    });
+    await waitFor(() => expect(themeSelect).toHaveDisplayValue('Dark'));
+    expect(screen.queryByText('Theme saved')).not.toBeInTheDocument();
+  });
+
+  it('keeps the latest selected theme when saves resolve out of order', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'health').mockResolvedValue({ status: 'ok', app: 'Lumi', env: 'local', version: '0.1.0' });
+    vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettingsResponse());
+    vi.spyOn(api, 'getTimezones').mockResolvedValue(TIMEZONES_RESPONSE);
+    const resolvers: Array<(response: MeResponse) => void> = [];
+    const patchSpy = vi.spyOn(api, 'patchSettings').mockImplementation(
+      () => new Promise<MeResponse>((resolve) => {
+        resolvers.push(resolve);
+      }),
+    );
+
+    renderSettingsPage();
+
+    expect(await screen.findByText('Appearance')).toBeInTheDocument();
+    const themeSelect = screen.getByRole('combobox', { name: 'Theme' });
+    await user.selectOptions(themeSelect, 'dark');
+    await waitFor(() => expect(patchSpy).toHaveBeenCalledWith({ theme_mode: 'dark' }));
+    expect(themeSelect).toHaveDisplayValue('Dark');
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+
+    await user.selectOptions(themeSelect, 'light');
+    await waitFor(() => expect(patchSpy).toHaveBeenCalledWith({ theme_mode: 'light' }));
+    expect(themeSelect).toHaveDisplayValue('Light');
+    expect(document.documentElement.classList.contains('dark')).toBe(false);
+
+    resolvers[0]({
+      user: makeUser({
+        settings: {
+          reply_language_mode: 'auto',
+          time_format: 'auto',
+          theme_mode: 'dark',
+        },
+      }),
+    });
+    await waitFor(() => expect(themeSelect).toHaveDisplayValue('Light'));
+    expect(document.documentElement.classList.contains('dark')).toBe(false);
+
+    resolvers[1]({
+      user: makeUser({
+        settings: {
+          reply_language_mode: 'auto',
+          time_format: 'auto',
+          theme_mode: 'light',
+        },
+      }),
+    });
+    await waitFor(() => expect(themeSelect).toHaveDisplayValue('Light'));
+    expect(document.documentElement.classList.contains('dark')).toBe(false);
+    expect(screen.queryByText('Theme saved')).not.toBeInTheDocument();
   });
 
   it('shows work rhythm controls with five-minute short windows', async () => {

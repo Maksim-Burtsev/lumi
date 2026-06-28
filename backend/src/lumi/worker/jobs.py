@@ -29,6 +29,8 @@ from lumi.db.models import (
     AssistantOpportunityJob,
     AssistantTurn,
     Conversation,
+    Message,
+    MessageRole,
     ScheduledTask,
     Task,
     TaskStatus,
@@ -44,6 +46,7 @@ from lumi.services.calendar import CalendarService
 from lumi.services.planning_settings import normalize_planning_settings
 from lumi.services.runs import RunService
 from lumi.services.turns import TurnService
+from lumi.services.users import UserService
 from lumi.utils.text import chunk_telegram, ru_plural
 from lumi.utils.time import fmt_local, get_zone, utc_now
 from lumi.worker.queue import enqueue_job
@@ -509,6 +512,7 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
                 last_name=user_snapshot["last_name"],
                 image=image,
                 ignored_attachments=list(payload.get("ignored_attachments") or []),
+                message_context=payload,
                 image_loader=image_loader,
                 on_progress=on_progress,
                 touch_last_seen=False,
@@ -1004,13 +1008,58 @@ async def send_due_reminders(ctx: dict[str, Any]) -> str:
             text = f"⏰ Напоминание: {task.title}"
             if task.due_at:
                 text += f"\nСрок: {fmt_local(task.due_at, user.timezone)}"
-            ok = await send_telegram_message(user, text, reply_markup=markup)
-            if ok:
+            send_result = await send_telegram_message(
+                user,
+                text,
+                reply_markup=markup,
+                capture_message_ids=True,
+            )
+            if send_result:
+                telegram_message_ids = send_result if isinstance(send_result, list) else []
+                await _record_task_reminder_notification(
+                    session=session,
+                    user=user,
+                    task=task,
+                    text=text,
+                    telegram_message_ids=telegram_message_ids,
+                )
                 await tasks_service.mark_reminder_sent(task)
                 sent += 1
     if sent:
         log.info("reminders sent", fields={"count": sent})
     return f"sent {sent}"
+
+
+async def _record_task_reminder_notification(
+    *,
+    session,
+    user: User,
+    task: Task,
+    text: str,
+    telegram_message_ids: list[int],
+) -> None:
+    conversation = await UserService(session).ensure_main_conversation(user)
+    telegram_message_id = telegram_message_ids[-1] if telegram_message_ids else None
+    content_json = {
+        "notification_type": "task_reminder",
+        "task_id": str(task.id),
+        "task_title": task.title,
+        "due_at": task.due_at.isoformat() if task.due_at else None,
+        "reminder_at": task.reminder_at.isoformat() if task.reminder_at else None,
+        "telegram_message_id": telegram_message_id,
+        "telegram_message_ids": telegram_message_ids,
+    }
+    session.add(Message(
+        conversation_id=conversation.id,
+        user_id=user.id,
+        role=MessageRole.ASSISTANT,
+        content=text,
+        content_json=content_json,
+        char_count=len(text),
+        telegram_chat_id=user.telegram_chat_id or user.telegram_user_id,
+        telegram_message_id=telegram_message_id,
+        metadata_=content_json,
+    ))
 
 
 async def cleanup_ui_events(ctx: dict[str, Any]) -> str:

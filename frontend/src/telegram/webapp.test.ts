@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { captureTelegramInitParams, getInitData, setupTelegramTheme } from './webapp';
+import { captureTelegramInitParams, getInitData, setThemeMode, setupTelegramTheme } from './webapp';
 
 declare global {
   interface Window {
@@ -85,6 +85,24 @@ describe('Telegram readiness', () => {
     expect(notify).toHaveBeenCalledWith(
       JSON.stringify({ eventType: 'web_app_ready', eventData: '' }),
     );
+  });
+
+  it('suppresses CSS transitions during a theme swap', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+
+    setThemeMode('dark');
+
+    expect(document.documentElement).toHaveClass('dark');
+    expect(document.documentElement).toHaveClass('theme-swap');
+
+    callbacks.shift()?.(0);
+    expect(document.documentElement).toHaveClass('theme-swap');
+    callbacks.shift()?.(16);
+    expect(document.documentElement).not.toHaveClass('theme-swap');
   });
 
   it('keeps Telegram init data when the router replaces the launch hash', () => {

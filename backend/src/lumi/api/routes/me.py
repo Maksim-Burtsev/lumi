@@ -19,6 +19,7 @@ from lumi.i18n import (
     normalize_reply_language,
     normalize_reply_language_mode,
     validate_app_locale,
+    validate_theme_mode,
     validate_time_format,
 )
 from lumi.services.planning_settings import merge_planning_settings
@@ -74,6 +75,7 @@ class SettingsPatch(BaseModel):
     reply_language_mode: ReplyLanguageMode | None = None
     reply_language: str | None = None
     time_format: str | None = None
+    theme_mode: str | None = None
     settings: dict | None = None
 
     @field_validator("locale")
@@ -116,6 +118,14 @@ async def patch_settings(
             }
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="invalid_time_format") from exc
+    if payload.theme_mode is not None:
+        try:
+            user.settings = {
+                **ensure_language_settings(user.settings),
+                "theme_mode": validate_theme_mode(payload.theme_mode),
+            }
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="invalid_theme_mode") from exc
     if payload.settings is not None:
         merged_settings = {**user.settings, **payload.settings}
         if "time_format" in payload.settings:
@@ -127,6 +137,13 @@ async def patch_settings(
                 raise HTTPException(status_code=422, detail="invalid_time_format") from exc
         if "planning" in payload.settings:
             merged_settings = merge_planning_settings(merged_settings, payload.settings)
+        if "theme_mode" in payload.settings:
+            try:
+                merged_settings["theme_mode"] = validate_theme_mode(
+                    str(payload.settings["theme_mode"] or "")
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail="invalid_theme_mode") from exc
         if "reply_language" in payload.settings:
             merged_settings["reply_language"] = normalize_reply_language(
                 str(payload.settings["reply_language"] or "")

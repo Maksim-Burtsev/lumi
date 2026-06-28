@@ -21,6 +21,8 @@ const COPY = {
   },
 };
 
+const PROMPT_RESERVE = '148px';
+
 function localeOf(value: string | null | undefined): 'en' | 'ru' {
   return value === 'ru' ? 'ru' : 'en';
 }
@@ -44,13 +46,27 @@ export function TimezoneMismatchPrompt() {
   }, [dismissKey]);
 
   const dismissedInStorage = dismissKey ? localStorage.getItem(dismissKey) === '1' : false;
-  if (
-    !profileTimezone
-    || !deviceTimezone
-    || profileTimezone === deviceTimezone
-    || dismissed
-    || dismissedInStorage
-  ) {
+  const visible = !(
+    !profileTimezone ||
+    !deviceTimezone ||
+    profileTimezone === deviceTimezone ||
+    dismissed ||
+    dismissedInStorage
+  );
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (!visible) {
+      root.style.removeProperty('--timezone-prompt-reserve');
+      return;
+    }
+    root.style.setProperty('--timezone-prompt-reserve', PROMPT_RESERVE);
+    return () => {
+      root.style.removeProperty('--timezone-prompt-reserve');
+    };
+  }, [visible]);
+
+  if (!visible) {
     return null;
   }
 

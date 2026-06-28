@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { clearUnauthorizedResponse, hasUnauthorizedResponse, UNAUTHORIZED_EVENT } from './api/client';
-import { useRealtimeInvalidation } from './api/hooks';
+import { useRealtimeInvalidation, useSettings } from './api/hooks';
 import { AppShell } from './components/layout/AppShell';
 import { UnauthorizedScreen } from './components/layout/UnauthorizedScreen';
 import { TimezoneMismatchPrompt } from './components/settings/TimezoneMismatchPrompt';
 import { ToastProvider } from './components/ui/Toast';
+import { normalizeThemeMode } from './lib/theme';
+import { setThemeMode } from './telegram/webapp';
 import TodayPage from './routes/TodayPage';
 import TasksPage from './routes/TasksPage';
 import CalendarPage from './routes/CalendarPage';
@@ -29,6 +31,7 @@ const queryClient = new QueryClient({
 
 function AppRoutes() {
   useRealtimeInvalidation();
+  const settings = useSettings();
   const [unauthorized, setUnauthorized] = useState(hasUnauthorizedResponse);
   const client = useQueryClient();
 
@@ -37,6 +40,11 @@ function AppRoutes() {
     window.addEventListener(UNAUTHORIZED_EVENT, handler);
     return () => window.removeEventListener(UNAUTHORIZED_EVENT, handler);
   }, []);
+
+  useEffect(() => {
+    if (!settings.data) return;
+    setThemeMode(normalizeThemeMode(settings.data.user.settings.theme_mode));
+  }, [settings.data]);
 
   if (unauthorized) {
     return (

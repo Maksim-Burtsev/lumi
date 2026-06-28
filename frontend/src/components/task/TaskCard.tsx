@@ -106,7 +106,7 @@ export function TaskCard({
             >
               <motion.path
                 d="M2.5 7.5 L5.5 10.5 L11.5 3.5"
-                stroke="#221903"
+                stroke="var(--accent-foreground)"
                 strokeWidth="2"
                 strokeLinecap="round"
                 strokeLinejoin="round"

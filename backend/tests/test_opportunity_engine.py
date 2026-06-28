@@ -5,8 +5,8 @@ from sqlalchemy import select
 from lumi.db.models import AssistantOpportunityJob, CalendarEvent, CalendarEventStatus, CalendarSource
 from lumi.db.session import session_scope
 from lumi.llm.base import LLMError
-from lumi.services import calendar as calendar_module
 from lumi.services import assistant_suggestions as assistant_suggestions_module
+from lumi.services import calendar as calendar_module
 from lumi.services.assistant_suggestions import AssistantSuggestionService
 from lumi.services.tasks import TaskService
 from lumi.services.users import UserService

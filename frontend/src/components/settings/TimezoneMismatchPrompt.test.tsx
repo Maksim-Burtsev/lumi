@@ -76,6 +76,7 @@ describe('TimezoneMismatchPrompt', () => {
 
     expect(await screen.findByText(/Detected time zone/i)).toBeInTheDocument();
     expect(screen.getByText(/Pacific\/Chatham/i)).toBeInTheDocument();
+    expect(document.documentElement.style.getPropertyValue('--timezone-prompt-reserve')).toBe('148px');
     expect(patchSpy).not.toHaveBeenCalled();
   });
 
@@ -106,6 +107,7 @@ describe('TimezoneMismatchPrompt', () => {
     await waitFor(() => {
       expect(screen.queryByText(/Detected time zone/i)).not.toBeInTheDocument();
     });
+    expect(document.documentElement.style.getPropertyValue('--timezone-prompt-reserve')).toBe('');
     expect(localStorage.getItem('lumi-tz-dismissed:Asia/Yerevan:Pacific/Chatham')).toBe('1');
   });
 });

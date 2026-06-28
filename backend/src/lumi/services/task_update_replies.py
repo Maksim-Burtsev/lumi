@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from lumi.db.models import Task
+from lumi.utils.time import fmt_local
 
 
 def _is_english(language: str | None) -> bool:
@@ -33,6 +34,7 @@ def format_task_update_reply(
     updates: Mapping[str, Any],
     *,
     language: str | None = None,
+    timezone: str | None = None,
 ) -> str:
     english = _is_english(language)
     title = task.title
@@ -64,6 +66,18 @@ def format_task_update_reply(
     if "status" in updates and updates.get("status"):
         status = updates["status"]
         changes.append(f"status {status}" if english else f"статус — {status}")
+    if "due_at" in updates:
+        if updates.get("due_at") is None:
+            changes.append("due date removed" if english else "срок убран")
+        else:
+            when = fmt_local(task.due_at, timezone)
+            changes.append(f"due {when}" if english else f"срок — {when}")
+    if "reminder_at" in updates:
+        if updates.get("reminder_at") is None:
+            changes.append("reminder removed" if english else "напоминание убрано")
+        else:
+            when = fmt_local(task.reminder_at, timezone)
+            changes.append(f"reminder {when}" if english else f"напоминание — {when}")
 
     if not changes:
         return f"Updated task “{title}”." if english else f"Обновил задачу «{title}»."
