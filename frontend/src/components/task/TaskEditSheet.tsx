@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import type { Task, TaskPriority } from '../../api/types';
 import { usePatchTask } from '../../api/hooks';
+import { useAppLocale } from '../../lib/useAppLocale';
 import { Button } from '../ui/Button';
 import { FieldLabel, Input, Select, Textarea } from '../ui/Field';
 import { Sheet } from '../ui/Sheet';
 import { useToast } from '../ui/Toast';
-import { useAppLocale } from '../../lib/useAppLocale';
 
 /** Full task editor: title, priority, project, due date with quick chips. */
 

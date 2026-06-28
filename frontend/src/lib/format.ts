@@ -27,6 +27,7 @@ export interface TimeDisplayOptions {
   timeFormat?: TimeFormat;
   timezone?: string | null;
   regionalLocale?: string | null;
+  now?: Date;
 }
 
 export function normalizeTimeFormat(value: unknown): TimeFormat {
@@ -50,7 +51,7 @@ export function regionalLocaleTag(options: TimeDisplayOptions = {}): string {
 }
 
 function localeTag(options: TimeDisplayOptions = {}): string {
-  return !options.locale || options.locale === 'ru' ? 'ru-RU' : regionalLocaleTag(options);
+  return options.locale === 'ru' ? 'ru-RU' : regionalLocaleTag(options);
 }
 
 function withTimezone(timezone: string | null | undefined): Pick<Intl.DateTimeFormatOptions, 'timeZone'> {
@@ -192,8 +193,8 @@ export function formatRelative(ts: string | null | undefined, options: TimeDispl
   if (!ts) return '—';
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return '—';
-  const en = options.locale === 'en';
-  const now = new Date();
+  const now = options.now ?? new Date();
+  const locale = options.locale === 'ru' ? 'ru' : 'en';
   const diffMs = now.getTime() - d.getTime();
   const future = diffMs < 0;
   const abs = Math.abs(diffMs);
@@ -201,29 +202,32 @@ export function formatRelative(ts: string | null | undefined, options: TimeDispl
   const min = Math.round(abs / 60_000);
   const hours = Math.round(abs / 3_600_000);
 
-  if (en) {
+  if (locale === 'en') {
     if (abs < 45_000) return future ? 'in a minute' : 'just now';
     if (min < 60) return future ? `in ${min} min` : `${min} min ago`;
-    if (hours < 24 && isSameDay(d, now, options.timezone)) {
-      return future ? `in ${hours} ${hours === 1 ? 'hr' : 'hrs'}` : `${hours} ${hours === 1 ? 'hr' : 'hrs'} ago`;
-    }
+    if (hours < 24 && isSameDay(d, now, options.timezone)) return future ? `in ${hours} h` : `${hours} h ago`;
   } else {
     if (abs < 45_000) return future ? 'через минуту' : 'только что';
     if (min < 60) return future ? `через ${min} мин` : `${min} мин назад`;
     if (hours < 24 && isSameDay(d, now, options.timezone)) return future ? `через ${countLabel(hours, ['час', 'часа', 'часов'])}` : `${hours} ч назад`;
   }
 
-  const today = startOfDay(now);
-  if (isSameDay(d, addDays(today, -1), options.timezone)) return en ? 'yesterday' : 'вчера';
-  if (isSameDay(d, addDays(today, 1), options.timezone)) {
-    return en ? `tomorrow at ${formatTime(d, options)}` : `завтра в ${formatTime(d, options)}`;
+  if (locale === 'en') {
+    if (isSameDay(d, addDays(now, -1), options.timezone)) return 'yesterday';
+    if (isSameDay(d, addDays(now, 1), options.timezone)) return `tomorrow at ${formatTime(d, options)}`;
+  } else {
+    if (isSameDay(d, addDays(now, -1), options.timezone)) return 'вчера';
+    if (isSameDay(d, addDays(now, 1), options.timezone)) return `завтра в ${formatTime(d, options)}`;
   }
 
   const days = Math.round(abs / 86_400_000);
-  if (en && !future && days < 7) return `${days} ${days === 1 ? 'day' : 'days'} ago`;
-  if (en && future && days < 7) return `in ${days} ${days === 1 ? 'day' : 'days'}`;
-  if (!future && days < 7) return `${countLabel(days, ['день', 'дня', 'дней'])} назад`;
-  if (future && days < 7) return `через ${countLabel(days, ['день', 'дня', 'дней'])}`;
+  if (locale === 'en') {
+    if (!future && days < 7) return `${days} d ago`;
+    if (future && days < 7) return `in ${days} d`;
+  } else {
+    if (!future && days < 7) return `${countLabel(days, ['день', 'дня', 'дней'])} назад`;
+    if (future && days < 7) return `через ${countLabel(days, ['день', 'дня', 'дней'])}`;
+  }
 
   return safeDateTimeFormat(localeTag(options), { day: 'numeric', month: 'short' }).format(d);
 }
@@ -246,22 +250,32 @@ export function formatDueLabel(ts: string, options: TimeDisplayOptions = {}): st
 }
 
 /** "12,3 с" / "2 мин 05 с" — for run durations */
-export function formatDuration(ms: number | null | undefined): string {
+export function formatDuration(ms: number | null | undefined, locale: AppLocale = 'en'): string {
   if (ms == null) return '—';
-  if (ms < 1000) return `${ms} мс`;
+  if (ms < 1000) return locale === 'ru' ? `${ms} мс` : `${ms} ms`;
   const sec = ms / 1000;
-  if (sec < 90) return `${sec.toFixed(1).replace('.', ',')} с`;
+  if (sec < 90) {
+    const value = locale === 'ru' ? sec.toFixed(1).replace('.', ',') : sec.toFixed(1);
+    return locale === 'ru' ? `${value} с` : `${value} sec`;
+  }
   const minutes = Math.floor(sec / 60);
   const rest = Math.round(sec % 60);
-  return `${minutes} мин ${String(rest).padStart(2, '0')} с`;
+  return locale === 'ru'
+    ? `${minutes} мин ${String(rest).padStart(2, '0')} с`
+    : `${minutes} min ${String(rest).padStart(2, '0')} sec`;
 }
 
 /** "1 ч 30 мин" — for slot lengths */
-export function formatSpanMinutes(startTs: string, endTs: string): string {
+export function formatSpanMinutes(startTs: string, endTs: string, locale: AppLocale = 'en'): string {
   const minutes = Math.max(0, Math.round((new Date(endTs).getTime() - new Date(startTs).getTime()) / 60_000));
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
-  if (h > 0 && m > 0) return `${h} ч ${m} мин`;
-  if (h > 0) return `${h} ч`;
-  return `${m} мин`;
+  if (locale === 'ru') {
+    if (h > 0 && m > 0) return `${h} ч ${m} мин`;
+    if (h > 0) return `${h} ч`;
+    return `${m} мин`;
+  }
+  if (h > 0 && m > 0) return `${h} h ${m} min`;
+  if (h > 0) return `${h} h`;
+  return `${m} min`;
 }

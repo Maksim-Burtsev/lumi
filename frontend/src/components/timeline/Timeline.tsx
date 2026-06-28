@@ -1,7 +1,9 @@
-import type { ReactNode } from 'react';
+import type { KeyboardEvent, ReactNode } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
+import { StickyNote } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { formatTime, formatTimeRange } from '../../lib/format';
+import { useAppLocale } from '../../lib/useAppLocale';
 import { useTimeDisplay } from '../../lib/useTimeDisplay';
 
 export type TimelineEntryKind = 'event' | 'focus' | 'proposed' | 'free' | 'task';
@@ -19,6 +21,7 @@ export interface TimelineEntry {
   secondaryAction?: { label: string; onClick: () => void; busy?: boolean };
   /** Tap on the whole row (e.g. free slot → create block). */
   onPress?: () => void;
+  hasPersonalNote?: boolean;
 }
 
 const DOTS: Record<TimelineEntryKind, string> = {
@@ -47,6 +50,14 @@ function entryCardClass(kind: TimelineEntryKind): string {
 function EntryRow({ entry }: { entry: TimelineEntry }) {
   const reduceMotion = useReducedMotion();
   const timeDisplay = useTimeDisplay();
+  const locale = useAppLocale();
+  const press = () => entry.onPress?.();
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!entry.onPress) return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    entry.onPress();
+  };
 
   const inner: ReactNode = (
     <>
@@ -60,34 +71,45 @@ function EntryRow({ entry }: { entry: TimelineEntry }) {
       <div className={entryCardClass(entry.kind)}>
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <p
-              className={`truncate text-[14.5px] ${
-                entry.kind === 'free' ? 'font-normal text-hint' : 'font-medium text-ink'
-              }`}
-            >
-              {entry.title}
-            </p>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <p
+                className={`truncate text-[14.5px] ${
+                  entry.kind === 'free' ? 'font-normal text-hint' : 'font-medium text-ink'
+                }`}
+              >
+                {entry.title}
+              </p>
+              {entry.hasPersonalNote && (
+                <span role="img" aria-label={locale === 'en' ? 'Has personal note' : 'Есть личная заметка'} className="shrink-0 text-hint">
+                  <StickyNote size={13} aria-hidden="true" />
+                </span>
+              )}
+            </div>
             <p className="tnum mt-0.5 text-[12px] text-hint">
               {entry.kind === 'task'
-                ? `${timeDisplay.locale === 'en' ? 'by' : 'к'} ${formatTime(entry.start_at, timeDisplay)}`
+                ? `${locale === 'en' ? 'by' : 'к'} ${formatTime(entry.start_at, timeDisplay)}`
                 : formatTimeRange(entry.start_at, entry.end_at, timeDisplay)}
               {entry.subtitle ? ` · ${entry.subtitle}` : ''}
             </p>
           </div>
           {entry.secondaryAction && (
-            <Button
-              size="sm"
-              variant="ghost"
-              busy={entry.secondaryAction.busy}
-              onClick={entry.secondaryAction.onClick}
-            >
-              {entry.secondaryAction.label}
-            </Button>
+            <span onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+              <Button
+                size="sm"
+                variant="ghost"
+                busy={entry.secondaryAction.busy}
+                onClick={entry.secondaryAction.onClick}
+              >
+                {entry.secondaryAction.label}
+              </Button>
+            </span>
           )}
           {entry.action && (
-            <Button size="sm" variant="primary" busy={entry.action.busy} onClick={entry.action.onClick}>
-              {entry.action.label}
-            </Button>
+            <span onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+              <Button size="sm" variant="primary" busy={entry.action.busy} onClick={entry.action.onClick}>
+                {entry.action.label}
+              </Button>
+            </span>
           )}
         </div>
       </div>
@@ -96,15 +118,17 @@ function EntryRow({ entry }: { entry: TimelineEntry }) {
 
   if (entry.onPress) {
     return (
-      <motion.button
-        type="button"
-        onClick={entry.onPress}
+      <motion.div
+        role="button"
+        tabIndex={0}
+        onClick={press}
+        onKeyDown={handleKeyDown}
         whileTap={reduceMotion ? undefined : { scale: 0.97 }}
         transition={{ type: 'spring', stiffness: 420, damping: 26 }}
-        className="relative block w-full text-left"
+        className="relative block w-full cursor-pointer text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-border)]"
       >
         {inner}
-      </motion.button>
+      </motion.div>
     );
   }
 

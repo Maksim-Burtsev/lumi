@@ -30,6 +30,7 @@ import type {
   PatchAutomationInput,
   PatchMemoryInput,
   PatchNewsTopicInput,
+  PrivateNoteInput,
   PatchSettingsInput,
   PatchTaskInput,
   ProjectsResponse,
@@ -75,7 +76,7 @@ export function markUnauthorizedResponse(): void {
   window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
 }
 
-type Method = 'GET' | 'POST' | 'PATCH' | 'DELETE';
+type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 interface RequestOptions {
   query?: Record<string, string | number | undefined>;
@@ -207,6 +208,10 @@ export class LumiApiClient {
     return request('POST', '/api/calendar/events', { body: input });
   }
 
+  updateCalendarPrivateNote(id: string, input: PrivateNoteInput): Promise<CalendarEventResponse> {
+    return request('PUT', `/api/calendar/events/${id}/private-note`, { body: input });
+  }
+
   planDay(date?: string): Promise<RunRef> {
     return request('POST', '/api/calendar/plan-day', { body: date ? { date } : {} });
   }
@@ -225,6 +230,10 @@ export class LumiApiClient {
 
   deleteCalendarEvent(id: string): Promise<OkResponse> {
     return request('DELETE', `/api/calendar/events/${id}`);
+  }
+
+  deleteCalendarPrivateNote(id: string): Promise<CalendarEventResponse> {
+    return request('DELETE', `/api/calendar/events/${id}/private-note`);
   }
 
   syncCalendar(): Promise<RunRef> {

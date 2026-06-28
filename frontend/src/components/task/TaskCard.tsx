@@ -3,6 +3,8 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { ChevronRight, Clock, RotateCcw } from 'lucide-react';
 import type { Task, SnoozePreset, TaskPriority } from '../../api/types';
 import { formatDueLabel } from '../../lib/format';
+import type { AppLocale } from '../../lib/i18n';
+import { pickLocaleText } from '../../lib/i18n';
 import { useTimeDisplay } from '../../lib/useTimeDisplay';
 import { haptic } from '../../telegram/webapp';
 
@@ -17,16 +19,16 @@ interface TaskCardProps {
   onEditEstimate?: (task: Task, suggestion: { id: string; minutes: number; reason?: string | null }) => void;
 }
 
-const PRIORITY_DOTS: Record<TaskPriority, { className: string; label: { en: string; ru: string } }> = {
+const PRIORITY_DOTS: Record<TaskPriority, { className: string; label: Record<AppLocale, string> }> = {
   low: { className: 'bg-[#7d8896]', label: { en: 'low priority', ru: 'низкий приоритет' } },
   medium: { className: 'bg-[rgba(46,99,231,0.55)]', label: { en: 'medium priority', ru: 'средний приоритет' } },
   high: { className: 'bg-[#d97a2b]', label: { en: 'high priority', ru: 'высокий приоритет' } },
   urgent: { className: 'bg-[#c2553f]', label: { en: 'urgent', ru: 'срочно' } },
 };
 
-const SNOOZE_PRESETS: { preset: SnoozePreset; label: { en: string; ru: string } }[] = [
-  { preset: '1h', label: { en: '1 hr', ru: '1 ч' } },
-  { preset: '3h', label: { en: '3 hrs', ru: '3 ч' } },
+const SNOOZE_PRESETS: { preset: SnoozePreset; label: Record<AppLocale, string> }[] = [
+  { preset: '1h', label: { en: '1 h', ru: '1 ч' } },
+  { preset: '3h', label: { en: '3 h', ru: '3 ч' } },
   { preset: 'tomorrow', label: { en: 'Tomorrow', ru: 'Завтра' } },
   { preset: 'next_week', label: { en: 'Next week', ru: 'След. неделя' } },
 ];
@@ -44,10 +46,26 @@ export function TaskCard({
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const reduceMotion = useReducedMotion();
   const timeDisplay = useTimeDisplay();
-  const locale = timeDisplay.locale === 'ru' ? 'ru' : 'en';
+  const locale = timeDisplay.locale ?? 'en';
   const done = task.status === 'done';
   const overdue = !done && task.due_at !== null && new Date(task.due_at).getTime() < Date.now();
   const priority = PRIORITY_DOTS[task.priority];
+  const copy = pickLocaleText(locale, {
+    en: {
+      done: 'Task completed',
+      complete: 'Complete task',
+      reopen: 'Reopen task',
+      snooze: 'Snooze task',
+      snoozePrefix: 'Snooze:',
+    },
+    ru: {
+      done: 'Задача выполнена',
+      complete: 'Выполнить задачу',
+      reopen: 'Вернуть задачу',
+      snooze: 'Отложить задачу',
+      snoozePrefix: 'Отложить:',
+    },
+  });
   const complete = () => {
     if (done) {
       if (!onReopen) return;
@@ -65,7 +83,7 @@ export function TaskCard({
         {/* Complete checkbox: 26px visual, ≥44px tap target */}
         <motion.button
           type="button"
-          aria-label={done ? (onReopen ? (locale === 'en' ? 'Reopen task' : 'Вернуть задачу') : (locale === 'en' ? 'Task completed' : 'Задача выполнена')) : (locale === 'en' ? 'Complete task' : 'Выполнить задачу')}
+          aria-label={done ? (onReopen ? copy.reopen : copy.done) : copy.complete}
           disabled={done && !onReopen}
           whileTap={reduceMotion || (done && !onReopen) ? undefined : { scale: 0.85 }}
           transition={{ type: 'spring', stiffness: 420, damping: 22 }}
@@ -174,7 +192,7 @@ export function TaskCard({
         {!done && (
           <button
             type="button"
-            aria-label={locale === 'en' ? 'Snooze task' : 'Отложить задачу'}
+            aria-label={copy.snooze}
             onClick={() => {
               haptic('light');
               setSnoozeOpen((v) => !v);
@@ -227,7 +245,7 @@ export function TaskCard({
             className="overflow-hidden"
           >
             <div className="mt-2.5 flex items-center gap-1.5 border-t border-hairline pt-2.5">
-              <span className="mr-1 text-[12px] text-hint">{locale === 'en' ? 'Snooze:' : 'Отложить:'}</span>
+              <span className="mr-1 text-[12px] text-hint">{copy.snoozePrefix}</span>
               {SNOOZE_PRESETS.map(({ preset, label }) => (
                 <button
                   key={preset}

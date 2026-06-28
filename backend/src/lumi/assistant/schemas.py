@@ -275,6 +275,7 @@ class CalendarRequest(BaseModel):
     kind: Literal["find_focus_slot", "create_internal_block", "create_external_event", "plan_day"]
     title: str | None = None
     description: str | None = None
+    private_note: str | None = None
     duration_minutes: int = 60
     start_at_local: datetime | None = None
     end_at_local: datetime | None = None
@@ -291,6 +292,44 @@ class CalendarRequest(BaseModel):
         if not v:
             return None
         return v[:2000]
+
+    @field_validator("private_note")
+    @classmethod
+    def clean_optional_private_note(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        return v[:4000]
+
+
+class CalendarPrivateNoteRequest(BaseModel):
+    event_id: uuid.UUID | None = None
+    event_query: str | None = None
+    private_note: str | None = None
+    confidence: float = 0.0
+    requires_confirmation: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def merge_note_aliases(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        merged = dict(data)
+        if "note" in merged and "private_note" not in merged:
+            merged["private_note"] = merged["note"]
+        return merged
+
+    @field_validator("event_query", "private_note")
+    @classmethod
+    def clean_optional_text(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = " ".join(v.split()).strip()
+        if not v:
+            return None
+        return v[:4000]
 
 
 class CalendarEventsRequest(BaseModel):

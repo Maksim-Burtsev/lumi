@@ -14,6 +14,7 @@ import type {
   PatchNewsTopicInput,
   PatchSettingsInput,
   PatchTaskInput,
+  PrivateNoteInput,
   RunRef,
   SnoozeInput,
   Task,
@@ -392,6 +393,30 @@ export function useCreateEvent() {
       void queryClient.invalidateQueries({ queryKey: qk.eventsAll });
       void queryClient.invalidateQueries({ queryKey: qk.freeSlotsAll });
       void queryClient.invalidateQueries({ queryKey: qk.assistantSuggestions });
+      void queryClient.invalidateQueries({ queryKey: qk.today });
+    },
+  });
+}
+
+export function useUpdateCalendarPrivateNote() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: PrivateNoteInput }) => api.updateCalendarPrivateNote(id, input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: qk.eventsAll });
+      void queryClient.invalidateQueries({ queryKey: qk.freeSlotsAll });
+      void queryClient.invalidateQueries({ queryKey: qk.today });
+    },
+  });
+}
+
+export function useDeleteCalendarPrivateNote() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteCalendarPrivateNote(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: qk.eventsAll });
+      void queryClient.invalidateQueries({ queryKey: qk.freeSlotsAll });
       void queryClient.invalidateQueries({ queryKey: qk.today });
     },
   });

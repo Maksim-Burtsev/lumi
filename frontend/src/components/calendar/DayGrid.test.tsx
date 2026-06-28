@@ -47,6 +47,7 @@ function renderGrid(event: CalendarEvent) {
       <DayGrid
         events={[event]}
         dayStart={new Date('2026-06-16T20:00:00Z')}
+        locale="ru"
         onEmptyTap={vi.fn()}
         onEventTap={vi.fn()}
       />
@@ -82,6 +83,11 @@ describe('DayGrid time format', () => {
       attendees: [],
       attendee_count: 0,
       user_response_status: null,
+      private_note: null,
+      private_note_summary: null,
+      private_note_summary_status: null,
+      private_note_updated_at: null,
+      private_note_summary_updated_at: null,
     });
 
     expect(await screen.findByText('8:00 AM')).toBeInTheDocument();

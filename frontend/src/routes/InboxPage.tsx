@@ -14,6 +14,8 @@ import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
 import { formatRelative } from '../lib/format';
 import { inboxCategoryLabel } from '../lib/labels';
+import { useAppLocale } from '../lib/useAppLocale';
+import { useTimeDisplay } from '../lib/useTimeDisplay';
 
 const CATEGORY_ORDER: (keyof InboxCounts)[] = [
   'needs_reply',
@@ -42,6 +44,8 @@ function InboxSkeleton() {
 }
 
 export default function InboxPage() {
+  const locale = useAppLocale();
+  const timeDisplay = useTimeDisplay();
   const inboxQuery = useInboxSummary();
   const createFromThread = useCreateTaskFromThread();
   const [category, setCategory] = useState<string | null>(null);
@@ -49,14 +53,51 @@ export default function InboxPage() {
   const [createdIds, setCreatedIds] = useState<ReadonlySet<string>>(new Set());
   const navigate = useNavigate();
   const { show } = useToast();
+  const copy = locale === 'en'
+    ? {
+        triaged: 'Email triaged',
+        googleMissing: 'Google is not connected. Open Settings.',
+        createdPrefix: 'Task created',
+        createFailed: 'Could not create task',
+        loadFailed: 'Could not load inbox.',
+        gmailMissing: 'Gmail is not connected',
+        gmailHint: 'After connecting it, Lumi can show every morning where someone waits for your reply.',
+        openSettings: 'Open settings',
+        triage: 'Triage email',
+        lastTriage: 'Last triage',
+        neverTriaged: 'Triage has not run yet',
+        all: 'All',
+        noMail: 'No emails to triage',
+        noMailHint: 'Run "Triage email". Lumi will scan recent email and sort it.',
+        emptyCategory: 'This category is empty',
+        emptyCategoryHint: 'Choose another category or run email triage.',
+      }
+    : {
+        triaged: 'Почта разобрана',
+        googleMissing: 'Google не подключен — загляни в Настройки',
+        createdPrefix: 'Задача создана',
+        createFailed: 'Не удалось создать задачу',
+        loadFailed: 'Не удалось загрузить почту.',
+        gmailMissing: 'Gmail не подключен',
+        gmailHint: 'После подключения Lumi сможет каждое утро показывать, где от тебя ждут ответа.',
+        openSettings: 'Открыть настройки',
+        triage: 'Разобрать почту',
+        lastTriage: 'Последний разбор',
+        neverTriaged: 'Разбор ещё не запускался',
+        all: 'Все',
+        noMail: 'Писем для разбора нет',
+        noMailHint: 'Запусти «Разобрать почту» — Lumi посмотрит свежие письма и разложит их по полочкам.',
+        emptyCategory: 'В этой категории пусто',
+        emptyCategoryHint: 'Выбери другую категорию или запусти разбор почты.',
+      };
 
   const triageAction = useAgentRunAction({
     start: () => api.runEmailTriage(),
     invalidate: [qk.inbox],
-    successMessage: 'Почта разобрана',
+    successMessage: copy.triaged,
     onApiError: (error) => {
       if (error.status === 409 && error.error === 'google_not_connected') {
-        show('Google не подключен — загляни в Настройки', 'info');
+        show(copy.googleMissing, 'info');
         return true;
       }
       return false;
@@ -80,16 +121,16 @@ export default function InboxPage() {
     createFromThread.mutate(threadId, {
       onSuccess: (result) => {
         setCreatedIds((prev) => new Set(prev).add(threadId));
-        show(`Задача создана: ${result.task.title}`, 'success');
+        show(`${copy.createdPrefix}: ${result.task.title}`, 'success');
       },
-      onError: () => show('Не удалось создать задачу', 'error'),
+      onError: () => show(copy.createFailed, 'error'),
       onSettled: () => setCreatingId(null),
     });
   };
 
   if (inboxQuery.isPending) return <InboxSkeleton />;
   if (inboxQuery.isError) {
-    return <ErrorState message="Не удалось загрузить почту." onRetry={() => void inboxQuery.refetch()} />;
+    return <ErrorState message={copy.loadFailed} onRetry={() => void inboxQuery.refetch()} />;
   }
 
   if (!data || !data.connected) {
@@ -98,11 +139,11 @@ export default function InboxPage() {
         <Rise>
           <EmptyState
             icon={MailX}
-            title="Gmail не подключен"
-            hint="После подключения Lumi сможет каждое утро показывать, где от тебя ждут ответа."
+            title={copy.gmailMissing}
+            hint={copy.gmailHint}
             action={
               <Button variant="secondary" onClick={() => navigate('/settings')}>
-                Открыть настройки
+                {copy.openSettings}
               </Button>
             }
             className="mt-4"
@@ -123,10 +164,10 @@ export default function InboxPage() {
             busy={triageAction.isRunning}
             onClick={triageAction.trigger}
           >
-            Разобрать почту
+            {copy.triage}
           </Button>
           <span className="text-[12.5px] text-hint">
-            {data.last_triage_at ? `Последний разбор: ${formatRelative(data.last_triage_at)}` : 'Разбор ещё не запускался'}
+            {data.last_triage_at ? `${copy.lastTriage}: ${formatRelative(data.last_triage_at, timeDisplay)}` : copy.neverTriaged}
           </span>
         </div>
       </Rise>
@@ -134,11 +175,11 @@ export default function InboxPage() {
       {/* Category chips */}
       <Rise>
         <div className="no-scrollbar -mx-4 mt-4 flex gap-2 overflow-x-auto px-4 py-1">
-          <Chip label="Все" count={totalCount} active={category === null} onClick={() => setCategory(null)} />
+          <Chip label={copy.all} count={totalCount} active={category === null} onClick={() => setCategory(null)} />
           {CATEGORY_ORDER.filter((key) => data.counts[key] > 0).map((key) => (
             <Chip
               key={key}
-              label={inboxCategoryLabel(key)}
+              label={inboxCategoryLabel(key, locale)}
               count={data.counts[key]}
               active={category === key}
               onClick={() => setCategory(category === key ? null : key)}
@@ -153,14 +194,14 @@ export default function InboxPage() {
           category === null ? (
             <EmptyState
               icon={MailOpen}
-              title="Писем для разбора нет"
-              hint="Запусти «Разобрать почту» — Lumi посмотрит свежие письма и разложит их по полочкам."
+              title={copy.noMail}
+              hint={copy.noMailHint}
             />
           ) : (
             <EmptyState
               icon={Inbox}
-              title="В этой категории пусто"
-              hint="Выбери другую категорию или запусти разбор почты."
+              title={copy.emptyCategory}
+              hint={copy.emptyCategoryHint}
             />
           )
         ) : (

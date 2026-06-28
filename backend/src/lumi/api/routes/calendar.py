@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +20,7 @@ from lumi.services.automations import AutomationService
 from lumi.services.calendar import CalendarService
 from lumi.services.realtime import RealtimeEventService
 from lumi.utils.time import utc_now
+from lumi.worker.queue import enqueue_job
 
 router = APIRouter()
 
@@ -33,6 +34,35 @@ class EventCreate(BaseModel):
     meeting_url: str | None = None
     external_url: str | None = None
     links: list[str] | None = None
+    private_note: str | None = None
+
+    @field_validator("private_note")
+    @classmethod
+    def clean_private_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        if len(value) > 4000:
+            raise ValueError("private_note_too_long")
+        return value
+
+
+class PrivateNoteBody(BaseModel):
+    note: str | None = None
+
+    @field_validator("note")
+    @classmethod
+    def clean_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        if len(value) > 4000:
+            raise ValueError("private_note_too_long")
+        return value
 
 
 class PlanDayBody(BaseModel):
@@ -91,6 +121,22 @@ async def _maybe_enqueue_stale_calendar_sync(
         sync_state["refresh_queued"] = False
 
 
+async def _maybe_enqueue_private_note_summary(user: User, event) -> None:
+    metadata = event.metadata_ or {}
+    if metadata.get("private_note_summary_status") != "pending":
+        return
+    note_hash = metadata.get("private_note_hash")
+    if not note_hash:
+        return
+    await enqueue_job(
+        "summarize_calendar_private_note",
+        str(user.id),
+        event_id=str(event.id),
+        private_note_hash=note_hash,
+        notify=False,
+    )
+
+
 @router.get("/calendar/events")
 async def list_events(
     start: datetime | None = None,
@@ -126,6 +172,48 @@ async def create_event(
         links=payload.links,
         created_by="user",
     )
+    if payload.private_note:
+        event = await CalendarService(session).set_private_note(user, event, payload.private_note)
+        await _maybe_enqueue_private_note_summary(user, event)
+    return {"event": event_to_dict(event)}
+
+
+@router.put("/calendar/events/{event_id}/private-note")
+async def update_private_note(
+    event_id: str,
+    payload: PrivateNoteBody,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    calendar = CalendarService(session)
+    try:
+        event = await calendar.get_event(user, uuid.UUID(event_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="not_found") from exc
+    if event is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    try:
+        event = await calendar.set_private_note(user, event, payload.note)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await _maybe_enqueue_private_note_summary(user, event)
+    return {"event": event_to_dict(event)}
+
+
+@router.delete("/calendar/events/{event_id}/private-note")
+async def delete_private_note(
+    event_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    calendar = CalendarService(session)
+    try:
+        event = await calendar.get_event(user, uuid.UUID(event_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="not_found") from exc
+    if event is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    event = await calendar.delete_private_note(user, event)
     return {"event": event_to_dict(event)}
 
 

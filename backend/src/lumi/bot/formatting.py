@@ -20,6 +20,15 @@ def telegram_plain_text(text: str) -> str:
     return text.strip()
 
 
+def rich_html_requires_rich_message(html: str) -> bool:
+    """Return True for tags supported by Rich Messages but unsafe for sendMessage HTML."""
+    return bool(re.search(
+        r"</?(?:p|h[1-6]|ul|ol|li|details|summary|table|caption|tr|td|th|footer|hr)\b",
+        html,
+        re.I,
+    ))
+
+
 def format_today(payload: dict, tz: str) -> str:
     summary = payload["summary"]
     lines = [payload["greeting"] + "!"]
