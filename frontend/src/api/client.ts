@@ -2,6 +2,8 @@ import { getInitData } from '../telegram/webapp';
 import type {
   AgentRunDetailResponse,
   AgentRunsResponse,
+  AssistantSuggestionResponse,
+  AssistantSuggestionsResponse,
   AutomationResponse,
   AutomationsResponse,
   CalendarEventResponse,
@@ -31,6 +33,7 @@ import type {
   PrivateNoteInput,
   PatchSettingsInput,
   PatchTaskInput,
+  ProjectsResponse,
   RunRef,
   SettingsResponse,
   SnoozeInput,
@@ -160,8 +163,8 @@ export class LumiApiClient {
   }
 
   // -------------------------------------------------- Tasks
-  listTasks(filter: TaskFilter = 'all', limit = 100): Promise<TasksResponse> {
-    return request('GET', '/api/tasks', { query: { filter, limit } });
+  listTasks(filter: TaskFilter = 'all', limit = 100, project_id?: string): Promise<TasksResponse> {
+    return request('GET', '/api/tasks', { query: { filter, limit, project_id } });
   }
 
   createTask(input: CreateTaskInput): Promise<TaskResponse> {
@@ -178,6 +181,22 @@ export class LumiApiClient {
 
   snoozeTask(id: string, input: SnoozeInput): Promise<TaskResponse> {
     return request('POST', `/api/tasks/${id}/snooze`, { body: input });
+  }
+
+  listProjects(): Promise<ProjectsResponse> {
+    return request('GET', '/api/projects');
+  }
+
+  listAssistantSuggestions(kind?: string): Promise<AssistantSuggestionsResponse> {
+    return request('GET', '/api/assistant/suggestions', { query: { kind } });
+  }
+
+  acceptAssistantSuggestion(id: string): Promise<AssistantSuggestionResponse> {
+    return request('POST', `/api/assistant/suggestions/${id}/accept`);
+  }
+
+  dismissAssistantSuggestion(id: string): Promise<AssistantSuggestionResponse> {
+    return request('POST', `/api/assistant/suggestions/${id}/dismiss`);
   }
 
   // -------------------------------------------------- Calendar

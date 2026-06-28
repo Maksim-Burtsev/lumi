@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Check, Minus } from 'lucide-react';
+import type { ReactNode } from 'react';
+import { Bell, CalendarDays, Check, Clock3, Minus, Moon, Sparkles } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { ApiError, api } from '../api/client';
 import { openExternalLink } from '../telegram/webapp';
@@ -52,12 +53,132 @@ const LANGUAGE_OPTIONS = [
   { value: 'ru', label: 'Русский' },
 ];
 
+type PlanningSettings = {
+  work_days: number[];
+  work_hours: { start: string; end: string };
+  quiet_hours: { start: string; end: string };
+  proactive_level: 'calm' | 'balanced' | 'active';
+  micro_slots_enabled: boolean;
+  micro_slots: { min_minutes: number };
+  auto_enrich_tasks: boolean;
+  suggestion_notifications: 'important' | 'none' | 'all';
+};
+
+const DEFAULT_PLANNING: PlanningSettings = {
+  work_days: [0, 1, 2, 3, 4],
+  work_hours: { start: '09:00', end: '19:00' },
+  quiet_hours: { start: '21:00', end: '09:00' },
+  proactive_level: 'balanced',
+  micro_slots_enabled: true,
+  micro_slots: { min_minutes: 5 },
+  auto_enrich_tasks: true,
+  suggestion_notifications: 'important',
+};
+
+const WEEKDAY_LABELS = {
+  en: ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'],
+  ru: ['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС'],
+};
+
+function readPlanning(settings: Record<string, unknown>): PlanningSettings {
+  const raw = typeof settings.planning === 'object' && settings.planning !== null
+    ? settings.planning as Partial<PlanningSettings>
+    : {};
+  return {
+    ...DEFAULT_PLANNING,
+    ...raw,
+    work_hours: { ...DEFAULT_PLANNING.work_hours, ...(raw.work_hours ?? {}) },
+    quiet_hours: { ...DEFAULT_PLANNING.quiet_hours, ...(raw.quiet_hours ?? {}) },
+    micro_slots: { min_minutes: Math.max(5, raw.micro_slots?.min_minutes ?? 5) },
+  };
+}
+
+function SettingRow({
+  icon: Icon,
+  label,
+  children,
+}: {
+  icon: typeof Clock3;
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex min-h-[62px] items-center justify-between gap-3 border-t border-hairline px-4 py-3 first:border-t-0">
+      <span className="flex min-w-0 items-center gap-2.5 text-[13.5px] font-medium text-ink">
+        <Icon size={17} className="shrink-0 text-hint" />
+        {label}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function ToggleRow({
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="flex min-h-[74px] items-center justify-between gap-3 border-t border-hairline px-4 py-3 first:border-t-0">
+      <span className="min-w-0">
+        <span className="block text-[14px] font-semibold text-ink">{label}</span>
+        <span className="mt-0.5 block text-[12.5px] leading-snug text-hint">{hint}</span>
+      </span>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        onClick={() => onChange(!checked)}
+        className={`relative h-8 w-[54px] shrink-0 rounded-full transition-colors ${
+          checked ? 'bg-accent' : 'bg-[var(--secondary-bg)]'
+        }`}
+      >
+        <span
+          className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow-sm transition-transform ${
+            checked ? 'translate-x-6' : 'translate-x-1'
+          }`}
+        />
+      </button>
+    </div>
+  );
+}
+
 const COPY = {
   en: {
     loadError: 'Could not load settings.',
     timezone: 'Time zone',
     timeFormat: 'Time format',
     regionalSettings: 'Regional settings',
+    workRhythm: 'Work rhythm',
+    workDays: 'Work days',
+    workHours: 'Work hours',
+    quietHours: 'Quiet hours',
+    proactivity: 'Lumi proactivity',
+    calm: 'Calm',
+    balanced: 'Balanced',
+    active: 'Active',
+    proactivityHint: 'Check calendar and tasks more often while you are active.',
+    proactivityDescriptions: {
+      calm: 'Fewer checks and fewer nudges.',
+      balanced: 'Regular checks while you are active.',
+      active: 'Faster refresh after calendar or task changes.',
+    },
+    suggestionsTitle: 'Suggestions',
+    shortWindows: 'Short windows',
+    shortWindowsHint: 'Show tasks for free windows from 5 minutes',
+    autoReview: 'Auto-review tasks',
+    autoReviewHint: 'Lumi suggests priority, estimate, and due date when it fits',
+    suggestionNotifications: 'Notifications',
+    onlyImportant: 'Important only',
+    noPushes: 'No pushes',
+    allSuggestions: 'All',
+    rhythmSaved: 'Work rhythm saved',
     appLanguage: 'App language',
     botReplies: 'Bot replies',
     replyAuto: 'Auto: match each message',
@@ -108,6 +229,30 @@ const COPY = {
     timezone: 'Часовой пояс',
     timeFormat: 'Формат времени',
     regionalSettings: 'Региональные настройки',
+    workRhythm: 'Рабочий ритм',
+    workDays: 'Рабочие дни',
+    workHours: 'Рабочие часы',
+    quietHours: 'Тихие часы',
+    proactivity: 'Проактивность Lumi',
+    calm: 'Спокойно',
+    balanced: 'Обычно',
+    active: 'Активно',
+    proactivityHint: 'Чаще проверять календарь и задачи, когда вы активны.',
+    proactivityDescriptions: {
+      calm: 'Меньше проверок и меньше подсказок.',
+      balanced: 'Регулярные проверки, когда вы активны.',
+      active: 'Быстрее обновлять после изменений календаря или задач.',
+    },
+    suggestionsTitle: 'Предложения',
+    shortWindows: 'Короткие окна',
+    shortWindowsHint: 'Показывать задачи для свободных окон от 5 минут',
+    autoReview: 'Авто-разбор задач',
+    autoReviewHint: 'Lumi предложит приоритет, оценку и срок, если это уместно',
+    suggestionNotifications: 'Уведомления',
+    onlyImportant: 'Только важное',
+    noPushes: 'Без пушей',
+    allSuggestions: 'Все',
+    rhythmSaved: 'Рабочий ритм сохранён',
     appLanguage: 'Язык приложения',
     botReplies: 'Ответы бота',
     replyAuto: 'Авто: язык каждого сообщения',
@@ -172,6 +317,7 @@ export default function SettingsPage() {
   const [yandexSyncRunId, setYandexSyncRunId] = useState<string | null>(null);
   const [googleConnecting, setGoogleConnecting] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [planningDraft, setPlanningDraft] = useState<PlanningSettings | null>(null);
   const { show } = useToast();
   const yandexSyncPoller = useRunPoller(yandexSyncRunId, [qk.eventsAll, qk.settings, qk.today]);
   const queryClientForGoogle = useQueryClient();
@@ -229,6 +375,7 @@ export default function SettingsPage() {
     : 'auto';
   const timeFormat = normalizeTimeFormat(user.settings.time_format);
   const timeDisplay = { locale, timeFormat, timezone: user.timezone };
+  const planning = planningDraft ?? readPlanning(user.settings);
 
   const handleGoogleConnect = () => {
     api
@@ -306,6 +453,27 @@ export default function SettingsPage() {
     );
   };
 
+  const handlePlanningPatch = (patch: Partial<PlanningSettings>) => {
+    const next = {
+      ...planning,
+      ...patch,
+      work_hours: { ...planning.work_hours, ...(patch.work_hours ?? {}) },
+      quiet_hours: { ...planning.quiet_hours, ...(patch.quiet_hours ?? {}) },
+      micro_slots: { ...planning.micro_slots, ...(patch.micro_slots ?? {}) },
+    };
+    setPlanningDraft(next);
+    patchSettings.mutate(
+      { settings: { planning: next } },
+      {
+        onSuccess: () => show(copy.rhythmSaved, 'success'),
+        onError: () => {
+          setPlanningDraft(null);
+          show(copy.saveFailed, 'error');
+        },
+      },
+    );
+  };
+
   return (
     <Stagger>
       {/* Profile */}
@@ -363,6 +531,138 @@ export default function SettingsPage() {
               />
             </span>
           </label>
+        </Card>
+      </Rise>
+
+      {/* Work rhythm */}
+      <Rise>
+        <SectionHeader title={copy.workRhythm} />
+        <Card className="card-strong !p-0 overflow-hidden">
+          <div className="px-4 py-3.5">
+            <div className="mb-3 flex items-center gap-2.5">
+              <CalendarDays size={17} className="text-hint" />
+              <span className="text-[13.5px] font-medium text-ink">{copy.workDays}</span>
+            </div>
+            <div className="grid grid-cols-7 gap-2">
+              {WEEKDAY_LABELS[locale].map((label, index) => {
+                const active = planning.work_days.includes(index);
+                return (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={() => {
+                      const nextDays = active
+                        ? planning.work_days.filter((day) => day !== index)
+                        : [...planning.work_days, index].sort((a, b) => a - b);
+                      handlePlanningPatch({ work_days: nextDays });
+                    }}
+                    className={`h-10 rounded-xl border text-[12.5px] font-semibold transition-colors ${
+                      active
+                        ? 'border-[var(--accent-border)] bg-accent text-white'
+                        : 'border-hairline bg-[var(--secondary-bg)] text-hint'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <SettingRow icon={Clock3} label={copy.workHours}>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <input
+                type="time"
+                value={planning.work_hours.start}
+                onChange={(e) => handlePlanningPatch({ work_hours: { start: e.target.value, end: planning.work_hours.end } })}
+                className="tnum h-9 w-[92px] rounded-xl border border-hairline bg-[var(--surface-strong)] px-2 text-[13px] outline-none focus:border-[var(--accent-border)]"
+              />
+              <span className="text-hint">–</span>
+              <input
+                type="time"
+                value={planning.work_hours.end}
+                onChange={(e) => handlePlanningPatch({ work_hours: { start: planning.work_hours.start, end: e.target.value } })}
+                className="tnum h-9 w-[92px] rounded-xl border border-hairline bg-[var(--surface-strong)] px-2 text-[13px] outline-none focus:border-[var(--accent-border)]"
+              />
+            </div>
+          </SettingRow>
+          <SettingRow icon={Moon} label={copy.quietHours}>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <input
+                type="time"
+                value={planning.quiet_hours.start}
+                onChange={(e) => handlePlanningPatch({ quiet_hours: { start: e.target.value, end: planning.quiet_hours.end } })}
+                className="tnum h-9 w-[92px] rounded-xl border border-hairline bg-[var(--surface-strong)] px-2 text-[13px] outline-none focus:border-[var(--accent-border)]"
+              />
+              <span className="text-hint">–</span>
+              <input
+                type="time"
+                value={planning.quiet_hours.end}
+                onChange={(e) => handlePlanningPatch({ quiet_hours: { start: planning.quiet_hours.start, end: e.target.value } })}
+                className="tnum h-9 w-[92px] rounded-xl border border-hairline bg-[var(--surface-strong)] px-2 text-[13px] outline-none focus:border-[var(--accent-border)]"
+              />
+            </div>
+          </SettingRow>
+          <div className="border-t border-hairline px-4 py-3.5">
+            <div className="mb-3 flex items-center gap-2.5">
+              <Sparkles size={17} className="text-hint" />
+              <span className="text-[13.5px] font-medium text-ink">{copy.proactivity}</span>
+            </div>
+            <div className="grid grid-cols-3 rounded-2xl bg-[var(--secondary-bg)] p-1">
+              {[
+                ['calm', copy.calm],
+                ['balanced', copy.balanced],
+                ['active', copy.active],
+              ].map(([value, label]) => {
+                const selected = planning.proactive_level === value;
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => handlePlanningPatch({ proactive_level: value as PlanningSettings['proactive_level'] })}
+                    className={`h-9 rounded-xl text-[13px] font-semibold transition-colors ${
+                      selected ? 'bg-[var(--surface-strong)] text-accent-text shadow-sm' : 'text-hint'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-2 text-[12.5px] leading-snug text-hint">
+              {copy.proactivityDescriptions[planning.proactive_level]}
+            </p>
+          </div>
+        </Card>
+        <SectionHeader title={copy.suggestionsTitle} />
+        <Card className="card-strong !p-0 overflow-hidden">
+          <ToggleRow
+            label={copy.shortWindows}
+            hint={copy.shortWindowsHint}
+            checked={planning.micro_slots_enabled}
+            onChange={(checked) => handlePlanningPatch({ micro_slots_enabled: checked, micro_slots: { min_minutes: 5 } })}
+          />
+          <ToggleRow
+            label={copy.autoReview}
+            hint={copy.autoReviewHint}
+            checked={planning.auto_enrich_tasks}
+            onChange={(checked) => handlePlanningPatch({ auto_enrich_tasks: checked })}
+          />
+          <SettingRow icon={Bell} label={copy.suggestionNotifications}>
+            <span className="w-[188px] max-w-[55%] shrink-0">
+              <Select
+                value={planning.suggestion_notifications}
+                ariaLabel={copy.suggestionNotifications}
+                onChange={(value) => handlePlanningPatch({
+                  suggestion_notifications: value as PlanningSettings['suggestion_notifications'],
+                })}
+                options={[
+                  { value: 'important', label: copy.onlyImportant },
+                  { value: 'none', label: copy.noPushes },
+                  { value: 'all', label: copy.allSuggestions },
+                ]}
+              />
+            </span>
+          </SettingRow>
         </Card>
       </Rise>
 

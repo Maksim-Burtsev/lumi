@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +16,7 @@ from lumi.db.models import (
 )
 from lumi.i18n import normalize_app_locale
 from lumi.services.action_policy import policy_for_action, policy_to_dict
+from lumi.services.assistant_suggestions import AssistantSuggestionService
 from lumi.services.calendar import CalendarService
 from lumi.services.confirmations import ConfirmationService
 from lumi.services.tasks import TaskService
@@ -33,7 +36,10 @@ class TodayService:
         now_local = local_now(user.timezone)
         day_start, day_end = local_day_bounds(now, user.timezone)
 
-        events = await self.calendar.list_events(user, day_start, day_end)
+        events = [
+            event for event in await self.calendar.list_events(user, day_start, day_end)
+            if not (event.status == CalendarEventStatus.PROPOSED and event.end_at <= now)
+        ]
         timeline = [
             {
                 "id": str(e.id),
@@ -133,18 +139,7 @@ class TodayService:
 
         # --- suggestions ------------------------------------------------------
         suggestions: list[dict] = []
-        proposed = [e for e in events if e.status == CalendarEventStatus.PROPOSED]
-        for event in proposed[:2]:
-            suggestions.append({
-                "id": f"confirm-block-{event.id}",
-                "kind": "focus_block",
-                "title": _text(locale, f"Accept focus block \"{event.title}\"", f"Принять фокус-блок «{event.title}»"),
-                "description": (
-                    f"{fmt_local(event.start_at, user.timezone, '%H:%M')}–"
-                    f"{fmt_local(event.end_at, user.timezone, '%H:%M')}"
-                ),
-                "action": {"type": "confirm_block", "payload": {"block_id": str(event.id)}},
-            })
+        proposed = [e for e in events if e.status == CalendarEventStatus.PROPOSED and e.end_at > now]
         unplanned = [t for t in active_tasks if t.priority.value in ("high", "urgent")]
         if unplanned and not proposed:
             suggestions.append({
@@ -195,6 +190,29 @@ class TodayService:
                 "action": {"type": "run_triage", "payload": {}},
             })
 
+        # --- precomputed slot suggestions ------------------------------------
+        slot_suggestions = []
+        assistant_suggestions = AssistantSuggestionService(self.session)
+        for suggestion in await assistant_suggestions.list_pending(user, kind="micro_slot", limit=8):
+            slot = suggestion.payload.get("slot") if isinstance(suggestion.payload, dict) else None
+            start_raw = slot.get("start_at") if isinstance(slot, dict) else None
+            end_raw = slot.get("end_at") if isinstance(slot, dict) else None
+            start_at = suggestion.start_at or _parse_dt(start_raw)
+            end_at = suggestion.end_at or _parse_dt(end_raw)
+            if start_at is None or end_at is None or end_at <= now:
+                continue
+            tasks = suggestion.payload.get("tasks") if isinstance(suggestion.payload, dict) else []
+            slot_suggestions.append({
+                "id": str(suggestion.id),
+                "title": suggestion.title,
+                "description": suggestion.description,
+                "start_at": start_at.isoformat(),
+                "end_at": end_at.isoformat(),
+                "tasks": tasks if isinstance(tasks, list) else [],
+                "reason": suggestion.payload.get("reason") if isinstance(suggestion.payload, dict) else None,
+                "source": suggestion.payload.get("source") if isinstance(suggestion.payload, dict) else None,
+            })
+
         # --- recent runs ------------------------------------------------------
         runs_result = await self.session.execute(
             select(AgentRun)
@@ -220,8 +238,18 @@ class TodayService:
             "timeline": timeline,
             "needs_attention": needs_attention,
             "suggestions": suggestions,
+            "slot_suggestions": slot_suggestions,
             "recent_runs": recent_runs,
         }
+
+
+def _parse_dt(value) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _text(locale: str, en: str, ru: str) -> str:

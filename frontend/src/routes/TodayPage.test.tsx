@@ -129,6 +129,7 @@ function makeTodayResponse(overrides: Partial<TodayResponse> = {}): TodayRespons
       },
     ],
     suggestions: [],
+    slot_suggestions: [],
     recent_runs: [],
     ...overrides,
   };
@@ -271,6 +272,70 @@ describe('TodayPage timeline gaps', () => {
     expect(screen.getByText('15:00–15:30')).toBeInTheDocument();
     expect(screen.queryByText('14:30–14:45')).not.toBeInTheDocument();
     expect(screen.getByText('Daily MT')).toBeInTheDocument();
+  });
+
+  it('shows precomputed quick wins as an inline free-slot nudge, not a duplicate suggestion list', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'getToday').mockResolvedValue(
+      makeTodayResponse({
+        timeline: [
+          {
+            id: 'event-1',
+            kind: 'event',
+            title: 'Planning',
+            start_at: '2026-06-12T13:00:00+04:00',
+            end_at: '2026-06-12T13:30:00+04:00',
+            source: 'yandex',
+            status: 'confirmed',
+            busy: true,
+          },
+          {
+            id: 'event-2',
+            kind: 'event',
+            title: 'Demo',
+            start_at: '2026-06-12T14:00:00+04:00',
+            end_at: '2026-06-12T14:30:00+04:00',
+            source: 'yandex',
+            status: 'confirmed',
+            busy: true,
+          },
+        ],
+        needs_attention: [],
+        suggestions: [
+          {
+            id: 'suggest-plan',
+            kind: 'plan_day',
+            title: "Build today's plan",
+            description: 'Generic suggestion should stay hidden while quick wins are ready',
+            action: { type: 'plan_day', payload: {} },
+          },
+        ],
+        slot_suggestions: [
+          {
+            id: 'slot-1',
+            title: '30 min free',
+            description: 'Lumi already picked 2 quick wins for 20 min',
+            start_at: '2026-06-12T13:30:00+04:00',
+            end_at: '2026-06-12T14:00:00+04:00',
+            tasks: [
+              { id: 'task-mail', title: 'Проверить почту', project: 'Operations', estimated_minutes: 5, priority: 'medium' },
+              { id: 'task-contract', title: 'Ответить по договору', project: 'Work', estimated_minutes: 15, priority: 'high' },
+            ],
+            reason: 'Both fit this window.',
+            source: 'llm',
+          },
+        ],
+      }),
+    );
+
+    renderTodayPage('en');
+
+    await user.click(await screen.findByRole('button', { name: /30 min free · 2 quick wins ready/i }));
+
+    expect(screen.getByRole('dialog', { name: 'Quick wins ready' })).toBeInTheDocument();
+    expect(screen.getByText('Проверить почту')).toBeInTheDocument();
+    expect(screen.getByText('Ответить по договору')).toBeInTheDocument();
+    expect(screen.queryByText('Lumi suggests')).not.toBeInTheDocument();
   });
 });
 

@@ -5,6 +5,7 @@ import { api, ApiError } from './client';
 import { consumeRealtimeEvents, getRealtimeInvalidationKeys } from './realtime';
 import type {
   AgentRun,
+  AssistantSuggestion,
   CreateAutomationInput,
   CreateEventInput,
   CreateNewsTopicInput,
@@ -34,6 +35,9 @@ export const qk = {
   today: ['today'] as const,
   tasksAll: ['tasks'] as const,
   tasks: (filter: TaskFilter) => ['tasks', filter] as const,
+  projectTasks: (projectId: string) => ['tasks', 'project', projectId] as const,
+  projects: ['projects'] as const,
+  assistantSuggestions: ['assistant-suggestions'] as const,
   eventsAll: ['calendar-events'] as const,
   events: (start: string, end: string) => ['calendar-events', start, end] as const,
   freeSlotsAll: ['free-slots'] as const,
@@ -171,6 +175,25 @@ export function useTasks(filter: TaskFilter) {
   return useQuery({ queryKey: qk.tasks(filter), queryFn: () => api.listTasks(filter) });
 }
 
+export function useProjectTasks(projectId: string | null) {
+  return useQuery({
+    queryKey: projectId ? qk.projectTasks(projectId) : qk.projectTasks('none'),
+    queryFn: () => api.listTasks('all', 100, projectId as string),
+    enabled: projectId !== null,
+  });
+}
+
+export function useProjects() {
+  return useQuery({ queryKey: qk.projects, queryFn: () => api.listProjects() });
+}
+
+export function useAssistantSuggestions(kind?: string) {
+  return useQuery({
+    queryKey: kind ? [...qk.assistantSuggestions, kind] : qk.assistantSuggestions,
+    queryFn: () => api.listAssistantSuggestions(kind),
+  });
+}
+
 export function useCalendarEvents(start: string, end: string) {
   return useQuery({ queryKey: qk.events(start, end), queryFn: () => api.listCalendarEvents(start, end) });
 }
@@ -225,14 +248,26 @@ function makeOptimisticTask(input: CreateTaskInput): Task {
     status: 'inbox',
     priority: input.priority ?? 'medium',
     project: input.project ?? null,
+    project_id: input.project_id ?? null,
     tags: input.tags ?? [],
     due_at: input.due_at ?? null,
+    target_at: input.target_at ?? null,
     reminder_at: input.reminder_at ?? null,
     snoozed_until: null,
+    estimated_minutes: input.estimated_minutes ?? null,
+    estimate_source: input.estimate_source ?? null,
+    review_skips: {},
     source: 'mini_app',
     created_at: new Date().toISOString(),
     completed_at: null,
   };
+}
+
+function invalidateTaskSurfaces(queryClient: ReturnType<typeof useQueryClient>) {
+  void queryClient.invalidateQueries({ queryKey: qk.tasksAll });
+  void queryClient.invalidateQueries({ queryKey: qk.projects });
+  void queryClient.invalidateQueries({ queryKey: qk.assistantSuggestions });
+  void queryClient.invalidateQueries({ queryKey: qk.today });
 }
 
 export function useCreateTask(activeFilter: TaskFilter) {
@@ -253,10 +288,7 @@ export function useCreateTask(activeFilter: TaskFilter) {
     onError: (_error, _input, context) => {
       if (context?.previous) queryClient.setQueryData(context.key, context.previous);
     },
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: qk.tasksAll });
-      void queryClient.invalidateQueries({ queryKey: qk.today });
-    },
+    onSettled: () => invalidateTaskSurfaces(queryClient),
   });
 }
 
@@ -286,10 +318,7 @@ export function useCompleteTask(activeFilter: TaskFilter) {
     onError: (_error, _id, context) => {
       if (context?.previous) queryClient.setQueryData(context.key, context.previous);
     },
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: qk.tasksAll });
-      void queryClient.invalidateQueries({ queryKey: qk.today });
-    },
+    onSettled: () => invalidateTaskSurfaces(queryClient),
   });
 }
 
@@ -311,10 +340,7 @@ export function useSnoozeTask(activeFilter: TaskFilter) {
     onError: (_error, _vars, context) => {
       if (context?.previous) queryClient.setQueryData(context.key, context.previous);
     },
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: qk.tasksAll });
-      void queryClient.invalidateQueries({ queryKey: qk.today });
-    },
+    onSettled: () => invalidateTaskSurfaces(queryClient),
   });
 }
 
@@ -322,10 +348,38 @@ export function usePatchTask() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, input }: { id: string; input: PatchTaskInput }) => api.patchTask(id, input),
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: qk.tasksAll });
-      void queryClient.invalidateQueries({ queryKey: qk.today });
+    onSettled: () => invalidateTaskSurfaces(queryClient),
+  });
+}
+
+// ------------------------------------------------------------------ assistant suggestions mutations
+
+function removeSuggestionFromCache(
+  queryClient: ReturnType<typeof useQueryClient>,
+  id: string,
+) {
+  const previous = queryClient.getQueryData<{ items: AssistantSuggestion[] }>(qk.assistantSuggestions);
+  if (previous) {
+    queryClient.setQueryData(qk.assistantSuggestions, {
+      items: previous.items.filter((item) => item.id !== id),
+    });
+  }
+  return previous;
+}
+
+export function useDecideAssistantSuggestion() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, accept }: { id: string; accept: boolean }) =>
+      accept ? api.acceptAssistantSuggestion(id) : api.dismissAssistantSuggestion(id),
+    onMutate: async ({ id }) => {
+      await queryClient.cancelQueries({ queryKey: qk.assistantSuggestions });
+      return { previous: removeSuggestionFromCache(queryClient, id) };
     },
+    onError: (_error, _vars, context) => {
+      if (context?.previous) queryClient.setQueryData(qk.assistantSuggestions, context.previous);
+    },
+    onSettled: () => invalidateTaskSurfaces(queryClient),
   });
 }
 
@@ -338,6 +392,7 @@ export function useCreateEvent() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: qk.eventsAll });
       void queryClient.invalidateQueries({ queryKey: qk.freeSlotsAll });
+      void queryClient.invalidateQueries({ queryKey: qk.assistantSuggestions });
       void queryClient.invalidateQueries({ queryKey: qk.today });
     },
   });
@@ -374,6 +429,7 @@ export function useConfirmBlock() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: qk.eventsAll });
       void queryClient.invalidateQueries({ queryKey: qk.freeSlotsAll });
+      void queryClient.invalidateQueries({ queryKey: qk.assistantSuggestions });
       void queryClient.invalidateQueries({ queryKey: qk.today });
     },
   });
@@ -537,6 +593,7 @@ export function usePatchSettings() {
     mutationFn: (input: PatchSettingsInput) => api.patchSettings(input),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: qk.settings });
+      void queryClient.invalidateQueries({ queryKey: qk.assistantSuggestions });
       void queryClient.invalidateQueries({ queryKey: qk.today });
     },
   });
@@ -549,6 +606,7 @@ export function useDeleteEvent() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: qk.eventsAll });
       void queryClient.invalidateQueries({ queryKey: qk.freeSlotsAll });
+      void queryClient.invalidateQueries({ queryKey: qk.assistantSuggestions });
       void queryClient.invalidateQueries({ queryKey: qk.today });
     },
   });
