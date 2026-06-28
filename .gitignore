@@ -40,3 +40,9 @@ frontend/dist/
 # Local logs
 *.log
 logs/
+
+# Local QA artifacts
+/output/
+/.playwright-cli/
+/playwright-report/
+/test-results/
