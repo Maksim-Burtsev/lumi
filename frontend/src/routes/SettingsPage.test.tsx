@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
-import type { MeResponse, SettingsResponse, User } from '../api/types';
+import type { MeResponse, SettingsResponse, ThemeMode, User } from '../api/types';
 import { ToastProvider } from '../components/ui/Toast';
 import SettingsPage from './SettingsPage';
 
@@ -218,30 +218,47 @@ describe('SettingsPage language settings', () => {
 
   it('lets the user force the dark theme from appearance settings', async () => {
     const user = userEvent.setup();
+    let savedThemeMode: ThemeMode = 'telegram';
     vi.spyOn(api, 'health').mockResolvedValue({ status: 'ok', app: 'Lumi', env: 'local', version: '0.1.0' });
-    vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettingsResponse());
+    vi.spyOn(api, 'getSettings').mockImplementation(async () => makeSettingsResponse(makeUser({
+      settings: {
+        reply_language_mode: 'auto',
+        time_format: 'auto',
+        theme_mode: savedThemeMode,
+      },
+    })));
     vi.spyOn(api, 'getTimezones').mockResolvedValue(TIMEZONES_RESPONSE);
-    const patchSpy = vi.spyOn(api, 'patchSettings').mockImplementation(async (input): Promise<MeResponse> => ({
-      user: makeUser({
-        settings: {
-          reply_language_mode: 'auto',
-          time_format: 'auto',
-          theme_mode: input.theme_mode ?? 'telegram',
-        },
-      }),
-    }));
+    const patchSpy = vi.spyOn(api, 'patchSettings').mockImplementation(async (input): Promise<MeResponse> => {
+      savedThemeMode = input.theme_mode ?? savedThemeMode;
+      return {
+        user: makeUser({
+          settings: {
+            reply_language_mode: 'auto',
+            time_format: 'auto',
+            theme_mode: savedThemeMode,
+          },
+        }),
+      };
+    });
 
     renderSettingsPage();
 
     expect(await screen.findByText('Appearance')).toBeInTheDocument();
-    const themeGroup = screen.getByRole('group', { name: 'Theme' });
-    expect(within(themeGroup).getByRole('button', { name: 'Telegram' })).toHaveAttribute('aria-pressed', 'true');
-    await user.click(within(themeGroup).getByRole('button', { name: 'Dark' }));
+    expect(screen.queryByRole('group', { name: 'Theme' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Theme' })).not.toBeInTheDocument();
+    const themeButton = screen.getByRole('button', { name: 'Theme' });
+    expect(themeButton).toHaveTextContent('Telegram');
+
+    await user.click(themeButton);
+    const themeOptions = screen.getByRole('listbox', { name: 'Theme' });
+    await user.click(within(themeOptions).getByRole('option', { name: 'Dark' }));
 
     await waitFor(() => {
       expect(patchSpy).toHaveBeenCalledWith({ theme_mode: 'dark' });
     });
     expect(document.documentElement.classList.contains('dark')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Theme' })).toHaveTextContent('Dark');
+    expect(screen.queryByText('Theme saved')).not.toBeInTheDocument();
   });
 
   it('keeps the selected theme visible while saving', async () => {
@@ -259,12 +276,13 @@ describe('SettingsPage language settings', () => {
     renderSettingsPage();
 
     expect(await screen.findByText('Appearance')).toBeInTheDocument();
-    const themeGroup = screen.getByRole('group', { name: 'Theme' });
-    expect(within(themeGroup).queryByRole('combobox')).not.toBeInTheDocument();
-    expect(within(themeGroup).getByRole('button', { name: 'Telegram' })).toHaveAttribute('aria-pressed', 'true');
-    await user.click(within(themeGroup).getByRole('button', { name: 'Dark' }));
+    const themeButton = screen.getByRole('button', { name: 'Theme' });
+    expect(themeButton).toHaveTextContent('Telegram');
+    await user.click(themeButton);
+    const themeOptions = screen.getByRole('listbox', { name: 'Theme' });
+    await user.click(within(themeOptions).getByRole('option', { name: 'Dark' }));
 
-    expect(within(themeGroup).getByRole('button', { name: 'Dark' })).toHaveAttribute('aria-pressed', 'true');
+    expect(themeButton).toHaveTextContent('Dark');
     expect(document.documentElement.classList.contains('dark')).toBe(true);
     expect(patchSpy).toHaveBeenCalledWith({ theme_mode: 'dark' });
 
@@ -277,8 +295,7 @@ describe('SettingsPage language settings', () => {
         },
       }),
     });
-    await waitFor(() => {
-      expect(screen.getByText('Theme saved')).toBeInTheDocument();
-    });
+    await waitFor(() => expect(themeButton).toHaveTextContent('Dark'));
+    expect(screen.queryByText('Theme saved')).not.toBeInTheDocument();
   });
 });

@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
-import { Check, Minus } from 'lucide-react';
+import { useEffect, useState, type FocusEvent } from 'react';
+import { Check, ChevronDown, Minus } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
+import { flushSync } from 'react-dom';
 import { ApiError, api } from '../api/client';
 import { openExternalLink } from '../telegram/webapp';
 import { qk, useConnectYandex, useDisconnectGoogle, useDisconnectYandex, useHealth, usePatchSettings, useRunPoller, useSettings } from '../api/hooks';
@@ -61,7 +62,6 @@ const COPY = {
     themeTelegram: 'Telegram',
     themeLight: 'Light',
     themeDark: 'Dark',
-    themeSaved: 'Theme saved',
     themeSaveFailed: 'Could not save theme',
     loadError: 'Could not load settings.',
     timezone: 'Time zone',
@@ -118,7 +118,6 @@ const COPY = {
     themeTelegram: 'Telegram',
     themeLight: 'Светлая',
     themeDark: 'Тёмная',
-    themeSaved: 'Тема сохранена',
     themeSaveFailed: 'Не удалось сохранить тему',
     loadError: 'Не удалось загрузить настройки.',
     timezone: 'Часовой пояс',
@@ -184,36 +183,72 @@ function ThemeModeControl({
   onChange: (value: ThemeMode) => void;
   copy: { theme: string; themeTelegram: string; themeLight: string; themeDark: string };
 }) {
+  const [open, setOpen] = useState(false);
   const options: { value: ThemeMode; label: string }[] = [
     { value: 'telegram', label: copy.themeTelegram },
     { value: 'light', label: copy.themeLight },
     { value: 'dark', label: copy.themeDark },
   ];
+  const selected = options.find((option) => option.value === value) ?? options[0];
+  const listboxId = 'theme-mode-options';
+
+  const handleBlur = (event: FocusEvent<HTMLDivElement>) => {
+    const nextTarget = event.relatedTarget;
+    if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
+      setOpen(false);
+    }
+  };
+
+  const handleSelect = (nextThemeMode: ThemeMode) => {
+    flushSync(() => setOpen(false));
+    onChange(nextThemeMode);
+  };
 
   return (
     <div
-      role="group"
-      aria-label={copy.theme}
-      className="grid w-full grid-cols-3 gap-1 rounded-xl bg-[var(--secondary-bg)] p-1 sm:w-[248px]"
+      className="relative w-full sm:w-[178px]"
+      onBlur={handleBlur}
     >
-      {options.map((option) => {
-        const selected = value === option.value;
-        return (
+      <button
+        type="button"
+        aria-label={copy.theme}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? listboxId : undefined}
+        onClick={() => setOpen((current) => !current)}
+        className="flex h-11 w-full items-center justify-between rounded-xl border border-hairline bg-[var(--surface-strong)] px-3.5 text-left text-[15px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+      >
+        <span className="min-w-0 truncate">{selected.label}</span>
+        <ChevronDown
+          aria-hidden
+          size={16}
+          className={`ml-2 shrink-0 text-hint ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+      {open && (
+        <div
+          id={listboxId}
+          role="listbox"
+          aria-label={copy.theme}
+          className="absolute right-0 top-[calc(100%+6px)] z-[80] w-full overflow-hidden rounded-xl border border-hairline bg-[var(--surface-strong)] shadow-card"
+        >
+          {options.map((option) => (
           <button
             key={option.value}
             type="button"
-            aria-pressed={selected}
-            onClick={() => onChange(option.value)}
-            className={`min-w-0 rounded-lg px-2 py-2 text-[12.5px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-border)] ${
-              selected
-                ? 'bg-[var(--surface-strong)] text-ink shadow-[0_1px_6px_rgba(0,0,0,0.12)]'
-                : 'text-hint'
+            role="option"
+            aria-selected={option.value === value}
+            onClick={() => handleSelect(option.value)}
+            className={`flex h-10 w-full items-center justify-between px-3.5 text-left text-[14px] outline-none hover:bg-[var(--secondary-bg)] focus:bg-[var(--secondary-bg)] ${
+              option.value === value ? 'font-medium text-ink' : 'text-hint'
             }`}
           >
-            {option.label}
+            <span>{option.label}</span>
+            {option.value === value && <Check size={14} className="text-accent-text" />}
           </button>
-        );
-      })}
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -389,7 +424,6 @@ export default function SettingsPage() {
     patchSettings.mutate(
       { theme_mode },
       {
-        onSuccess: () => show(copy.themeSaved, 'success'),
         onError: () => {
           setThemeMode(previous);
           cacheThemeMode(previous);
@@ -431,8 +465,8 @@ export default function SettingsPage() {
       {/* Appearance */}
       <Rise>
         <SectionHeader title={copy.appearance} />
-        <Card className="card-strong !p-0 overflow-hidden">
-          <div className="flex min-h-[76px] flex-col items-stretch gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <Card className="relative z-30 card-strong !p-0 overflow-visible">
+          <div className="flex min-h-[68px] items-center justify-between gap-3 px-4 py-3">
             <span className="min-w-0 text-[13.5px] font-medium text-ink">{copy.theme}</span>
             <ThemeModeControl value={themeMode} onChange={handleThemeMode} copy={copy} />
           </div>
