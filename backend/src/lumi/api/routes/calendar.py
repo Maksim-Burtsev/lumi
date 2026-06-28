@@ -15,6 +15,7 @@ from lumi.api.run_helper import start_background_run
 from lumi.api.serializers import event_to_dict
 from lumi.connectors.google.auth import token_file_exists
 from lumi.db.models import AgentRun, AgentRunType, CalendarEventStatus, Connector, ConnectorType, User
+from lumi.services.assistant_suggestions import AssistantSuggestionService
 from lumi.services.automations import AutomationService
 from lumi.services.calendar import CalendarService
 from lumi.services.realtime import RealtimeEventService
@@ -219,7 +220,7 @@ async def delete_private_note(
 @router.get("/calendar/free-slots")
 async def free_slots(
     date: str | None = None,
-    duration: int = Query(default=60, ge=15, le=480),
+    duration: int = Query(default=60, ge=5, le=480),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -295,6 +296,14 @@ async def delete_event(
         topics=["calendar"],
         event_type="calendar_event.cancelled",
         payload={"event_id": str(event.id)},
+    )
+    await AssistantSuggestionService(session).enqueue_opportunity(
+        user,
+        kind="slot_suggestions",
+        scope_key="today",
+        reason="calendar_event.cancelled",
+        payload={"event_id": str(event.id)},
+        delay_seconds=20,
     )
     return {"ok": True}
 

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { setThemeMode, setupTelegramTheme } from './webapp';
+import { captureTelegramInitParams, getInitData, setThemeMode, setupTelegramTheme } from './webapp';
 
 declare global {
   interface Window {
@@ -11,6 +11,8 @@ declare global {
 
 describe('Telegram readiness', () => {
   beforeEach(() => {
+    window.sessionStorage.clear();
+    window.history.replaceState(null, '', '/');
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
       value: vi.fn().mockImplementation((query: string) => ({
@@ -29,6 +31,8 @@ describe('Telegram readiness', () => {
   afterEach(() => {
     delete window.TelegramWebviewProxy;
     Reflect.deleteProperty(window, 'external');
+    window.sessionStorage.clear();
+    window.history.replaceState(null, '', '/');
     vi.useRealTimers();
   });
 
@@ -99,5 +103,21 @@ describe('Telegram readiness', () => {
     expect(document.documentElement).toHaveClass('theme-swap');
     callbacks.shift()?.(16);
     expect(document.documentElement).not.toHaveClass('theme-swap');
+  });
+
+  it('keeps Telegram init data when the router replaces the launch hash', () => {
+    vi.useFakeTimers();
+    const postEvent = vi.fn();
+    window.location.hash = '#tgWebAppData=query_id%3Dabc123&tgWebAppVersion=7.10';
+
+    captureTelegramInitParams();
+    window.location.hash = '#/';
+    window.TelegramWebviewProxy = { postEvent };
+
+    setupTelegramTheme();
+    vi.advanceTimersByTime(50);
+
+    expect(getInitData()).toBe('query_id=abc123');
+    expect(postEvent).toHaveBeenCalledWith('web_app_ready', JSON.stringify(''));
   });
 });

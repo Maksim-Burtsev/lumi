@@ -188,6 +188,25 @@ export interface Suggestion {
   action: SuggestionAction;
 }
 
+export interface SlotSuggestionTask {
+  id: string;
+  title: string;
+  project?: string | null;
+  estimated_minutes?: number | null;
+  priority?: TaskPriority;
+}
+
+export interface SlotSuggestion {
+  id: string;
+  title: string;
+  description: string | null;
+  start_at: string;
+  end_at: string;
+  tasks: SlotSuggestionTask[];
+  reason: string | null;
+  source: string | null;
+}
+
 export interface AgentRunBrief {
   id: string;
   type: string;
@@ -205,6 +224,7 @@ export interface TodayResponse {
   timeline: TimelineItem[];
   needs_attention: AttentionItem[];
   suggestions: Suggestion[];
+  slot_suggestions: SlotSuggestion[];
   recent_runs: AgentRunBrief[];
 }
 
@@ -225,7 +245,7 @@ export interface MessagesResponse {
 
 export type TaskStatus = 'inbox' | 'active' | 'done' | 'cancelled';
 export type TaskPriority = 'low' | 'medium' | 'high' | 'urgent';
-export type TaskFilter = 'today' | 'upcoming' | 'inbox' | 'done' | 'all';
+export type TaskFilter = 'today' | 'upcoming' | 'inbox' | 'review' | 'done' | 'all';
 
 export interface Task {
   id: string;
@@ -234,10 +254,15 @@ export interface Task {
   status: TaskStatus;
   priority: TaskPriority;
   project: string | null;
+  project_id: string | null;
   tags: string[];
   due_at: string | null;
+  target_at: string | null;
   reminder_at: string | null;
   snoozed_until: string | null;
+  estimated_minutes: number | null;
+  estimate_source: string | null;
+  review_skips: Record<string, boolean>;
   source: string;
   created_at: string;
   completed_at: string | null;
@@ -256,9 +281,13 @@ export interface CreateTaskInput {
   description?: string;
   priority?: TaskPriority;
   project?: string;
+  project_id?: string;
   tags?: string[];
   due_at?: string;
+  target_at?: string;
   reminder_at?: string;
+  estimated_minutes?: number;
+  estimate_source?: string;
 }
 
 export interface PatchTaskInput {
@@ -267,14 +296,64 @@ export interface PatchTaskInput {
   status?: TaskStatus;
   priority?: TaskPriority;
   project?: string | null;
+  project_id?: string | null;
   tags?: string[];
   due_at?: string | null;
+  target_at?: string | null;
   reminder_at?: string | null;
+  estimated_minutes?: number | null;
+  estimate_source?: string | null;
+  review_skips?: Record<string, boolean> | null;
 }
 
 export type SnoozePreset = '1h' | '3h' | 'tomorrow' | 'next_week';
 
 export type SnoozeInput = { preset: SnoozePreset } | { until: string };
+
+export interface Project {
+  id: string;
+  name: string;
+  status: 'active' | 'archived';
+  color: string | null;
+  system_key: 'backlog' | string | null;
+  is_system: boolean;
+  active_task_count: number;
+  completed_task_count: number;
+  estimated_minutes_total: number;
+  health_status: 'needs_attention' | 'moving' | 'light' | 'quiet';
+  health_reason: string;
+  next_task: Task | null;
+  created_at: string | null;
+}
+
+export interface ProjectsResponse {
+  items: Project[];
+}
+
+export type AssistantSuggestionStatus = 'pending' | 'accepted' | 'dismissed' | 'expired';
+
+export interface AssistantSuggestion {
+  id: string;
+  kind: string;
+  status: AssistantSuggestionStatus;
+  title: string;
+  description: string | null;
+  start_at: string | null;
+  end_at: string | null;
+  affected_task_ids: string[];
+  payload: Record<string, unknown>;
+  expires_at: string | null;
+  decided_at: string | null;
+  created_at: string | null;
+}
+
+export interface AssistantSuggestionsResponse {
+  items: AssistantSuggestion[];
+}
+
+export interface AssistantSuggestionResponse {
+  suggestion: AssistantSuggestion;
+}
 
 // ---------------------------------------------------------------- Calendar
 

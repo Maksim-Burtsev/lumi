@@ -22,9 +22,13 @@ class TaskCreate(BaseModel):
     description: str | None = None
     priority: str = "medium"
     project: str | None = None
+    project_id: uuid.UUID | None = None
     tags: list[str] = Field(default_factory=list)
     due_at: datetime | None = None
+    target_at: datetime | None = None
     reminder_at: datetime | None = None
+    estimated_minutes: int | None = Field(default=None, ge=1, le=1440)
+    estimate_source: str | None = None
 
 
 class TaskPatch(BaseModel):
@@ -32,10 +36,15 @@ class TaskPatch(BaseModel):
     description: str | None = None
     priority: str | None = None
     project: str | None = None
+    project_id: uuid.UUID | None = None
     tags: list[str] | None = None
     due_at: datetime | None = None
+    target_at: datetime | None = None
     reminder_at: datetime | None = None
+    estimated_minutes: int | None = Field(default=None, ge=1, le=1440)
+    estimate_source: str | None = None
     status: str | None = None
+    review_skips: dict[str, bool] | None = None
 
 
 class SnoozeBody(BaseModel):
@@ -45,12 +54,13 @@ class SnoozeBody(BaseModel):
 
 @router.get("/tasks")
 async def list_tasks(
-    filter: str = Query(default="all", pattern="^(today|upcoming|inbox|done|all)$"),
+    filter: str = Query(default="all", pattern="^(today|upcoming|inbox|review|done|all)$"),
     limit: int = Query(default=100, le=500),
+    project_id: uuid.UUID | None = Query(default=None),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
-    tasks = await TaskService(session).list_tasks(user, filter_=filter, limit=limit)
+    tasks = await TaskService(session).list_tasks(user, filter_=filter, limit=limit, project_id=project_id)
     return {"items": [task_to_dict(t) for t in tasks]}
 
 
@@ -67,9 +77,13 @@ async def create_task(
             description=payload.description,
             priority=payload.priority,
             project=payload.project,
+            project_id=payload.project_id,
             tags=payload.tags,
             due_at=payload.due_at,
+            target_at=payload.target_at,
             reminder_at=payload.reminder_at,
+            estimated_minutes=payload.estimated_minutes,
+            estimate_source=payload.estimate_source,
             source="manual",
             created_by="user",
         )

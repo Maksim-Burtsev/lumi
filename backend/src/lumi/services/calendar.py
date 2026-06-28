@@ -17,6 +17,7 @@ from lumi.db.models import (
     CalendarSource,
     User,
 )
+from lumi.services.assistant_suggestions import AssistantSuggestionService
 from lumi.services.audit import AuditService
 from lumi.services.realtime import RealtimeEventService
 from lumi.utils.links import extract_links
@@ -434,6 +435,11 @@ class CalendarService:
                 event_type="calendar_events.cancelled",
                 payload={"count": cancelled},
             )
+            await self._queue_opportunity_refresh(
+                user,
+                reason="calendar_events.cancelled",
+                payload={"count": cancelled},
+            )
         return cancelled
 
     async def confirm_proposed_block(self, user: User, event: CalendarEvent) -> CalendarEvent:
@@ -617,6 +623,11 @@ class CalendarService:
                 event_type="calendar_events.reconciled",
                 payload={"count": cancelled, "source": source.value},
             )
+            await self._queue_opportunity_refresh(
+                user,
+                reason="calendar_events.reconciled",
+                payload={"count": cancelled, "source": source.value},
+            )
         return cancelled
 
     async def external_calendar_ids_in_window(
@@ -644,4 +655,27 @@ class CalendarService:
             topics=["calendar"],
             event_type=event_type,
             payload={"event_id": str(event.id), "source": event.source.value},
+        )
+        user = await self.session.get(User, event.user_id)
+        if user is not None:
+            await self._queue_opportunity_refresh(
+                user,
+                reason=event_type,
+                payload={"event_id": str(event.id), "source": event.source.value},
+            )
+
+    async def _queue_opportunity_refresh(
+        self,
+        user: User,
+        *,
+        reason: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        await AssistantSuggestionService(self.session).enqueue_opportunity(
+            user,
+            kind="slot_suggestions",
+            scope_key="today",
+            reason=reason,
+            payload=payload,
+            delay_seconds=20,
         )

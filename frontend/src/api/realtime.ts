@@ -88,6 +88,8 @@ export function toRealtimeEvent(decoded: DecodedSseEvent): RealtimeEvent | null 
 const ALL_KEYS: QueryKey[] = [
   ['today'],
   ['tasks'],
+  ['projects'],
+  ['assistant-suggestions'],
   ['calendar-events'],
   ['free-slots'],
   ['inbox-summary'],
@@ -110,6 +112,14 @@ export function getRealtimeInvalidationKeys(event: RealtimeEvent): QueryKey[] {
   for (const topic of event.topics) {
     if (topic === 'tasks') {
       add(['tasks']);
+      add(['projects']);
+      add(['assistant-suggestions']);
+      add(['today']);
+    } else if (topic === 'projects') {
+      add(['projects']);
+      add(['tasks']);
+    } else if (topic === 'suggestions') {
+      add(['assistant-suggestions']);
       add(['today']);
     } else if (topic === 'confirmations') {
       add(['today']);

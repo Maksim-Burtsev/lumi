@@ -33,7 +33,6 @@ import type { CalendarAttendee, CalendarEvent, CalendarPerson } from '../api/typ
 import { DayGrid } from '../components/calendar/DayGrid';
 import { PRIVATE_NOTE_MAX_CHARS, PrivateNoteSection } from '../components/calendar/PrivateNoteSection';
 import { Button } from '../components/ui/Button';
-import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorState } from '../components/ui/ErrorState';
 import { Sheet } from '../components/ui/Sheet';
 import { FieldLabel, Input, Textarea } from '../components/ui/Field';
@@ -106,8 +105,7 @@ const CALENDAR_COPY: Record<AppLocale, {
   openSettings: string;
   hideHint: string;
   loadFailed: string;
-  freeDay: string;
-  freeDayHint: string;
+  noMeetingsScheduled: string;
   yandexCalendar: string;
   proposedLumi: string;
   participants: string;
@@ -177,8 +175,7 @@ const CALENDAR_COPY: Record<AppLocale, {
     openSettings: 'Open settings',
     hideHint: 'Hide hint',
     loadFailed: 'Could not load calendar.',
-    freeDay: 'Free day',
-    freeDayHint: 'Tap the grid to create a block, or tap "Plan day" so Lumi can place tasks into free windows.',
+    noMeetingsScheduled: 'No meetings scheduled',
     yandexCalendar: 'Yandex Calendar',
     proposedLumi: 'Lumi proposal',
     participants: 'Participants',
@@ -248,8 +245,7 @@ const CALENDAR_COPY: Record<AppLocale, {
     openSettings: 'Открыть настройки',
     hideHint: 'Скрыть подсказку',
     loadFailed: 'Не удалось загрузить календарь.',
-    freeDay: 'День свободен',
-    freeDayHint: 'Тапни по сетке, чтобы создать блок, или нажми «Спланировать день» — Lumi разложит твои задачи по свободным окнам.',
+    noMeetingsScheduled: 'Нет запланированных встреч',
     yandexCalendar: 'Яндекс.Календарь',
     proposedLumi: 'предложение Lumi',
     participants: 'Участники',
@@ -638,6 +634,7 @@ export default function CalendarPage() {
   const [noteError, setNoteError] = useState<string | null>(null);
   const dayStart = useMemo(() => startOfDay(day), [day]);
   const events = eventsQuery.data?.items ?? [];
+  const hasVisibleEvents = events.some((e) => e.status !== 'cancelled');
   const syncState = eventsQuery.data?.sync;
 
   useEffect(() => {
@@ -825,14 +822,16 @@ export default function CalendarPage() {
           <SkeletonTimeline rows={4} />
         ) : eventsQuery.isError ? (
           <ErrorState message={copy.loadFailed} onRetry={() => void eventsQuery.refetch()} />
-        ) : events.filter((e) => e.status !== 'cancelled').length === 0 ? (
-          <EmptyState
-            icon={CalendarDays}
-            title={copy.freeDay}
-            hint={copy.freeDayHint}
-          />
         ) : (
           <div className="card card-strong px-4 py-4">
+            {!hasVisibleEvents && (
+              <div className="mb-3 flex justify-end">
+                <div className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-hairline bg-[var(--surface-muted)] px-3 py-1.5 text-[12px] font-medium leading-none text-hint">
+                  <CalendarDays size={13} strokeWidth={1.8} className="shrink-0" aria-hidden="true" />
+                  <span className="truncate">{copy.noMeetingsScheduled}</span>
+                </div>
+              </div>
+            )}
             <DayGrid
               events={events}
               dayStart={dayStart}

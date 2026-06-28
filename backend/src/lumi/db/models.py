@@ -84,6 +84,18 @@ class Priority(enum.StrEnum):
     URGENT = "urgent"
 
 
+class ProjectStatus(enum.StrEnum):
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+
+
+class AssistantSuggestionStatus(enum.StrEnum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    DISMISSED = "dismissed"
+    EXPIRED = "expired"
+
+
 class ScheduledTaskType(enum.StrEnum):
     MORNING_BRIEF = "morning_brief"
     NEWS_DIGEST = "news_digest"
@@ -375,13 +387,36 @@ class Memory(Base):
 
 
 # ---------------------------------------------------------------------------
-# Tasks
+# Tasks / projects / proactive suggestions
 # ---------------------------------------------------------------------------
+
+class Project(Base):
+    __tablename__ = "projects"
+    __table_args__ = (
+        UniqueConstraint("user_id", "normalized_name", name="uq_projects_user_normalized_name"),
+        Index("ix_projects_user_status", "user_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_name: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[ProjectStatus] = mapped_column(
+        str_enum(ProjectStatus, "project_status"), nullable=False, default=ProjectStatus.ACTIVE
+    )
+    color: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = created_at_col()
+    updated_at: Mapped[datetime] = updated_at_col()
+    metadata_: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, nullable=False, default=dict, server_default=_JSONB_EMPTY_DICT
+    )
+
 
 class Task(Base):
     __tablename__ = "tasks"
     __table_args__ = (
         Index("ix_tasks_user_status_due", "user_id", "status", "due_at"),
+        Index("ix_tasks_user_project_status", "user_id", "project_id", "status"),
         Index(
             "ix_tasks_user_reminder",
             "user_id",
@@ -402,12 +437,16 @@ class Task(Base):
         str_enum(Priority, "priority"), nullable=False, default=Priority.MEDIUM
     )
     project: Mapped[str | None] = mapped_column(Text)
+    project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id"))
     tags: Mapped[list[str]] = mapped_column(
         ARRAY(Text), nullable=False, default=list, server_default=_TEXT_ARRAY_EMPTY
     )
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    target_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reminder_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     snoozed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    estimated_minutes: Mapped[int | None] = mapped_column(Integer)
+    estimate_source: Mapped[str | None] = mapped_column(Text)
     # chat / email / agent / manual / calendar
     source: Mapped[str] = mapped_column(Text, nullable=False, default="manual")
     source_ref_type: Mapped[str | None] = mapped_column(Text)
@@ -426,6 +465,64 @@ class Task(Base):
     @property
     def reminder_sent(self) -> bool:
         return bool(self.metadata_.get("reminder_sent_at"))
+
+
+class AssistantSuggestion(Base):
+    __tablename__ = "assistant_suggestions"
+    __table_args__ = (
+        Index("ix_assistant_suggestions_user_status", "user_id", "status", "created_at"),
+        Index("ix_assistant_suggestions_user_kind", "user_id", "kind", "status"),
+        Index("ix_assistant_suggestions_context", "user_id", "context_hash"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[AssistantSuggestionStatus] = mapped_column(
+        str_enum(AssistantSuggestionStatus, "assistant_suggestion_status"),
+        nullable=False,
+        default=AssistantSuggestionStatus.PENDING,
+    )
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    affected_task_ids: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list, server_default=_TEXT_ARRAY_EMPTY
+    )
+    context_hash: Mapped[str | None] = mapped_column(Text)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=_JSONB_EMPTY_DICT
+    )
+    run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("agent_runs.id"))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = created_at_col()
+    updated_at: Mapped[datetime] = updated_at_col()
+
+
+class AssistantOpportunityJob(Base):
+    __tablename__ = "assistant_opportunity_jobs"
+    __table_args__ = (
+        UniqueConstraint("user_id", "kind", "scope_key", name="uq_assistant_jobs_user_kind_scope"),
+        Index("ix_assistant_jobs_due", "next_check_at", "locked_until"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    scope_key: Mapped[str] = mapped_column(Text, nullable=False, default="default")
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="event")
+    context_hash: Mapped[str | None] = mapped_column(Text)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=_JSONB_EMPTY_DICT
+    )
+    next_check_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    debounce_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = created_at_col()
+    updated_at: Mapped[datetime] = updated_at_col()
 
 
 class TaskEvent(Base):

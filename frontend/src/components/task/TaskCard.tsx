@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { Clock } from 'lucide-react';
+import { ChevronRight, Clock, RotateCcw } from 'lucide-react';
 import type { Task, SnoozePreset, TaskPriority } from '../../api/types';
 import { formatDueLabel } from '../../lib/format';
 import type { AppLocale } from '../../lib/i18n';
@@ -11,8 +11,12 @@ import { haptic } from '../../telegram/webapp';
 interface TaskCardProps {
   task: Task;
   onComplete: (id: string) => void;
+  onReopen?: (id: string) => void;
   onSnooze: (id: string, preset: SnoozePreset) => void;
   onEdit?: (task: Task) => void;
+  estimateSuggestion?: { id: string; minutes: number; reason?: string | null };
+  onAcceptEstimate?: (suggestionId: string) => void;
+  onEditEstimate?: (task: Task, suggestion: { id: string; minutes: number; reason?: string | null }) => void;
 }
 
 const PRIORITY_DOTS: Record<TaskPriority, { className: string; label: Record<AppLocale, string> }> = {
@@ -29,7 +33,16 @@ const SNOOZE_PRESETS: { preset: SnoozePreset; label: Record<AppLocale, string> }
   { preset: 'next_week', label: { en: 'Next week', ru: 'След. неделя' } },
 ];
 
-export function TaskCard({ task, onComplete, onSnooze, onEdit }: TaskCardProps) {
+export function TaskCard({
+  task,
+  onComplete,
+  onReopen,
+  onSnooze,
+  onEdit,
+  estimateSuggestion,
+  onAcceptEstimate,
+  onEditEstimate,
+}: TaskCardProps) {
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const reduceMotion = useReducedMotion();
   const timeDisplay = useTimeDisplay();
@@ -41,16 +54,28 @@ export function TaskCard({ task, onComplete, onSnooze, onEdit }: TaskCardProps) 
     en: {
       done: 'Task completed',
       complete: 'Complete task',
+      reopen: 'Reopen task',
       snooze: 'Snooze task',
       snoozePrefix: 'Snooze:',
     },
     ru: {
       done: 'Задача выполнена',
       complete: 'Выполнить задачу',
+      reopen: 'Вернуть задачу',
       snooze: 'Отложить задачу',
       snoozePrefix: 'Отложить:',
     },
   });
+  const complete = () => {
+    if (done) {
+      if (!onReopen) return;
+      haptic('light');
+      onReopen(task.id);
+      return;
+    }
+    haptic('success');
+    onComplete(task.id);
+  };
 
   return (
     <div className="card card-strong px-4 py-3">
@@ -58,14 +83,11 @@ export function TaskCard({ task, onComplete, onSnooze, onEdit }: TaskCardProps) 
         {/* Complete checkbox: 26px visual, ≥44px tap target */}
         <motion.button
           type="button"
-          aria-label={done ? copy.done : copy.complete}
-          disabled={done}
-          whileTap={reduceMotion || done ? undefined : { scale: 0.85 }}
+          aria-label={done ? (onReopen ? copy.reopen : copy.done) : copy.complete}
+          disabled={done && !onReopen}
+          whileTap={reduceMotion || (done && !onReopen) ? undefined : { scale: 0.85 }}
           transition={{ type: 'spring', stiffness: 420, damping: 22 }}
-          onClick={() => {
-            haptic('success');
-            onComplete(task.id);
-          }}
+          onClick={complete}
           className="relative -m-2 mt-[-5px] shrink-0 p-2"
         >
           <span
@@ -96,10 +118,11 @@ export function TaskCard({ task, onComplete, onSnooze, onEdit }: TaskCardProps) 
           </span>
         </motion.button>
 
-        <div
-          className="min-w-0 flex-1"
-          role={onEdit ? 'button' : undefined}
-          onClick={onEdit ? () => onEdit(task) : undefined}
+        <button
+          type="button"
+          disabled={done}
+          onClick={complete}
+          className="min-w-0 flex-1 text-left disabled:cursor-default"
         >
           <p
             className={`text-[14.5px] leading-snug transition-colors ${
@@ -119,6 +142,11 @@ export function TaskCard({ task, onComplete, onSnooze, onEdit }: TaskCardProps) 
                 {formatDueLabel(task.due_at, timeDisplay)}
               </span>
             )}
+            {task.estimated_minutes !== null && (
+              <span className="tnum rounded-full bg-[var(--secondary-bg)] px-2 py-px text-[11.5px] text-hint">
+                {task.estimated_minutes} {locale === 'en' ? 'min' : 'мин'}
+              </span>
+            )}
             {task.project && (
               <span className="rounded-full bg-[var(--secondary-bg)] px-2 py-px text-[11.5px] text-hint">
                 {task.project}
@@ -130,7 +158,36 @@ export function TaskCard({ task, onComplete, onSnooze, onEdit }: TaskCardProps) 
               </span>
             ))}
           </div>
-        </div>
+        </button>
+
+        {onEdit && (
+          <button
+            type="button"
+            aria-label={locale === 'en' ? 'Open task details' : 'Открыть детали задачи'}
+            onClick={() => {
+              haptic('light');
+              onEdit(task);
+            }}
+            className="relative -m-2 mt-[-5px] shrink-0 p-2 text-hint transition-colors active:text-accent-text"
+          >
+            <ChevronRight size={18} strokeWidth={1.8} />
+          </button>
+        )}
+
+        {done && onReopen && (
+          <button
+            type="button"
+            aria-label={`${locale === 'en' ? 'Undo completion for' : 'Вернуть задачу'} ${task.title}`}
+            onClick={() => {
+              haptic('light');
+              onReopen(task.id);
+            }}
+            className="relative -m-2 mt-[-7px] inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-[var(--secondary-bg)] px-3 text-[12px] font-semibold text-ink"
+          >
+            <RotateCcw size={14} strokeWidth={1.9} />
+            {locale === 'en' ? 'Undo' : 'Вернуть'}
+          </button>
+        )}
 
         {!done && (
           <button
@@ -148,6 +205,35 @@ export function TaskCard({ task, onComplete, onSnooze, onEdit }: TaskCardProps) 
           </button>
         )}
       </div>
+
+      {estimateSuggestion && !done && (
+        <div className="mt-3 rounded-2xl border border-[var(--accent-border)] bg-[var(--accent-soft)] px-3 py-2.5">
+          <div className="flex items-center gap-2">
+            <span className="tnum min-w-0 flex-1 text-[12.5px] font-semibold text-accent-text">
+              {locale === 'en' ? 'Estimate' : 'Оценка'}: {estimateSuggestion.minutes} {locale === 'en' ? 'min' : 'мин'}
+            </span>
+            <button
+              type="button"
+              aria-label={`${locale === 'en' ? 'Accept estimate for' : 'Принять оценку для'} ${task.title}`}
+              onClick={() => onAcceptEstimate?.(estimateSuggestion.id)}
+              className="h-8 rounded-full bg-accent px-3 text-[12px] font-semibold text-white"
+            >
+              {locale === 'en' ? 'Accept' : 'Принять'}
+            </button>
+            <button
+              type="button"
+              aria-label={`${locale === 'en' ? 'Edit estimate for' : 'Изменить оценку для'} ${task.title}`}
+              onClick={() => onEditEstimate?.(task, estimateSuggestion)}
+              className="h-8 rounded-full bg-[var(--surface-strong)] px-3 text-[12px] font-semibold text-ink"
+            >
+              {locale === 'en' ? 'Edit' : 'Изменить'}
+            </button>
+          </div>
+          {estimateSuggestion.reason && (
+            <p className="mt-1 truncate text-[12px] text-hint">{estimateSuggestion.reason}</p>
+          )}
+        </div>
+      )}
 
       <AnimatePresence initial={false}>
         {snoozeOpen && !done && (

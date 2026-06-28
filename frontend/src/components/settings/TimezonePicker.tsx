@@ -25,6 +25,7 @@ const COPY = {
     fieldLabel: 'Time zone',
     search: 'Search city or time zone',
     title: 'Time zone',
+    close: 'Close',
     noResults: 'Try a city, country, or abbreviation: San Francisco, USA, PST',
     topMatches: 'Top matches',
     fallback: 'Using browser time zones.',
@@ -35,6 +36,7 @@ const COPY = {
     fieldLabel: 'Часовой пояс',
     search: 'Поиск города или часового пояса',
     title: 'Часовой пояс',
+    close: 'Закрыть',
     noResults: 'Попробуй город, страну или сокращение: San Francisco, USA, PST',
     topMatches: 'Лучшие совпадения',
     fallback: 'Использую часовые пояса браузера.',
@@ -96,7 +98,7 @@ export function TimezonePicker({ value, onChange, locale }: TimezonePickerProps)
         </span>
         <ChevronRight size={17} className="shrink-0 text-hint" />
       </button>
-      <Sheet open={open} onClose={() => setOpen(false)} title={copy.title}>
+      <Sheet open={open} onClose={() => setOpen(false)} title={copy.title} closeLabel={copy.close}>
         <div className="space-y-3">
           <label className="block">
             <FieldLabel>
