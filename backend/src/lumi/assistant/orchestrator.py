@@ -10,7 +10,7 @@ import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from difflib import SequenceMatcher
 from html import escape
 from typing import Any
@@ -38,6 +38,7 @@ from lumi.assistant.schemas import (
     CalendarEventCancelRequest,
     CalendarEventsRequest,
     CalendarEventUpdateRequest,
+    CalendarPrivateNoteRequest,
     CalendarRequest,
     ConnectorsReadRequest,
     EmailRequest,
@@ -62,6 +63,11 @@ from lumi.assistant.schemas import (
     SettingsUpdateRequest,
     TaskPatchRequest,
     TaskUpdate,
+)
+from lumi.bot.schedule_messages import (
+    render_schedule_message,
+    schedule_items_from_calendar_events,
+    schedule_window_title,
 )
 from lumi.db.models import (
     AgentRunType,
@@ -92,7 +98,9 @@ from lumi.services.calendar import (
     CalendarConflictError,
     CalendarService,
     ExternalCalendarMutationError,
+    calendar_private_note_summary_text,
     merge_busy_intervals,
+    private_note_needs_summary,
 )
 from lumi.services.confirmations import ConfirmationService
 from lumi.services.email import EmailService
@@ -113,7 +121,7 @@ from lumi.services.task_update_replies import (
 from lumi.services.tasks import TaskService
 from lumi.services.users import UserService
 from lumi.utils.text import normalize_for_match, truncate
-from lumi.utils.time import fmt_local, local_to_utc, utc_now, utc_to_local, validate_timezone_name
+from lumi.utils.time import fmt_local, local_now, local_to_utc, utc_now, utc_to_local, validate_timezone_name
 from lumi.worker.queue import enqueue_job
 
 log = get_logger(__name__)
@@ -142,6 +150,8 @@ IMAGE_SOURCED_CONFIRM_TOOLS = {
     "create_internal_calendar_block",
     "update_calendar_event",
     "cancel_calendar_event",
+    "update_calendar_private_note",
+    "delete_calendar_private_note",
     "create_external_calendar_event",
     "create_automation",
     "update_automation",
@@ -174,7 +184,6 @@ MULTI_STEP_INTENT_MARKERS = (
     "after",
     "block",
     "create",
-    "schedule",
     "until",
     "добав",
     "созд",
@@ -189,6 +198,103 @@ MULTI_STEP_INTENT_MARKERS = (
     "finché",
     "finche",
 )
+SCHEDULE_READ_KEYWORDS = (
+    r"\bschedule\b",
+    r"\bcalendar\b",
+    r"\bagenda\b",
+    r"\bmeetings?\b",
+    r"\bevents?\b",
+    r"распис",
+    r"календар",
+    r"встреч",
+    r"событ",
+)
+SCHEDULE_DATE_REF_KEYWORDS = (
+    r"\btoday\b",
+    r"\btomorrow\b",
+    r"сегодня",
+    r"завтра",
+    r"\bweek\b",
+    r"\bнедел(?:я|ю|е|и|ь)?\b",
+)
+SCHEDULE_CONTEXT_KEYWORDS = (
+    *SCHEDULE_READ_KEYWORDS,
+    r"external calendar sync",
+    r"scheduled events",
+    r"событ[ийя].*календар",
+    r"внешн.*синхронизац",
+)
+SCHEDULE_MUTATION_KEYWORDS = (
+    r"\bschedule\s+(?:a|an|the|my|our)?\s*(?:meeting|call|event|block|focus|task|appointment)\b",
+    r"\bbook\s+(?:a|an|the)?\s*(?:meeting|call|event|appointment)\b",
+    r"\bcreate\s+(?:a|an|the)?\s*(?:meeting|call|event|block|focus|task|appointment)\b",
+    r"\badd\s+(?:a|an|the)?\s*(?:meeting|call|event|block|focus|task|appointment)\b",
+    r"заплан",
+    r"созд",
+    r"добав",
+    r"назнач",
+    r"заброни",
+)
+WEEKDAY_ALIASES = {
+    0: (r"\bmonday\b", r"\bmon\b", r"понедел[ьд]*ник", r"\bпн\b"),
+    1: (r"\btuesday\b", r"\btue\b", r"вторник", r"\bвт\b"),
+    2: (r"\bwednesday\b", r"\bwed\b", r"сред", r"\bср\b"),
+    3: (r"\bthursday\b", r"\bthu\b", r"четверг", r"\bчт\b"),
+    4: (r"\bfriday\b", r"\bfri\b", r"пятниц", r"\bпт\b"),
+    5: (r"\bsaturday\b", r"\bsat\b", r"суббот", r"\bсб\b"),
+    6: (r"\bsunday\b", r"\bsun\b", r"воскрес", r"\bвс\b"),
+}
+MONTH_ALIASES = {
+    "января": 1,
+    "январь": 1,
+    "january": 1,
+    "jan": 1,
+    "февраля": 2,
+    "февраль": 2,
+    "february": 2,
+    "feb": 2,
+    "марта": 3,
+    "март": 3,
+    "march": 3,
+    "mar": 3,
+    "апреля": 4,
+    "апрель": 4,
+    "april": 4,
+    "apr": 4,
+    "мая": 5,
+    "май": 5,
+    "may": 5,
+    "июня": 6,
+    "июнь": 6,
+    "june": 6,
+    "jun": 6,
+    "июля": 7,
+    "июль": 7,
+    "july": 7,
+    "jul": 7,
+    "августа": 8,
+    "август": 8,
+    "august": 8,
+    "aug": 8,
+    "сентября": 9,
+    "сентябрь": 9,
+    "september": 9,
+    "sep": 9,
+    "sept": 9,
+    "октября": 10,
+    "октябрь": 10,
+    "october": 10,
+    "oct": 10,
+    "ноября": 11,
+    "ноябрь": 11,
+    "november": 11,
+    "nov": 11,
+    "декабря": 12,
+    "декабрь": 12,
+    "december": 12,
+    "dec": 12,
+}
+WEEK_DATE_REF_PATTERNS = (r"\bweek\b", r"\bнедел(?:я|ю|е|и|ь)?\b")
 FLEXIBLE_CALENDAR_SLOT_MARKERS = (
     "after",
     "first free",
@@ -308,6 +414,48 @@ def _calendar_request_from_tool_call(call: PlannedToolCall) -> CalendarRequest:
         "kind": kind,
         **_args_with_call_defaults(call),
     })
+
+
+def _calendar_private_note_label(language: str | None) -> str:
+    return _text_for_language(language, en="Personal note", ru="Личная заметка", it="Nota personale")
+
+
+def _calendar_private_note_open_app_text(language: str | None) -> str:
+    return _text_for_language(
+        language,
+        en="open Lumi for full note",
+        ru="полная заметка в Lumi",
+        it="apri Lumi per la nota completa",
+    )
+
+
+def _calendar_private_note_line(event, language: str | None) -> str | None:
+    metadata = event.metadata_ or {}
+    note = metadata.get("private_note")
+    if not isinstance(note, str) or not note.strip():
+        return None
+    summary = calendar_private_note_summary_text(event)
+    if summary is None:
+        return None
+    if private_note_needs_summary(note) and metadata.get("private_note_summary_status") != "ready":
+        summary = f"{summary} ({_calendar_private_note_open_app_text(language)})"
+    return f"🔒 {_calendar_private_note_label(language)}: {summary}"
+
+
+async def _enqueue_private_note_summary(user: User, event) -> None:
+    metadata = event.metadata_ or {}
+    if metadata.get("private_note_summary_status") != "pending":
+        return
+    note_hash = metadata.get("private_note_hash")
+    if not note_hash:
+        return
+    await enqueue_job(
+        "summarize_calendar_private_note",
+        str(user.id),
+        event_id=str(event.id),
+        private_note_hash=note_hash,
+        notify=False,
+    )
 
 
 def _task_query_from_call(call: PlannedToolCall) -> str:
@@ -458,6 +606,183 @@ def _with_reply_language(user: User, text: str, plan: AgentPlan) -> AgentPlan:
     return plan if plan.language == language else plan.model_copy(update={"language": language})
 
 
+def _with_schedule_read_guard(
+    user: User,
+    text: str,
+    plan: AgentPlan,
+    *,
+    allow_implicit_date: bool = False,
+) -> AgentPlan:
+    request = _schedule_read_request_from_text(text, user, allow_implicit=allow_implicit_date)
+    if plan.tool_calls:
+        if (
+            request is not None
+            and plan.mode == "tool_calls"
+            and all(call.name == "read_calendar_events" for call in plan.tool_calls)
+        ):
+            return plan.model_copy(update={
+                "tool_calls": [
+                    call.model_copy(update={
+                        "evidence": [*call.evidence, "backend_guard:schedule_read"],
+                    })
+                    for call in plan.tool_calls
+                ]
+            })
+        return plan
+    if plan.visual_intent != "none" or plan.needs_media_understanding:
+        return plan
+    if plan.mode not in {"final_answer", "ask_user"}:
+        return plan
+    if request is None:
+        return plan
+    return plan.model_copy(update={
+        "mode": "tool_calls",
+        "tool_calls": [
+            PlannedToolCall(
+                name="read_calendar_events",
+                args=request.model_dump(mode="json"),
+                confidence=0.9,
+                requires_confirmation=False,
+                evidence=["backend_guard:schedule_read"],
+            )
+        ],
+        "final_answer": None,
+        "should_answer_normally": False,
+        "user_visible_status": _text_for_language(
+            plan.language,
+            en="Checking your calendar...",
+            ru="Смотрю календарь...",
+            it="Controllo il calendario...",
+        ),
+        "progress_kind": "reading_calendar",
+    })
+
+
+def _is_schedule_read_guard_plan(plan: AgentPlan) -> bool:
+    return any(
+        call.name == "read_calendar_events" and "backend_guard:schedule_read" in call.evidence
+        for call in plan.tool_calls
+    )
+
+
+def _is_user_visible_schedule_read_plan(plan: AgentPlan, text: str, user: User) -> bool:
+    return (
+        plan.mode == "tool_calls"
+        and bool(plan.tool_calls)
+        and all(call.name == "read_calendar_events" for call in plan.tool_calls)
+        and (_is_schedule_read_guard_plan(plan) or _schedule_read_request_from_text(text, user) is not None)
+    )
+
+
+def _schedule_read_request_from_text(
+    text: str,
+    user: User,
+    *,
+    allow_implicit: bool = False,
+) -> CalendarEventsRequest | None:
+    lowered = text.lower()
+    if not lowered.strip():
+        return None
+    if _matches_any(lowered, SCHEDULE_MUTATION_KEYWORDS):
+        return None
+    has_schedule_keyword = _matches_any(lowered, SCHEDULE_READ_KEYWORDS)
+    if not has_schedule_keyword and not allow_implicit:
+        return None
+
+    today = local_now(user.timezone).date()
+    if _matches_any(lowered, WEEK_DATE_REF_PATTERNS):
+        start_day = today
+        end_day = today + timedelta(days=7)
+    else:
+        day = _requested_explicit_date(lowered, today)
+        if _matches_any(lowered, (r"\btomorrow\b", r"завтра")):
+            day = today + timedelta(days=1)
+        elif _matches_any(lowered, (r"\btoday\b", r"сегодня")):
+            day = today
+        elif day is None:
+            weekday = _requested_weekday(lowered)
+            if weekday is not None:
+                days_until = (weekday - today.weekday()) % 7
+                if days_until == 0 or _matches_any(lowered, (r"\bnext\b", r"следующ")):
+                    days_until = days_until or 7
+                day = today + timedelta(days=days_until)
+        if day is None:
+            return None
+        start_day = day
+        end_day = day + timedelta(days=1)
+
+    if not (_matches_any(lowered, SCHEDULE_DATE_REF_KEYWORDS) or _requested_weekday(lowered) is not None):
+        return None
+
+    return CalendarEventsRequest(
+        start_at_local=datetime.combine(start_day, time.min),
+        end_at_local=datetime.combine(end_day, time.min),
+        include_details=True,
+        sync_if_needed=True,
+    )
+
+
+def _requested_weekday(text: str) -> int | None:
+    for weekday, patterns in WEEKDAY_ALIASES.items():
+        if _matches_any(text, patterns):
+            return weekday
+    return None
+
+
+def _requested_explicit_date(text: str, today: date) -> date | None:
+    numeric = re.search(r"\b(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b", text)
+    if numeric:
+        return _build_requested_date(
+            day=int(numeric.group(1)),
+            month=int(numeric.group(2)),
+            year_text=numeric.group(3),
+            today=today,
+        )
+
+    month_names = "|".join(sorted((re.escape(month) for month in MONTH_ALIASES), key=len, reverse=True))
+    textual = re.search(rf"\b(\d{{1,2}})\s+({month_names})(?:\s+(\d{{2,4}}))?\b", text)
+    if textual:
+        return _build_requested_date(
+            day=int(textual.group(1)),
+            month=MONTH_ALIASES[textual.group(2)],
+            year_text=textual.group(3),
+            today=today,
+        )
+    return None
+
+
+def _build_requested_date(
+    *,
+    day: int,
+    month: int,
+    year_text: str | None,
+    today: date,
+) -> date | None:
+    year = today.year
+    if year_text:
+        year = int(year_text)
+        if year < 100:
+            year += 2000
+    try:
+        requested = date(year, month, day)
+    except ValueError:
+        return None
+    if year_text is None and requested < today:
+        try:
+            requested = date(today.year + 1, month, day)
+        except ValueError:
+            return None
+    return requested
+
+
+def _matches_any(text: str, patterns: tuple[str, ...]) -> bool:
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+
+def _text_has_schedule_read_context(text: str) -> bool:
+    return _matches_any(text.lower(), SCHEDULE_CONTEXT_KEYWORDS)
+
+
 def _safe_action_failure_reply(language: str | None, reason: str) -> str:
     if reason == "low_confidence":
         return "Did not perform the action: planner confidence was too low."
@@ -579,6 +904,33 @@ def _calendar_added_text(language: str | None, *, title: str, start_label: str) 
     )
 
 
+def _calendar_private_note_updated_text(language: str | None, *, title: str) -> str:
+    return _text_for_language(
+        language,
+        en=f"Updated personal note for: {title}",
+        ru=f"Обновил личную заметку: {title}",
+        it=f"Nota personale aggiornata: {title}",
+    )
+
+
+def _calendar_private_note_deleted_text(language: str | None, *, title: str) -> str:
+    return _text_for_language(
+        language,
+        en=f"Deleted personal note for: {title}",
+        ru=f"Удалил личную заметку: {title}",
+        it=f"Nota personale eliminata: {title}",
+    )
+
+
+def _calendar_private_note_not_found_text(language: str | None) -> str:
+    return _text_for_language(
+        language,
+        en="I could not find one matching calendar event.",
+        ru="Не нашёл одну подходящую встречу в календаре.",
+        it="Non ho trovato un solo evento corrispondente nel calendario.",
+    )
+
+
 def _calendar_proposed_text(language: str | None, *, title: str, start_label: str) -> str:
     return _text_for_language(
         language,
@@ -676,20 +1028,16 @@ def _calendar_window_title(language: str | None, *, start: datetime, end: dateti
     start_local = utc_to_local(start, tz)
     end_local = utc_to_local(end - timedelta(seconds=1), tz) if end > start else start_local
     same_day = start_local.date() == end_local.date()
-    if same_day:
-        label = start_local.strftime("%b %d") if normalize_reply_language(language) == "en" else start_local.strftime("%d.%m")
-        today = utc_to_local(utc_now(), tz).date() == start_local.date()
-        if today:
-            return _text_for_language(
-                language,
-                en=f"📅 Today, {label}",
-                ru=f"📅 Сегодня, {label}",
-                it=f"📅 Oggi, {label}",
-            )
-        return f"📅 {label}"
-    if normalize_reply_language(language) == "en":
-        return f"📅 {start_local.strftime('%b %d')} - {end_local.strftime('%b %d')}"
-    return f"📅 {start_local.strftime('%d.%m')} - {end_local.strftime('%d.%m')}"
+    title = schedule_window_title(language=language, start=start, end=end, timezone=tz)
+    if same_day and utc_to_local(utc_now(), tz).date() == start_local.date():
+        label = title.removeprefix("📅 ").strip()
+        return _text_for_language(
+            language,
+            en=f"📅 Today, {label}",
+            ru=f"📅 Сегодня, {label}",
+            it=f"📅 Oggi, {label}",
+        )
+    return title
 
 
 def _calendar_event_when(event, tz: str) -> str:
@@ -869,11 +1217,16 @@ def _calendar_timeline_reply(
         title = truncate(event.title, 64)
         reply_line = f"🟦 {start_label}  {title} · {duration}"
         reply_lines.append(reply_line)
+        private_note_line = _calendar_private_note_line(event, language)
+        if private_note_line:
+            reply_lines.append("   " + private_note_line)
 
         rich_item = f"<b>🟦 {escape(start_label)}</b>  {escape(title)} · {escape(duration)}"
         meeting_url = event.metadata_.get("meeting_url")
         if include_details and meeting_url:
             rich_item += f'  <a href="{escape(str(meeting_url), quote=True)}">↗</a>'
+        if private_note_line:
+            rich_item += f"<br/><i>{escape(private_note_line)}</i>"
         rich_lines.append(rich_item)
 
         busy_cursor = max(busy_cursor or event.end_at, event.end_at)
@@ -1218,6 +1571,10 @@ class AssistantOrchestrator:
             conversation=conversation,
             replied_telegram_message_id=_reply_telegram_message_id(clean_message_context),
         )
+        schedule_followup_context = await self._recent_schedule_read_context(
+            conversation_id=conversation.id,
+            exclude_message_id=inbound.id,
+        )
         plan = await self.planner.plan(
             user=user,
             text=planner_text,
@@ -1234,6 +1591,12 @@ class AssistantOrchestrator:
             planner_context=planner_context,
         )
         plan = _with_reply_language(user, language_text, plan)
+        plan = _with_schedule_read_guard(
+            user,
+            text,
+            plan,
+            allow_implicit_date=schedule_followup_context,
+        )
         selected_media = _selected_or_current_media(plan, available_media, current_media)
         focused_question_override: str | None = None
         has_text_reply_context = bool(
@@ -1321,6 +1684,12 @@ class AssistantOrchestrator:
                 planner_context=planner_context,
             )
             plan = _with_reply_language(user, language_text, plan)
+            plan = _with_schedule_read_guard(
+                user,
+                text,
+                plan,
+                allow_implicit_date=schedule_followup_context,
+            )
             selected_media = _selected_or_current_media(plan, available_media, selected_media)
             if selected_media is not None:
                 selected_image = selected_media.image or selected_image
@@ -1720,6 +2089,8 @@ class AssistantOrchestrator:
                 reply_text = f"Done:\n{done}\n\nThe model is unavailable, so I could not write a richer reply."
             else:
                 reply_text = FALLBACK_REPLY
+            if reply_rich_html and len(action_results) == 1:
+                reply_text = action_results[0]
             outbound = Message(
                 conversation_id=conversation.id,
                 user_id=user.id,
@@ -1728,9 +2099,18 @@ class AssistantOrchestrator:
                 char_count=len(reply_text),
             )
             self.session.add(outbound)
-            return AssistantResult(reply_text=reply_text, buttons=buttons, agent_run_id=run.id)
+            return AssistantResult(
+                reply_text=reply_text,
+                buttons=buttons,
+                agent_run_id=run.id,
+                open_app_button=open_app_button,
+                open_app_button_label=open_app_button_label,
+                reply_rich_html=reply_rich_html if len(action_results) == 1 else None,
+            )
 
         # 8. Save assistant message
+        if reply_rich_html and len(action_results) == 1:
+            reply_text = action_results[0]
         outbound = Message(
             conversation_id=conversation.id,
             user_id=user.id,
@@ -1753,6 +2133,9 @@ class AssistantOrchestrator:
             buttons=buttons,
             agent_run_id=run.id,
             needs_compaction=needs_compaction,
+            open_app_button=open_app_button,
+            open_app_button_label=open_app_button_label,
+            reply_rich_html=reply_rich_html if len(action_results) == 1 else None,
         )
 
     # ------------------------------------------------------------------
@@ -1792,6 +2175,24 @@ class AssistantOrchestrator:
                 if len(candidates) >= limit:
                     return candidates
         return candidates
+
+    async def _recent_schedule_read_context(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        exclude_message_id: uuid.UUID,
+    ) -> bool:
+        result = await self.session.execute(
+            select(Message)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.id != exclude_message_id,
+                Message.role.in_([MessageRole.USER, MessageRole.ASSISTANT]),
+            )
+            .order_by(Message.created_at.desc())
+            .limit(6)
+        )
+        return any(_text_has_schedule_read_context(message.content or "") for message in result.scalars())
 
     async def _ensure_candidate_image(
         self,
@@ -1943,6 +2344,7 @@ class AssistantOrchestrator:
                 plan.mode == "tool_calls"
                 and all(call.name in READ_ONLY_LOOP_TOOLS for call in plan.tool_calls)
                 and _looks_like_multi_step_request(text)
+                and not _is_user_visible_schedule_read_plan(plan, text, user)
             )
             if not should_continue:
                 stop_reason = "completed"
@@ -2024,6 +2426,7 @@ class AssistantOrchestrator:
             plan.mode == "tool_calls"
             and all(call.name in READ_ONLY_LOOP_TOOLS for call in plan.tool_calls)
             and _looks_like_multi_step_request(text)
+            and not _is_user_visible_schedule_read_plan(plan, text, user)
         )
 
         for planned_call in plan.tool_calls:
@@ -2178,6 +2581,26 @@ class AssistantOrchestrator:
                     language=plan.language,
                     results=results,
                     buttons=buttons,
+                )
+            elif call.name == "update_calendar_private_note":
+                request = CalendarPrivateNoteRequest.model_validate(_args_with_call_defaults(call))
+                await self._apply_update_calendar_private_note_tool(
+                    user=user,
+                    run=run,
+                    call=call,
+                    request=request,
+                    results=results,
+                    language=plan.language,
+                )
+            elif call.name == "delete_calendar_private_note":
+                request = CalendarPrivateNoteRequest.model_validate(_args_with_call_defaults(call))
+                await self._apply_delete_calendar_private_note_tool(
+                    user=user,
+                    run=run,
+                    call=call,
+                    request=request,
+                    results=results,
+                    language=plan.language,
                 )
             elif call.name == "create_automation":
                 automation = AutomationRequest.model_validate(_args_with_call_defaults(call))
@@ -4457,6 +4880,97 @@ class AssistantOrchestrator:
             Button(text="✗ No", callback_data=f"reject:{confirmation.id}", key="reject"),
         ])
 
+    async def _resolve_calendar_event_for_private_note(
+        self,
+        user: User,
+        request: CalendarPrivateNoteRequest,
+    ):
+        if request.event_id:
+            return await self.calendar.get_event(user, request.event_id)
+        if not request.event_query:
+            return None
+        start = utc_now() - timedelta(days=1)
+        end = utc_now() + timedelta(days=30)
+        events = await self.calendar.list_events(user, start, end)
+        needle = normalize_for_match(request.event_query)
+        matches = [
+            event for event in events
+            if needle and needle in normalize_for_match(event.title)
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    async def _apply_update_calendar_private_note_tool(
+        self,
+        *,
+        user: User,
+        run,
+        call: PlannedToolCall,
+        request: CalendarPrivateNoteRequest,
+        results: list[str],
+        language: str | None,
+    ) -> None:
+        if request.confidence < 0.6 or request.private_note is None:
+            return
+        event = await self._resolve_calendar_event_for_private_note(user, request)
+        if event is None:
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name="update_calendar_private_note",
+                status="skipped",
+                args={**request.model_dump(mode="json"), **_call_source_payload(call)},
+                result={"reason": "event_not_found_or_ambiguous"},
+            )
+            results.append(_calendar_private_note_not_found_text(language))
+            return
+        event = await self.calendar.set_private_note(user, event, request.private_note)
+        await _enqueue_private_note_summary(user, event)
+        await self.runs.log_tool_call(
+            run=run,
+            tool_name="update_calendar_private_note",
+            status="completed",
+            args={**request.model_dump(mode="json"), **_call_source_payload(call)},
+            result={
+                "event_id": str(event.id),
+                "private_note_summary_status": (event.metadata_ or {}).get("private_note_summary_status"),
+            },
+        )
+        results.append(_calendar_private_note_updated_text(language, title=event.title))
+
+    async def _apply_delete_calendar_private_note_tool(
+        self,
+        *,
+        user: User,
+        run,
+        call: PlannedToolCall,
+        request: CalendarPrivateNoteRequest,
+        results: list[str],
+        language: str | None,
+    ) -> None:
+        if request.confidence < 0.6:
+            return
+        event = await self._resolve_calendar_event_for_private_note(user, request)
+        if event is None:
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name="delete_calendar_private_note",
+                status="skipped",
+                args={**request.model_dump(mode="json"), **_call_source_payload(call)},
+                result={"reason": "event_not_found_or_ambiguous"},
+            )
+            results.append(_calendar_private_note_not_found_text(language))
+            return
+        event = await self.calendar.delete_private_note(user, event)
+        await self.runs.log_tool_call(
+            run=run,
+            tool_name="delete_calendar_private_note",
+            status="completed",
+            args={**request.model_dump(mode="json"), **_call_source_payload(call)},
+            result={"event_id": str(event.id)},
+        )
+        results.append(_calendar_private_note_deleted_text(language, title=event.title))
+
     async def _apply_read_calendar_events_tool(
         self,
         *,
@@ -4511,35 +5025,53 @@ class AssistantOrchestrator:
             )
 
         lines = ["Calendar events:"]
-        reply_lines, rich_lines = _calendar_timeline_reply(
-            events=events,
+        schedule_items = schedule_items_from_calendar_events(events)
+        if not request.include_details:
+            schedule_items = [
+                item.__class__(
+                    title=item.title,
+                    start_at=item.start_at,
+                    end_at=item.end_at,
+                    kind=item.kind,
+                    action_id=item.action_id,
+                    busy=item.busy,
+                )
+                for item in schedule_items
+            ]
+        schedule_window_end = end - timedelta(seconds=1) if end > start else start
+        is_single_day = utc_to_local(start, user.timezone).date() == utc_to_local(
+            schedule_window_end, user.timezone
+        ).date()
+        rendered_schedule = render_schedule_message(
+            title=_calendar_window_title(language, start=start, end=end, tz=user.timezone),
+            items=schedule_items,
+            timezone=user.timezone,
             language=language,
-            start=start,
-            end=end,
-            tz=user.timezone,
-            include_details=request.include_details,
+            window_start=start,
+            window_end=end,
+            include_free_gaps=True,
+            max_items=CALENDAR_TELEGRAM_EVENT_LIMIT if is_single_day else None,
         )
         for event in events[:20]:
             when = _calendar_event_when(event, user.timezone)
-            line = f"{when} — {event.title}"
+            line = f"{when} — {event.title} id={event.id}"
             location = event.metadata_.get("location")
             meeting_url = event.metadata_.get("meeting_url")
             if location:
                 line += f" ({location})"
             if request.include_details and meeting_url:
                 line += f" — {meeting_url}"
+            private_note_line = _calendar_private_note_line(event, language)
+            if private_note_line:
+                line += f" — {private_note_line}"
             lines.append(line)
         if len(events) > 20:
             lines.append(f"{len(events) - 20} more events not shown.")
-        if len(events) > CALENDAR_TELEGRAM_EVENT_LIMIT:
-            more = _calendar_more_text(language, len(events) - CALENDAR_TELEGRAM_EVENT_LIMIT)
-            reply_lines.append(more)
-            rich_lines.append(f"<i>{escape(more)}</i>")
         if user_visible:
-            results.append("\n".join(reply_lines))
+            results.append(rendered_schedule.plain_text)
         return CalendarReadResult(
             observation_summary="\n".join(lines),
-            reply_rich_html="\n\n".join(rich_lines) if user_visible else None,
+            reply_rich_html=rendered_schedule.rich_html if user_visible else None,
             open_app_button=user_visible,
         )
 
@@ -4639,6 +5171,9 @@ class AssistantOrchestrator:
                 agent_run_id=run.id,
                 metadata={"reply_language": language},
             )
+            if request.private_note:
+                event = await self.calendar.set_private_note(user, event, request.private_note)
+                await _enqueue_private_note_summary(user, event)
             await self.runs.log_tool_call(
                 run=run, tool_name="create_internal_calendar_block", status="completed",
                 args=request.model_dump(mode="json"),
@@ -4736,6 +5271,9 @@ class AssistantOrchestrator:
                     } if (start_at, end_at) != (requested_start_at, requested_end_at) else {}),
                 },
             )
+            if request.private_note:
+                event = await self.calendar.set_private_note(user, event, request.private_note)
+                await _enqueue_private_note_summary(user, event)
             await self.runs.log_tool_call(
                 run=run,
                 tool_name="create_internal_calendar_block",

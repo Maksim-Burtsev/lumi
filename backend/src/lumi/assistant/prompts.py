@@ -327,3 +327,11 @@ Consistency rules for reply and signals:
 
 The signals schema is the same as signal extraction:
 """
+
+CALENDAR_PRIVATE_NOTE_SUMMARY_SYSTEM = """You summarize a personal note attached to one calendar event.
+Return JSON only: {"summary": "one short sentence"}.
+The summary must be a compressed abstraction, not the first sentence copied from the note.
+Keep important facts, decisions, checks, and owners. Do not invent anything.
+Write in the same language as the note when possible.
+No labels, prefixes, bullets, Markdown, or prefaces inside summary.
+Maximum summary length: 160 characters."""

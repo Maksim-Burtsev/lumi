@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AlertCircle,
@@ -18,23 +18,27 @@ import {
   useCompleteTask,
   useConfirmBlock,
   useCreateTaskFromThread,
+  useDeleteCalendarPrivateNote,
   useDecideConfirmation,
   useSnoozeTask,
   useToday,
+  useUpdateCalendarPrivateNote,
 } from '../api/hooks';
-import type { AttentionItem, Suggestion, TimelineItem, TodaySummary } from '../api/types';
+import type { AttentionItem, SlotSuggestion, Suggestion, TimelineItem, TodaySummary } from '../api/types';
+import { PRIVATE_NOTE_MAX_CHARS, PrivateNoteSection } from '../components/calendar/PrivateNoteSection';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorState } from '../components/ui/ErrorState';
 import { SectionHeader } from '../components/ui/SectionHeader';
+import { Sheet } from '../components/ui/Sheet';
 import { Skeleton, SkeletonList, SkeletonTimeline } from '../components/ui/Skeleton';
 import { StatPill } from '../components/ui/StatPill';
 import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
 import { Timeline } from '../components/timeline/Timeline';
 import type { TimelineEntry } from '../components/timeline/Timeline';
-import { countLabel, formatDateHeading, formatDueLabel, formatSpanMinutes, plural } from '../lib/format';
+import { countLabel, formatDateHeading, formatDueLabel, formatSpanMinutes, formatTimeRange, plural } from '../lib/format';
 import type { TimeDisplayOptions } from '../lib/format';
 import type { AppLocale } from '../lib/i18n';
 import { useAppLocale } from '../lib/useAppLocale';
@@ -77,6 +81,9 @@ const TODAY_COPY = {
     openTasks: 'Open tasks',
     createTask: 'Create task',
     openInbox: 'Open inbox',
+    quickWinsReady: 'Quick wins ready',
+    freeSlotReady: 'quick wins ready',
+    openTaskList: 'Open task list',
   },
   ru: {
     quietDay: 'Спокойный день — можно заняться важным',
@@ -113,6 +120,9 @@ const TODAY_COPY = {
     openTasks: 'Открыть задачи',
     createTask: 'Создать задачу',
     openInbox: 'Открыть почту',
+    quickWinsReady: 'Готовые быстрые задачи',
+    freeSlotReady: 'готовых быстрых задач',
+    openTaskList: 'Открыть список задач',
   },
 } satisfies Record<AppLocale, Record<string, string>>;
 
@@ -162,13 +172,22 @@ function formatDueLabelLocalized(ts: string, locale: AppLocale, timeDisplay: Tim
 }
 
 function formatSpanMinutesLocalized(startTs: string, endTs: string, locale: AppLocale): string {
-  if (locale === 'ru') return formatSpanMinutes(startTs, endTs);
-  const minutes = Math.max(0, Math.round((new Date(endTs).getTime() - new Date(startTs).getTime()) / 60_000));
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  if (h > 0 && m > 0) return `${h} hr ${m} min`;
-  if (h > 0) return `${h} ${h === 1 ? 'hr' : 'hrs'}`;
-  return `${m} min`;
+  return formatSpanMinutes(startTs, endTs, locale);
+}
+
+function slotTaskCountLabel(count: number, locale: AppLocale): string {
+  if (locale === 'en') return `${count} ${count === 1 ? 'quick win' : 'quick wins'} ready`;
+  const form = count % 10 === 1 && count % 100 !== 11
+    ? 'задача готова'
+    : [2, 3, 4].includes(count % 10) && ![12, 13, 14].includes(count % 100)
+      ? 'задачи готовы'
+      : 'задач готово';
+  return `${count} ${form}`;
+}
+
+function slotTimelineTitle(slot: SlotSuggestion, locale: AppLocale): string {
+  const span = formatSpanMinutesLocalized(slot.start_at, slot.end_at, locale);
+  return `${span} ${locale === 'en' ? 'free' : 'свободно'} · ${slotTaskCountLabel(slot.tasks.length, locale)}`;
 }
 
 function overdueTasksLabel(count: number, locale: AppLocale): string {
@@ -328,16 +347,46 @@ export default function TodayPage() {
   const locale = useAppLocale();
   const timeDisplay = useTimeDisplay();
   const copy = TODAY_COPY[locale];
+  const noteCopy = locale === 'en'
+    ? {
+        maxError: `Personal note is limited to ${PRIVATE_NOTE_MAX_CHARS} characters`,
+        deleted: 'Note deleted',
+        deleteFailed: 'Could not delete note',
+        saved: 'Note saved',
+        saveFailed: 'Could not save note',
+      }
+    : {
+        maxError: `Личная заметка — до ${PRIVATE_NOTE_MAX_CHARS} символов`,
+        deleted: 'Заметка удалена',
+        deleteFailed: 'Не удалось удалить заметку',
+        saved: 'Заметка сохранена',
+        saveFailed: 'Не удалось сохранить заметку',
+      };
   const todayQuery = useToday();
   const navigate = useNavigate();
   const { show } = useToast();
   const [expandedAttentionId, setExpandedAttentionId] = useState<string | null>(null);
   const [decisionInFlightId, setDecisionInFlightId] = useState<string | null>(null);
+  const [selectedSlot, setSelectedSlot] = useState<SlotSuggestion | null>(null);
   const confirmBlock = useConfirmBlock();
   const decideConfirmation = useDecideConfirmation();
   const completeTask = useCompleteTask('today');
   const snoozeTask = useSnoozeTask('today');
   const createTaskFromThread = useCreateTaskFromThread();
+  const updatePrivateNote = useUpdateCalendarPrivateNote();
+  const deletePrivateNote = useDeleteCalendarPrivateNote();
+  const [selectedTimelineEvent, setSelectedTimelineEvent] = useState<TimelineItem | null>(null);
+  const [noteEditing, setNoteEditing] = useState(false);
+  const [noteExpanded, setNoteExpanded] = useState(false);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [noteError, setNoteError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setNoteEditing(false);
+    setNoteExpanded(false);
+    setNoteDraft(selectedTimelineEvent?.private_note ?? '');
+    setNoteError(null);
+  }, [selectedTimelineEvent?.id, selectedTimelineEvent?.private_note]);
 
   const planAction = useAgentRunAction({
     start: () => api.planDay(),
@@ -463,6 +512,90 @@ export default function TodayPage() {
     });
   };
 
+  const patchSelectedEventNote = (event: {
+    id: string;
+    private_note?: string | null;
+    private_note_summary?: string | null;
+    private_note_summary_status?: TimelineItem['private_note_summary_status'];
+    private_note_updated_at?: string | null;
+    private_note_summary_updated_at?: string | null;
+  }) => {
+    setSelectedTimelineEvent((current) => {
+      if (!current || current.id !== event.id) return current;
+      return {
+        ...current,
+        private_note: event.private_note ?? null,
+        private_note_summary: event.private_note_summary ?? null,
+        private_note_summary_status: event.private_note_summary_status ?? null,
+        private_note_updated_at: event.private_note_updated_at ?? null,
+        private_note_summary_updated_at: event.private_note_summary_updated_at ?? null,
+      };
+    });
+  };
+
+  const closeEventSheet = () => {
+    setSelectedTimelineEvent(null);
+    setNoteEditing(false);
+    setNoteExpanded(false);
+    setNoteError(null);
+  };
+
+  const savePrivateNote = () => {
+    if (!selectedTimelineEvent) return;
+    if (noteDraft.length > PRIVATE_NOTE_MAX_CHARS) {
+      setNoteError(noteCopy.maxError);
+      return;
+    }
+    const note = noteDraft.trim();
+    setNoteError(null);
+    if (!note) {
+      if (!selectedTimelineEvent.private_note) {
+        setNoteEditing(false);
+        return;
+      }
+      deletePrivateNote.mutate(selectedTimelineEvent.id, {
+        onSuccess: ({ event }) => {
+          haptic('success');
+          show(noteCopy.deleted, 'success');
+          patchSelectedEventNote(event);
+          setNoteEditing(false);
+        },
+        onError: () => show(noteCopy.deleteFailed, 'error'),
+      });
+      return;
+    }
+    updatePrivateNote.mutate(
+      { id: selectedTimelineEvent.id, input: { note } },
+      {
+        onSuccess: ({ event }) => {
+          haptic('success');
+          show(noteCopy.saved, 'success');
+          patchSelectedEventNote(event);
+          setNoteEditing(false);
+          setNoteExpanded(false);
+        },
+        onError: () => show(noteCopy.saveFailed, 'error'),
+      },
+    );
+  };
+
+  const removePrivateNote = () => {
+    if (!selectedTimelineEvent?.private_note) return;
+    deletePrivateNote.mutate(selectedTimelineEvent.id, {
+      onSuccess: ({ event }) => {
+        haptic('success');
+        show(noteCopy.deleted, 'success');
+        patchSelectedEventNote(event);
+        setNoteEditing(false);
+      },
+      onError: () => show(noteCopy.deleteFailed, 'error'),
+    });
+  };
+
+  const openTimelineEvent = (item: TimelineItem) => {
+    setSelectedTimelineEvent(item);
+  };
+
   const suggestionBusy = (suggestion: Suggestion): boolean => {
     switch (suggestion.action.type) {
       case 'plan_day':
@@ -483,9 +616,14 @@ export default function TodayPage() {
 
   const data = todayQuery.data;
   const date = new Date(`${data.date}T00:00:00`);
+  const nowMs = Date.now();
+  const isTodayPayload = date.toDateString() === new Date().toDateString();
 
-  const rawEntries: TimelineEntry[] = data.timeline
+  const timelineItems: TimelineEntry[] = data.timeline
     .filter((item: TimelineItem) => item.status !== 'cancelled')
+    .filter((item: TimelineItem) => !(
+      isTodayPayload && item.kind === 'proposed' && new Date(item.end_at).getTime() <= nowMs
+    ))
     .map((item) => ({
       id: item.id,
       kind: item.kind,
@@ -502,6 +640,8 @@ export default function TodayPage() {
               : item.kind === 'focus'
                 ? copy.focus
                 : undefined,
+      hasPersonalNote: Boolean(item.private_note?.trim()),
+      onPress: item.kind === 'task' ? undefined : () => openTimelineEvent(item),
       action:
         item.kind === 'proposed'
           ? {
@@ -511,6 +651,22 @@ export default function TodayPage() {
             }
           : undefined,
     }));
+  const slotEntries: TimelineEntry[] = (data.slot_suggestions ?? [])
+    .filter((slot) => !isTodayPayload || new Date(slot.end_at).getTime() > nowMs)
+    .map((slot) => ({
+      id: `slot-${slot.id}`,
+      kind: 'free' as const,
+      title: slotTimelineTitle(slot, locale),
+      start_at: slot.start_at,
+      end_at: slot.end_at,
+      subtitle: slot.reason ?? slot.tasks.slice(0, 2).map((task) => task.title).join(' · '),
+      onPress: () => setSelectedSlot(slot),
+    }));
+
+  const rawEntries = [...timelineItems, ...slotEntries]
+    .sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime());
+  const showSuggestions = data.suggestions.length > 0 && slotEntries.length === 0;
+  const showAllClear = data.needs_attention.length === 0 && !showSuggestions && slotEntries.length === 0;
 
   // Agenda rhythm: surface real gaps between items as ghost "free" rows,
   // so back-to-back meetings and 2-hour windows look different.
@@ -519,8 +675,9 @@ export default function TodayPage() {
     if (i > 0) {
       const prevEnd = new Date(rawEntries[i - 1].end_at).getTime();
       const start = new Date(entry.start_at).getTime();
+      const end = new Date(entry.end_at).getTime();
       const gapMin = Math.round((start - prevEnd) / 60000);
-      if (gapMin >= 30) {
+      if (gapMin >= 30 && (!isTodayPayload || (start > nowMs && end > nowMs))) {
         timelineEntries.push({
           id: `gap-${i}`,
           kind: 'free',
@@ -709,7 +866,7 @@ export default function TodayPage() {
       )}
 
       {/* ----------------------------------------------------------- Suggestions */}
-      {data.suggestions.length > 0 && (
+      {showSuggestions && (
         <Rise>
           <SectionHeader title={copy.lumiSuggests} />
           <div className="flex flex-col gap-3">
@@ -742,7 +899,7 @@ export default function TodayPage() {
       )}
 
       {/* All-clear footer when nothing demands attention */}
-      {data.needs_attention.length === 0 && data.suggestions.length === 0 && (
+      {showAllClear && (
         <Rise>
           <div className="mt-7 flex items-center justify-center gap-2 text-[13px] text-hint">
             <CheckCircle2 size={15} className="text-success" />
@@ -751,6 +908,79 @@ export default function TodayPage() {
         </Rise>
       )}
 
+      {selectedSlot && (
+        <Sheet open onClose={() => setSelectedSlot(null)} title={copy.quickWinsReady} closeLabel={copy.dismiss}>
+          <div className="rounded-2xl border border-hairline bg-[var(--surface)] px-3.5 py-3">
+            <p className="tnum text-[14px] font-semibold text-ink">
+              {formatSpanMinutesLocalized(selectedSlot.start_at, selectedSlot.end_at, locale)}
+            </p>
+            {selectedSlot.reason && <p className="mt-1 text-[12.5px] leading-relaxed text-hint">{selectedSlot.reason}</p>}
+          </div>
+          <div className="mt-3 space-y-2.5">
+            {selectedSlot.tasks.map((task) => (
+              <button
+                key={task.id}
+                type="button"
+                onClick={() => {
+                  setSelectedSlot(null);
+                  navigate('/tasks');
+                }}
+                className="flex w-full items-center gap-3 rounded-2xl border border-hairline bg-[var(--surface)] px-3.5 py-3 text-left active:bg-[rgba(255,255,255,0.04)]"
+              >
+                <Sparkles size={15} className="shrink-0 text-accent-text" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[14px] font-semibold text-ink">{task.title}</span>
+                  <span className="block truncate text-[12.5px] text-hint">
+                    {[task.project, task.estimated_minutes ? `${task.estimated_minutes} min` : null].filter(Boolean).join(' · ')}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+          <Button fullWidth variant="secondary" className="mt-4" onClick={() => {
+            setSelectedSlot(null);
+            navigate('/tasks');
+          }}>
+            {copy.openTaskList}
+          </Button>
+        </Sheet>
+      )}
+
+      <Sheet open={selectedTimelineEvent !== null} onClose={closeEventSheet} title={selectedTimelineEvent?.title ?? ''}>
+        {selectedTimelineEvent && (
+          <div className="space-y-4">
+            <p className="tnum text-[14px] text-hint">
+              {formatTimeRange(selectedTimelineEvent.start_at, selectedTimelineEvent.end_at, timeDisplay)}
+              {selectedTimelineEvent.source === 'google' && ' · Google'}
+              {selectedTimelineEvent.source === 'yandex' && (locale === 'en' ? ' · Yandex' : ' · Яндекс')}
+              {selectedTimelineEvent.status === 'proposed' && (locale === 'en' ? ' · Lumi proposal' : ' · предложение Lumi')}
+            </p>
+            <PrivateNoteSection
+              event={selectedTimelineEvent}
+              editing={noteEditing}
+              expanded={noteExpanded}
+              draft={noteDraft}
+              error={noteError}
+              saving={updatePrivateNote.isPending || deletePrivateNote.isPending}
+              deleting={deletePrivateNote.isPending}
+              onEdit={() => {
+                setNoteDraft(selectedTimelineEvent.private_note ?? '');
+                setNoteError(null);
+                setNoteEditing(true);
+              }}
+              onCancel={() => {
+                setNoteDraft(selectedTimelineEvent.private_note ?? '');
+                setNoteError(null);
+                setNoteEditing(false);
+              }}
+              onDelete={removePrivateNote}
+              onDraftChange={setNoteDraft}
+              onExpandedChange={setNoteExpanded}
+              onSave={savePrivateNote}
+            />
+          </div>
+        )}
+      </Sheet>
     </Stagger>
   );
 }

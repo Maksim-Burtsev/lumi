@@ -18,6 +18,7 @@ from lumi.bot.media import (
     classify_attachment_message,
     extract_image_ref,
 )
+from lumi.bot.schedule_messages import render_today_schedule
 from lumi.config import get_settings
 from lumi.db.models import CalendarEventStatus, ConfirmationStatus, Message, MessageRole
 from lumi.db.session import session_scope
@@ -177,7 +178,7 @@ def _text_for_language(language: str | None, *, en: str, ru: str, it: str | None
     return en
 
 
-def _reply_language_for_callback(user, language_code: str | None = None) -> str:
+def _reply_language_for_message(user, language_code: str | None = None) -> str:
     settings = ensure_language_settings(user.settings)
     mode = settings.get("reply_language_mode")
     if mode == "fixed":
@@ -185,6 +186,10 @@ def _reply_language_for_callback(user, language_code: str | None = None) -> str:
     if mode == "app_locale":
         return normalize_reply_language(user.locale)
     return normalize_reply_language(language_code or user.language_code or user.locale)
+
+
+def _reply_language_for_callback(user, language_code: str | None = None) -> str:
+    return _reply_language_for_message(user, language_code)
 
 
 def _block_confirm_missing_text(language: str | None) -> str:
@@ -469,6 +474,21 @@ async def cmd_today(message: TgMessage) -> None:
         )
         payload = await TodayService(session).build_payload(user)
         text = format_today(payload, user.timezone)
+        today_schedule = render_today_schedule(
+            payload,
+            timezone=user.timezone,
+            language=_reply_language_for_message(user, _language_code(message)),
+        )
+    if today_schedule is not None:
+        from lumi.services.notifier import send_telegram_message
+
+        await send_telegram_message(
+            user,
+            today_schedule.plain_text,
+            rich_html=today_schedule.rich_html,
+            open_app_button=True,
+        )
+        return
     await _reply_chunks(message, text)
 
 
@@ -501,6 +521,10 @@ async def _enqueue_automation_run(message: TgMessage, automation_type: str, star
             type_=AGENT_RUN_TYPE_BY_AUTOMATION[automation_type],
             trigger="telegram_command",
         )
+        run.metadata_ = {
+            **(run.metadata_ or {}),
+            "reply_language": _reply_language_for_message(user, _language_code(message)),
+        }
         user_id = str(user.id)
         run_id = str(run.id)
     job_id = await enqueue_job(

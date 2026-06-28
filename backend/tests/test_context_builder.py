@@ -166,7 +166,7 @@ async def test_planner_context_is_compact_state_with_counts_not_full_prompt(user
     assert "Attached image understanding" not in prompt
     assert trace["recent_task_ref_count"] == 1
     assert trace["active_task_count"] == 2
-    assert trace["known_project_count"] == 1
+    assert trace["known_project_count"] == 2
     assert "Webhook для Lumi на проде" not in str(trace)
 
 

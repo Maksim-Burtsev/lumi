@@ -2,6 +2,8 @@ import { getInitData } from '../telegram/webapp';
 import type {
   AgentRunDetailResponse,
   AgentRunsResponse,
+  AssistantSuggestionResponse,
+  AssistantSuggestionsResponse,
   AutomationResponse,
   AutomationsResponse,
   CalendarEventResponse,
@@ -28,8 +30,10 @@ import type {
   PatchAutomationInput,
   PatchMemoryInput,
   PatchNewsTopicInput,
+  PrivateNoteInput,
   PatchSettingsInput,
   PatchTaskInput,
+  ProjectsResponse,
   RunRef,
   SettingsResponse,
   SnoozeInput,
@@ -72,7 +76,7 @@ export function markUnauthorizedResponse(): void {
   window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
 }
 
-type Method = 'GET' | 'POST' | 'PATCH' | 'DELETE';
+type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 interface RequestOptions {
   query?: Record<string, string | number | undefined>;
@@ -159,8 +163,8 @@ export class LumiApiClient {
   }
 
   // -------------------------------------------------- Tasks
-  listTasks(filter: TaskFilter = 'all', limit = 100): Promise<TasksResponse> {
-    return request('GET', '/api/tasks', { query: { filter, limit } });
+  listTasks(filter: TaskFilter = 'all', limit = 100, project_id?: string): Promise<TasksResponse> {
+    return request('GET', '/api/tasks', { query: { filter, limit, project_id } });
   }
 
   createTask(input: CreateTaskInput): Promise<TaskResponse> {
@@ -179,6 +183,22 @@ export class LumiApiClient {
     return request('POST', `/api/tasks/${id}/snooze`, { body: input });
   }
 
+  listProjects(): Promise<ProjectsResponse> {
+    return request('GET', '/api/projects');
+  }
+
+  listAssistantSuggestions(kind?: string): Promise<AssistantSuggestionsResponse> {
+    return request('GET', '/api/assistant/suggestions', { query: { kind } });
+  }
+
+  acceptAssistantSuggestion(id: string): Promise<AssistantSuggestionResponse> {
+    return request('POST', `/api/assistant/suggestions/${id}/accept`);
+  }
+
+  dismissAssistantSuggestion(id: string): Promise<AssistantSuggestionResponse> {
+    return request('POST', `/api/assistant/suggestions/${id}/dismiss`);
+  }
+
   // -------------------------------------------------- Calendar
   listCalendarEvents(start: string, end: string): Promise<CalendarEventsResponse> {
     return request('GET', '/api/calendar/events', { query: { start, end } });
@@ -186,6 +206,10 @@ export class LumiApiClient {
 
   createCalendarEvent(input: CreateEventInput): Promise<CalendarEventResponse> {
     return request('POST', '/api/calendar/events', { body: input });
+  }
+
+  updateCalendarPrivateNote(id: string, input: PrivateNoteInput): Promise<CalendarEventResponse> {
+    return request('PUT', `/api/calendar/events/${id}/private-note`, { body: input });
   }
 
   planDay(date?: string): Promise<RunRef> {
@@ -206,6 +230,10 @@ export class LumiApiClient {
 
   deleteCalendarEvent(id: string): Promise<OkResponse> {
     return request('DELETE', `/api/calendar/events/${id}`);
+  }
+
+  deleteCalendarPrivateNote(id: string): Promise<CalendarEventResponse> {
+    return request('DELETE', `/api/calendar/events/${id}/private-note`);
   }
 
   syncCalendar(): Promise<RunRef> {

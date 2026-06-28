@@ -25,6 +25,8 @@ TOOL_NAMES = {
     "create_internal_calendar_block",
     "update_calendar_event",
     "cancel_calendar_event",
+    "update_calendar_private_note",
+    "delete_calendar_private_note",
     "create_external_calendar_event",
     "create_automation",
     "read_automations",
@@ -61,9 +63,11 @@ TOOL_CATALOG = """Available backend tools:
 - plan_day()
 - find_focus_slot(title?, duration_minutes?, time_window_local?)
 - read_calendar_events(start_at_local, end_at_local, include_details?, sync_if_needed?)
-- create_internal_calendar_block(title, start_at_local, end_at_local, description?)
+- create_internal_calendar_block(title, start_at_local, end_at_local, description?, private_note?)
 - update_calendar_event(event_id? | event_query? | recency_hint?: last_created_calendar_block|last_touched_calendar_event, start_at_local?, start_time_local?, shift_minutes?, end_at_local?, duration_minutes?, title?, description?)
 - cancel_calendar_event(event_id? | event_query? | recency_hint?: last_created_calendar_block|last_touched_calendar_event)
+- update_calendar_private_note(event_id? | event_query?, private_note)
+- delete_calendar_private_note(event_id? | event_query?)
 - create_external_calendar_event(title, start_at_local, end_at_local)
 - create_automation(type, title, cron_expression, timezone?, config?)
 - read_automations(include_system?)
@@ -115,6 +119,10 @@ Rules:
 - For short follow-ups to recent calendar blocks, use recency_hint=last_created_calendar_block or last_touched_calendar_event from Planner context.
 - For short follow-ups right after a task reminder notification, use recency_hint=last_notified_task.
 - If the user replies to a task reminder notification, use recency_hint=replied_task.
+- Calendar personal notes are user-only. If the user gives personal details for a block/meeting,
+  put them in private_note, not description.
+- To add, edit, or remove a personal note on an existing calendar event, use update_calendar_private_note
+  or delete_calendar_private_note. If you just read events, prefer event_id from tool observations.
 - For create_task follow-ups that refer to a recent project, use project_ref=last_task_project,
   last_created_task_project, last_proposed_task_project, or last_touched_task_project.
 - Do not resolve ambiguous task matches yourself. If the user intent is a task update and Planner context has multiple plausible candidates, still call update_task with task_query; backend will ask with confirmation buttons.

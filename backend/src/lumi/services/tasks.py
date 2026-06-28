@@ -8,12 +8,14 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Any, Literal
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lumi.assistant.schemas import ExtractedTask
 from lumi.db.models import Priority, Task, TaskEvent, TaskStatus, User
+from lumi.services.assistant_suggestions import AssistantSuggestionService
 from lumi.services.audit import AuditService
+from lumi.services.projects import ProjectService
 from lumi.services.realtime import RealtimeEventService
 from lumi.utils.text import keyword_overlap, normalize_for_match
 from lumi.utils.time import local_day_bounds, local_to_utc, utc_now
@@ -46,11 +48,52 @@ def _task_snapshot(task: Task) -> dict[str, Any]:
         "status": task.status.value if isinstance(task.status, TaskStatus) else task.status,
         "priority": task.priority.value if isinstance(task.priority, Priority) else task.priority,
         "project": task.project,
+        "project_id": str(task.project_id) if task.project_id else None,
         "tags": task.tags or [],
         "due_at": task.due_at.isoformat() if task.due_at else None,
+        "target_at": task.target_at.isoformat() if task.target_at else None,
         "reminder_at": task.reminder_at.isoformat() if task.reminder_at else None,
         "snoozed_until": task.snoozed_until.isoformat() if task.snoozed_until else None,
+        "estimated_minutes": task.estimated_minutes,
+        "estimate_source": task.estimate_source,
+        "review_skips": _task_review_skips(task),
     }
+
+
+def _task_review_skips(task: Task) -> dict[str, bool]:
+    skips = (task.metadata_ or {}).get("review_skips")
+    if not isinstance(skips, dict):
+        return {}
+    return {str(key): True for key, value in skips.items() if value is True}
+
+
+def _task_needs_review(task: Task) -> bool:
+    skips = _task_review_skips(task)
+    if task.status == TaskStatus.INBOX:
+        return True
+    if task.project_id is None and not skips.get("project"):
+        return True
+    if task.due_at is None and not skips.get("due_date"):
+        return True
+    return task.estimated_minutes is None and task.estimate_source != "skipped"
+
+
+def _merge_review_skips(task: Task, updates: dict[str, Any] | None) -> None:
+    if not isinstance(updates, dict):
+        return
+    metadata = dict(task.metadata_ or {})
+    skips = dict(metadata.get("review_skips") or {})
+    for key, value in updates.items():
+        normalized = str(key)
+        if value is True:
+            skips[normalized] = True
+        elif value is False:
+            skips.pop(normalized, None)
+    if skips:
+        metadata["review_skips"] = skips
+    else:
+        metadata.pop("review_skips", None)
+    task.metadata_ = metadata
 
 
 def _rename_score(wanted: str, title: str) -> float:
@@ -122,25 +165,46 @@ class TaskService:
         description: str | None = None,
         priority: str = "medium",
         project: str | None = None,
+        project_id: uuid.UUID | None = None,
         tags: list[str] | None = None,
         due_at: datetime | None = None,
+        target_at: datetime | None = None,
         reminder_at: datetime | None = None,
+        estimated_minutes: int | None = None,
+        estimate_source: str | None = None,
         source: str = "manual",
         source_message_id: uuid.UUID | None = None,
         created_by: str = "user",
         actor: str = "user",
         agent_run_id: uuid.UUID | None = None,
     ) -> Task:
+        project_service = ProjectService(self.session)
+        project_row = await project_service.get(user, project_id) if project_id else None
+        if (
+            project_row is None
+            and project_id is None
+            and not (project or "").strip()
+            and due_at is None
+            and target_at is None
+            and reminder_at is None
+        ):
+            project_row = await project_service.ensure_backlog_project(user)
+        if project_row is None:
+            project_row = await project_service.get_or_create(user, project)
         task = Task(
             user_id=user.id,
             title=title.strip()[:300],
             description=description,
             status=TaskStatus.ACTIVE,
             priority=Priority(priority),
-            project=project,
+            project=project_row.name if project_row else project,
+            project_id=project_row.id if project_row else None,
             tags=tags or [],
             due_at=due_at,
+            target_at=target_at,
             reminder_at=reminder_at,
+            estimated_minutes=estimated_minutes,
+            estimate_source=estimate_source,
             source=source,
             source_message_id=source_message_id,
             created_by=created_by,
@@ -152,6 +216,7 @@ class TaskService:
         await self.audit.log(user_id=user.id, actor=actor, entity_type="task",
                              entity_id=task.id, action="created", details={"title": task.title})
         await self._emit_task_changed(task, "task.created", actor=actor)
+        await self._queue_suggestion_refresh(user, task=task, reason="task.created")
         return task
 
     async def find_active_by_title(self, user: User, title: str) -> Task | None:
@@ -374,8 +439,17 @@ class TaskService:
         )
         return result.scalar_one_or_none()
 
-    async def list_tasks(self, user: User, *, filter_: str = "all", limit: int = 100) -> list[Task]:
+    async def list_tasks(
+        self,
+        user: User,
+        *,
+        filter_: str = "all",
+        limit: int = 100,
+        project_id: uuid.UUID | None = None,
+    ) -> list[Task]:
         stmt = select(Task).where(Task.user_id == user.id)
+        if project_id is not None:
+            stmt = stmt.where(Task.project_id == project_id)
         now = utc_now()
         day_start, day_end = local_day_bounds(now, user.timezone)
         active = Task.status.in_([TaskStatus.ACTIVE, TaskStatus.INBOX])
@@ -392,6 +466,21 @@ class TaskService:
                 Task.status == TaskStatus.INBOX,
                 _not_snoozed(now),
             ).order_by(Task.created_at.desc())
+        elif filter_ == "review":
+            stmt = stmt.where(
+                visible_active,
+                or_(
+                    Task.status == TaskStatus.INBOX,
+                    Task.project_id.is_(None),
+                    Task.due_at.is_(None),
+                    and_(
+                        Task.estimated_minutes.is_(None),
+                        or_(Task.estimate_source.is_(None), Task.estimate_source != "skipped"),
+                    ),
+                ),
+            ).order_by(Task.created_at.desc())
+            result = await self.session.execute(stmt.limit(max(limit * 3, 100)))
+            return [task for task in result.scalars() if _task_needs_review(task)][:limit]
         elif filter_ == "done":
             stmt = stmt.where(Task.status == TaskStatus.DONE).order_by(Task.completed_at.desc())
         else:
@@ -512,13 +601,25 @@ class TaskService:
         agent_run_id: uuid.UUID | None = None,
     ) -> Task:
         before = _task_snapshot(task)
-        allowed = {"title", "description", "priority", "project", "tags",
-                   "due_at", "reminder_at", "status"}
+        allowed = {"title", "description", "priority", "project", "project_id", "tags",
+                   "due_at", "target_at", "reminder_at", "status", "estimated_minutes",
+                   "estimate_source", "review_skips"}
         for key, value in updates.items():
             if key not in allowed or value is None and key in ("title",):
                 continue
+            if key == "review_skips":
+                _merge_review_skips(task, value)
+                continue
             if key == "priority" and value is not None:
                 value = Priority(value)
+            if key == "project":
+                project_row = await ProjectService(self.session).get_or_create(user, value)
+                task.project_id = project_row.id if project_row else None
+                value = project_row.name if project_row else value
+            if key == "project_id":
+                project_row = await ProjectService(self.session).get(user, value) if value else None
+                task.project = project_row.name if project_row else None
+                value = project_row.id if project_row else None
             if key == "status" and value is not None:
                 value = TaskStatus(value)
                 if value == TaskStatus.DONE and task.completed_at is None:
@@ -535,6 +636,7 @@ class TaskService:
             agent_run_id=agent_run_id,
         )
         await self._emit_task_changed(task, "task.updated", actor=actor)
+        await self._queue_suggestion_refresh(user, task=task, reason="task.updated")
         return task
 
     async def update_task_with_tag_ops(
@@ -607,6 +709,7 @@ class TaskService:
         await self.audit.log(user_id=user.id, actor=actor, entity_type="task",
                              entity_id=task.id, action="completed", details={"title": task.title})
         await self._emit_task_changed(task, "task.completed", actor=actor)
+        await self._queue_suggestion_refresh(user, task=task, reason="task.completed")
         return task
 
     async def snooze_task(
@@ -680,7 +783,17 @@ class TaskService:
     async def _emit_task_changed(self, task: Task, event_type: str, *, actor: str) -> None:
         await RealtimeEventService(self.session).emit(
             user_id=task.user_id,
-            topics=["tasks"],
+            topics=["tasks", "projects"],
             event_type=event_type,
             payload={"task_id": str(task.id), "actor": actor},
+        )
+
+    async def _queue_suggestion_refresh(self, user: User, *, task: Task, reason: str) -> None:
+        await AssistantSuggestionService(self.session).enqueue_opportunity(
+            user,
+            kind="task_cleanup",
+            scope_key="review",
+            reason=reason,
+            payload={"task_id": str(task.id), "project_id": str(task.project_id) if task.project_id else None},
+            delay_seconds=45,
         )

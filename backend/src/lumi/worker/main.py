@@ -11,8 +11,12 @@ from lumi.logging import get_logger, setup_logging
 from lumi.worker.jobs import (
     cleanup_ui_events,
     compact_conversation,
+    enqueue_active_user_task_cleanup,
+    enqueue_daily_task_cleanup,
     enqueue_due_assistant_turns,
     process_assistant_turn,
+    process_due_opportunity_jobs,
+    recover_pending_calendar_private_note_summaries,
     run_calendar_sync,
     run_custom_prompt,
     run_daily_planning,
@@ -21,6 +25,7 @@ from lumi.worker.jobs import (
     run_news_digest,
     run_task_review,
     send_due_reminders,
+    summarize_calendar_private_note,
 )
 from lumi.worker.queue import redis_settings
 
@@ -48,8 +53,12 @@ class WorkerSettings:
         run_calendar_sync,
         run_task_review,
         run_custom_prompt,
+        summarize_calendar_private_note,
         compact_conversation,
         process_assistant_turn,
+        process_due_opportunity_jobs,
+        enqueue_active_user_task_cleanup,
+        enqueue_daily_task_cleanup,
         cleanup_ui_events,
     ]
     cron_jobs = [
@@ -57,8 +66,13 @@ class WorkerSettings:
         cron(send_due_reminders, second=15, unique=True),
         # Recovery for saved chat turns when enqueue failed or a process restarted.
         cron(enqueue_due_assistant_turns, second=45, unique=True),
+        # Low-latency proactive task/project opportunities.
+        cron(process_due_opportunity_jobs, second=35, unique=True),
+        cron(enqueue_active_user_task_cleanup, minute={0, 15, 30, 45}, second=25, unique=True),
+        cron(enqueue_daily_task_cleanup, minute=5, second=5, unique=True),
         # Realtime outbox retention: durable catch-up is 72h.
         cron(cleanup_ui_events, hour=3, minute=20, unique=True),
+        cron(recover_pending_calendar_private_note_summaries, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}, unique=True),
     ]
     on_startup = startup
     on_shutdown = shutdown

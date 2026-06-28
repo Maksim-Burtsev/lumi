@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
@@ -7,6 +7,48 @@ import { api } from '../api/client';
 import type { ConfirmationDecisionResponse, SettingsResponse, TodayResponse, User } from '../api/types';
 import { ToastProvider } from '../components/ui/Toast';
 import TodayPage from './TodayPage';
+
+vi.mock('../components/timeline/Timeline', () => {
+  type Entry = {
+    id: string;
+    title: string;
+    start_at: string;
+    end_at: string;
+    hasPersonalNote?: boolean;
+    onPress?: () => void;
+    action?: { label: string; onClick: () => void; busy?: boolean };
+    secondaryAction?: { label: string; onClick: () => void; busy?: boolean };
+  };
+  const time = (value: string) => value.slice(11, 16);
+
+  return {
+    Timeline: ({ entries }: { entries: Entry[] }) => (
+      <div>
+        {entries.map((entry) => (
+          <div key={entry.id}>
+            <button type="button" onClick={entry.onPress}>
+              <span>{entry.title}</span>
+              {entry.hasPersonalNote && <span role="img" aria-label="Есть личная заметка" />}
+            </button>
+            <span>
+              {time(entry.start_at)}–{time(entry.end_at)}
+            </span>
+            {entry.secondaryAction && (
+              <button type="button" onClick={entry.secondaryAction.onClick}>
+                {entry.secondaryAction.label}
+              </button>
+            )}
+            {entry.action && (
+              <button type="button" onClick={entry.action.onClick}>
+                {entry.action.label}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    ),
+  };
+});
 
 const firstConfirmationId = '11111111-1111-4111-8111-111111111111';
 const secondConfirmationId = '22222222-2222-4222-8222-222222222222';
@@ -87,6 +129,7 @@ function makeTodayResponse(overrides: Partial<TodayResponse> = {}): TodayRespons
       },
     ],
     suggestions: [],
+    slot_suggestions: [],
     recent_runs: [],
     ...overrides,
   };
@@ -124,6 +167,20 @@ function makeRejectResponse(): ConfirmationDecisionResponse {
       status: 'rejected',
     },
   };
+}
+
+function makeTimelineEvent(overrides: Partial<TodayResponse['timeline'][number]> = {}): TodayResponse['timeline'][number] {
+  return {
+    id: 'event-1',
+    kind: 'event',
+    title: 'Product sync',
+    start_at: '2026-06-12T10:00:00+04:00',
+    end_at: '2026-06-12T10:45:00+04:00',
+    source: 'internal',
+    status: 'confirmed',
+    busy: true,
+    ...overrides,
+  } as TodayResponse['timeline'][number];
 }
 
 function renderTodayPage(locale: 'en' | 'ru' = 'ru') {
@@ -215,6 +272,201 @@ describe('TodayPage timeline gaps', () => {
     expect(screen.getByText('15:00–15:30')).toBeInTheDocument();
     expect(screen.queryByText('14:30–14:45')).not.toBeInTheDocument();
     expect(screen.getByText('Daily MT')).toBeInTheDocument();
+  });
+
+  it('shows precomputed quick wins as an inline free-slot nudge, not a duplicate suggestion list', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'getToday').mockResolvedValue(
+      makeTodayResponse({
+        timeline: [
+          {
+            id: 'event-1',
+            kind: 'event',
+            title: 'Planning',
+            start_at: '2026-06-12T13:00:00+04:00',
+            end_at: '2026-06-12T13:30:00+04:00',
+            source: 'yandex',
+            status: 'confirmed',
+            busy: true,
+          },
+          {
+            id: 'event-2',
+            kind: 'event',
+            title: 'Demo',
+            start_at: '2026-06-12T14:00:00+04:00',
+            end_at: '2026-06-12T14:30:00+04:00',
+            source: 'yandex',
+            status: 'confirmed',
+            busy: true,
+          },
+        ],
+        needs_attention: [],
+        suggestions: [
+          {
+            id: 'suggest-plan',
+            kind: 'plan_day',
+            title: "Build today's plan",
+            description: 'Generic suggestion should stay hidden while quick wins are ready',
+            action: { type: 'plan_day', payload: {} },
+          },
+        ],
+        slot_suggestions: [
+          {
+            id: 'slot-1',
+            title: '30 min free',
+            description: 'Lumi already picked 2 quick wins for 20 min',
+            start_at: '2026-06-12T13:30:00+04:00',
+            end_at: '2026-06-12T14:00:00+04:00',
+            tasks: [
+              { id: 'task-mail', title: 'Проверить почту', project: 'Operations', estimated_minutes: 5, priority: 'medium' },
+              { id: 'task-contract', title: 'Ответить по договору', project: 'Work', estimated_minutes: 15, priority: 'high' },
+            ],
+            reason: 'Both fit this window.',
+            source: 'llm',
+          },
+        ],
+      }),
+    );
+
+    renderTodayPage('en');
+
+    await user.click(await screen.findByRole('button', { name: /30 min free · 2 quick wins ready/i }));
+
+    expect(screen.getByRole('dialog', { name: 'Quick wins ready' })).toBeInTheDocument();
+    expect(screen.getByText('Проверить почту')).toBeInTheDocument();
+    expect(screen.getByText('Ответить по договору')).toBeInTheDocument();
+    expect(screen.queryByText('Lumi suggests')).not.toBeInTheDocument();
+  });
+});
+
+describe('TodayPage personal notes', () => {
+  it('marks timeline cards that already have a personal note', async () => {
+    vi.spyOn(api, 'getToday').mockResolvedValue(
+      makeTodayResponse({
+        timeline: [
+          makeTimelineEvent({
+            private_note: 'Ask about launch risk.',
+            private_note_summary: null,
+            private_note_summary_status: 'not_needed',
+            private_note_updated_at: '2026-06-12T06:00:00Z',
+            private_note_summary_updated_at: null,
+          } as Partial<TodayResponse['timeline'][number]>),
+        ],
+        needs_attention: [],
+      }),
+    );
+
+    renderTodayPage();
+
+    expect(await screen.findByText('Product sync')).toBeInTheDocument();
+    expect(await screen.findByRole('img', { name: 'Есть личная заметка' })).toBeInTheDocument();
+  });
+
+  it('opens the event sheet from Today schedule and shows the personal-note section', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'getToday').mockResolvedValue(
+      makeTodayResponse({
+        timeline: [makeTimelineEvent()],
+        needs_attention: [],
+      }),
+    );
+
+    renderTodayPage();
+
+    await user.click(await screen.findByRole('button', { name: /Product sync/ }));
+
+    expect(await screen.findByRole('dialog', { name: 'Product sync' })).toBeInTheDocument();
+    expect(screen.getByText('Личная заметка')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Добавить заметку' })).toBeInTheDocument();
+  });
+
+  it('uses English personal-note copy when app language is English', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'getToday').mockResolvedValue(
+      makeTodayResponse({
+        timeline: [makeTimelineEvent()],
+        needs_attention: [],
+      }),
+    );
+
+    renderTodayPage('en');
+
+    await user.click(await screen.findByRole('button', { name: /Product sync/ }));
+
+    expect(await screen.findByText('Personal note')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add note' })).toBeInTheDocument();
+    expect(screen.queryByText('Личная заметка')).not.toBeInTheDocument();
+  });
+
+  it('labels long ready summaries with localized copy', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'getToday').mockResolvedValue(
+      makeTodayResponse({
+        timeline: [
+          makeTimelineEvent({
+            private_note: 'Long private note. '.repeat(60),
+            private_note_summary: 'AI summary: Short generated summary.',
+            private_note_summary_status: 'ready',
+            private_note_updated_at: '2026-06-12T06:00:00Z',
+            private_note_summary_updated_at: '2026-06-12T06:01:00Z',
+          } as Partial<TodayResponse['timeline'][number]>),
+        ],
+        needs_attention: [],
+      }),
+    );
+
+    renderTodayPage();
+
+    await user.click(await screen.findByRole('button', { name: /Product sync/ }));
+
+    expect(await screen.findByText('AI-резюме')).toBeInTheDocument();
+    expect(screen.getByText('Short generated summary.')).toBeInTheDocument();
+    expect(screen.queryByText('AI summary: Short generated summary.')).not.toBeInTheDocument();
+  });
+
+  it('adds a personal note from the Today event sheet', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'getToday').mockResolvedValue(
+      makeTodayResponse({
+        timeline: [makeTimelineEvent()],
+        needs_attention: [],
+      }),
+    );
+    const updateSpy = vi.spyOn(api, 'updateCalendarPrivateNote').mockResolvedValue({
+      event: {
+        ...makeTimelineEvent(),
+        description: null,
+        all_day: false,
+        created_by: 'user',
+        location: null,
+        meeting_url: null,
+        external_url: null,
+        links: [],
+        last_synced_at: null,
+        organizer: null,
+        attendees: [],
+        attendee_count: 0,
+        user_response_status: null,
+        private_note: 'Ask about launch risk.',
+        private_note_summary: null,
+        private_note_summary_status: 'not_needed',
+        private_note_updated_at: '2026-06-12T06:00:00Z',
+        private_note_summary_updated_at: null,
+      },
+    });
+
+    renderTodayPage();
+
+    await user.click(await screen.findByRole('button', { name: /Product sync/ }));
+    await user.click(await screen.findByRole('button', { name: 'Добавить заметку' }));
+    fireEvent.change(screen.getByPlaceholderText('Короткий личный контекст'), {
+      target: { value: 'Ask about launch risk.' },
+    });
+    await user.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith('event-1', { note: 'Ask about launch risk.' });
+    });
   });
 });
 

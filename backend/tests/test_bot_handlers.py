@@ -1,14 +1,16 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
+from uuid import UUID
 
 from sqlalchemy import select
 
 from lumi.bot import handlers
-from lumi.db.models import AssistantTurn, CalendarEventStatus, Message, MessageRole
+from lumi.db.models import AgentRun, AssistantTurn, CalendarEventStatus, Message, MessageRole
 from lumi.db.session import session_scope
 from lumi.services.calendar import CalendarService
-from lumi.utils.time import local_to_utc
+from lumi.services.users import UserService
+from lumi.utils.time import local_now, local_to_utc
 
 from .conftest import TEST_TELEGRAM_ID
 
@@ -341,6 +343,84 @@ async def test_chat_message_enqueues_turn_without_inline_orchestrator(monkeypatc
     assert turn.primary_message_id == 901
     assert user.language_code == "en-US"
     assert user.locale == "en"
+
+
+async def test_today_command_sends_rich_schedule_card(monkeypatch):
+    sent: list[dict] = []
+
+    async def fake_check_allowed(*args, **kwargs):
+        return True
+
+    async def fake_send_telegram_message(user, text, **kwargs):
+        sent.append({"text": text, **kwargs})
+        return True
+
+    monkeypatch.setattr(handlers, "_check_allowed", fake_check_allowed)
+    monkeypatch.setattr("lumi.services.notifier.send_telegram_message", fake_send_telegram_message)
+
+    timezone = "Europe/Moscow"
+    today = local_now(timezone)
+    start = local_to_utc(datetime(today.year, today.month, today.day, 13, 0), timezone)
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID, language_code="ru")
+        user.timezone = timezone
+        user.locale = "en"
+        user.settings = {"locale_source": "manual", "reply_language_mode": "auto"}
+        await CalendarService(session).create_internal_block(
+            user,
+            title="Standup",
+            start_at=start,
+            end_at=start + timedelta(minutes=15),
+            created_by="test",
+        )
+
+    message = FakeTelegramMessage(message_id=902, text="/today", language_code="ru")
+
+    await handlers.cmd_today(message)
+
+    assert message.answers == []
+    assert sent
+    first_line = sent[0]["text"].splitlines()[0]
+    assert first_line.startswith("📅 Сегодня, ")
+    assert f", {today.strftime('%d.%m')}" in first_line
+    assert first_line.count(",") == 2
+    assert "13:00  Standup · 15м" in sent[0]["text"]
+    assert "🟦" not in sent[0]["text"]
+    assert "Today" not in sent[0]["text"]
+    assert sent[0]["rich_html"].startswith("<h4>📅 Сегодня, ")
+    assert sent[0]["open_app_button"] is True
+
+
+async def test_plan_command_stores_reply_language_for_worker(monkeypatch):
+    enqueued: list[tuple[str, tuple, dict]] = []
+
+    async def fake_check_allowed(*args, **kwargs):
+        return True
+
+    async def fake_enqueue(job_name, *args, **kwargs):
+        enqueued.append((job_name, args, kwargs))
+        return "job-id"
+
+    monkeypatch.setattr(handlers, "_check_allowed", fake_check_allowed)
+    monkeypatch.setattr(handlers, "enqueue_job", fake_enqueue)
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID, language_code="en")
+        user.locale = "en"
+        user.settings = {"locale_source": "manual", "reply_language_mode": "auto"}
+
+    message = FakeTelegramMessage(message_id=904, text="/plan", language_code="ru")
+
+    await handlers.cmd_plan(message)
+
+    assert message.answers == ["Собираю план дня — пришлю через минуту."]
+    assert len(enqueued) == 1
+    assert enqueued[0][0] == "run_daily_planning"
+    run_id = enqueued[0][2]["agent_run_id"]
+    async with session_scope() as session:
+        run = await session.get(AgentRun, UUID(run_id))
+    assert run is not None
+    assert run.metadata_["reply_language"] == "ru"
 
 
 async def test_duplicate_enqueue_does_not_show_queue_unavailable(monkeypatch):

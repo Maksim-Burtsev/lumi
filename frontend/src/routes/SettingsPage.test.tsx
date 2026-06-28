@@ -215,4 +215,81 @@ describe('SettingsPage language settings', () => {
       expect(patchSpy).toHaveBeenCalledWith({ time_format: '24h' });
     });
   });
+
+  it('shows work rhythm controls with five-minute short windows', async () => {
+    vi.spyOn(api, 'health').mockResolvedValue({ status: 'ok', app: 'Lumi', env: 'local', version: '0.1.0' });
+    vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettingsResponse(makeUser({
+      locale: 'ru',
+      settings: {
+        reply_language_mode: 'auto',
+        time_format: '24h',
+        planning: {
+          work_days: [0, 1, 2, 3, 4],
+          work_hours: { start: '09:00', end: '19:00' },
+          quiet_hours: { start: '21:00', end: '09:00' },
+          proactive_level: 'balanced',
+          micro_slots_enabled: true,
+          micro_slots: { min_minutes: 5 },
+          auto_enrich_tasks: true,
+          suggestion_notifications: 'important',
+        },
+      },
+    })));
+    vi.spyOn(api, 'getTimezones').mockResolvedValue(TIMEZONES_RESPONSE);
+
+    renderSettingsPage();
+
+    expect(await screen.findByText('Рабочий ритм')).toBeInTheDocument();
+    expect(screen.getByText('Рабочие дни')).toBeInTheDocument();
+    expect(screen.getByText('Рабочие часы')).toBeInTheDocument();
+    expect(screen.getByText('Тихие часы')).toBeInTheDocument();
+    expect(screen.getByText('Проактивность Lumi')).toBeInTheDocument();
+    expect(screen.getByText('Показывать задачи для свободных окон от 5 минут')).toBeInTheDocument();
+  });
+
+  it('shows a distinct description for each Lumi proactivity mode', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'health').mockResolvedValue({ status: 'ok', app: 'Lumi', env: 'local', version: '0.1.0' });
+    vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettingsResponse(makeUser({
+      locale: 'en',
+      settings: {
+        reply_language_mode: 'auto',
+        time_format: '24h',
+        planning: {
+          work_days: [0, 1, 2, 3, 4],
+          work_hours: { start: '09:00', end: '19:00' },
+          quiet_hours: { start: '21:00', end: '09:00' },
+          proactive_level: 'balanced',
+          micro_slots_enabled: true,
+          micro_slots: { min_minutes: 5 },
+          auto_enrich_tasks: true,
+          suggestion_notifications: 'important',
+        },
+      },
+    })));
+    vi.spyOn(api, 'getTimezones').mockResolvedValue(TIMEZONES_RESPONSE);
+    vi.spyOn(api, 'patchSettings').mockImplementation(async (input): Promise<MeResponse> => ({
+      user: makeUser({
+        locale: 'en',
+        settings: {
+          reply_language_mode: 'auto',
+          time_format: '24h',
+          planning: {
+            ...((makeUser().settings.planning as Record<string, unknown>) ?? {}),
+            proactive_level: input.settings?.planning && typeof input.settings.planning === 'object'
+              ? (input.settings.planning as { proactive_level?: string }).proactive_level
+              : 'balanced',
+          },
+        },
+      }),
+    }));
+
+    renderSettingsPage();
+
+    expect(await screen.findByText('Regular checks while you are active.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Calm' }));
+    expect(await screen.findByText('Fewer checks and fewer nudges.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Active' }));
+    expect(await screen.findByText('Faster refresh after calendar or task changes.')).toBeInTheDocument();
+  });
 });

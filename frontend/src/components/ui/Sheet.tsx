@@ -3,18 +3,21 @@ import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { X } from 'lucide-react';
+import { useAppLocale } from '../../lib/useAppLocale';
 
 interface SheetProps {
   open: boolean;
   onClose: () => void;
   onClosed?: () => void;
   title?: string;
+  closeLabel?: string;
   children: ReactNode;
 }
 
 /** Bottom sheet for forms and detail views. */
-export function Sheet({ open, onClose, onClosed, title, children }: SheetProps) {
+export function Sheet({ open, onClose, onClosed, title, closeLabel, children }: SheetProps) {
   const reduceMotion = useReducedMotion();
+  const locale = useAppLocale();
   const lockRef = useRef<{
     scrollY: number;
     previous: {
@@ -113,7 +116,7 @@ export function Sheet({ open, onClose, onClosed, title, children }: SheetProps) 
                 <button
                   type="button"
                   onClick={onClose}
-                  aria-label="Закрыть"
+                  aria-label={closeLabel ?? (locale === 'en' ? 'Close' : 'Закрыть')}
                   className="-mr-2 flex h-11 w-11 items-center justify-center rounded-full text-hint"
                 >
                   <X size={20} />
