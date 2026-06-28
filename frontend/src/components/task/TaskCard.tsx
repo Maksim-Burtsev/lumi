@@ -78,7 +78,10 @@ export function TaskCard({
   };
 
   return (
-    <div className="card card-strong px-4 py-3">
+    <div
+      className={`card card-strong px-4 py-3 ${done ? '' : 'cursor-pointer'}`}
+      onClick={done ? undefined : complete}
+    >
       <div className="flex items-start gap-3">
         {/* Complete checkbox: 26px visual, ≥44px tap target */}
         <motion.button
@@ -87,7 +90,10 @@ export function TaskCard({
           disabled={done && !onReopen}
           whileTap={reduceMotion || (done && !onReopen) ? undefined : { scale: 0.85 }}
           transition={{ type: 'spring', stiffness: 420, damping: 22 }}
-          onClick={complete}
+          onClick={(event) => {
+            event.stopPropagation();
+            complete();
+          }}
           className="relative -m-2 mt-[-5px] shrink-0 p-2"
         >
           <span
@@ -121,7 +127,10 @@ export function TaskCard({
         <button
           type="button"
           disabled={done}
-          onClick={complete}
+          onClick={(event) => {
+            event.stopPropagation();
+            complete();
+          }}
           className="min-w-0 flex-1 text-left disabled:cursor-default"
         >
           <p
@@ -164,7 +173,8 @@ export function TaskCard({
           <button
             type="button"
             aria-label={locale === 'en' ? 'Open task details' : 'Открыть детали задачи'}
-            onClick={() => {
+            onClick={(event) => {
+              event.stopPropagation();
               haptic('light');
               onEdit(task);
             }}
@@ -178,7 +188,8 @@ export function TaskCard({
           <button
             type="button"
             aria-label={`${locale === 'en' ? 'Undo completion for' : 'Вернуть задачу'} ${task.title}`}
-            onClick={() => {
+            onClick={(event) => {
+              event.stopPropagation();
               haptic('light');
               onReopen(task.id);
             }}
@@ -193,7 +204,8 @@ export function TaskCard({
           <button
             type="button"
             aria-label={copy.snooze}
-            onClick={() => {
+            onClick={(event) => {
+              event.stopPropagation();
               haptic('light');
               setSnoozeOpen((v) => !v);
             }}
@@ -215,7 +227,10 @@ export function TaskCard({
             <button
               type="button"
               aria-label={`${locale === 'en' ? 'Accept estimate for' : 'Принять оценку для'} ${task.title}`}
-              onClick={() => onAcceptEstimate?.(estimateSuggestion.id)}
+              onClick={(event) => {
+                event.stopPropagation();
+                onAcceptEstimate?.(estimateSuggestion.id);
+              }}
               className="h-8 rounded-full bg-accent px-3 text-[12px] font-semibold text-white"
             >
               {locale === 'en' ? 'Accept' : 'Принять'}
@@ -223,7 +238,10 @@ export function TaskCard({
             <button
               type="button"
               aria-label={`${locale === 'en' ? 'Edit estimate for' : 'Изменить оценку для'} ${task.title}`}
-              onClick={() => onEditEstimate?.(task, estimateSuggestion)}
+              onClick={(event) => {
+                event.stopPropagation();
+                onEditEstimate?.(task, estimateSuggestion);
+              }}
               className="h-8 rounded-full bg-[var(--surface-strong)] px-3 text-[12px] font-semibold text-ink"
             >
               {locale === 'en' ? 'Edit' : 'Изменить'}
@@ -250,7 +268,8 @@ export function TaskCard({
                 <button
                   key={preset}
                   type="button"
-                  onClick={() => {
+                  onClick={(event) => {
+                    event.stopPropagation();
                     haptic('light');
                     setSnoozeOpen(false);
                     onSnooze(task.id, preset);

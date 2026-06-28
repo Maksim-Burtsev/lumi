@@ -171,8 +171,8 @@ export function useToday() {
   return useQuery({ queryKey: qk.today, queryFn: () => api.getToday() });
 }
 
-export function useTasks(filter: TaskFilter) {
-  return useQuery({ queryKey: qk.tasks(filter), queryFn: () => api.listTasks(filter) });
+export function useTasks(filter: TaskFilter, limit = 100) {
+  return useQuery({ queryKey: qk.tasks(filter), queryFn: () => api.listTasks(filter, limit) });
 }
 
 export function useProjectTasks(projectId: string | null) {
@@ -292,31 +292,40 @@ export function useCreateTask(activeFilter: TaskFilter) {
   });
 }
 
-function patchTaskInCache(queryClient: ReturnType<typeof useQueryClient>, key: QueryKey, id: string, patch: Partial<Task>) {
-  const previous = queryClient.getQueryData<TasksResponse>(key);
-  if (previous) {
-    queryClient.setQueryData<TasksResponse>(key, {
-      items: previous.items.map((t) => (t.id === id ? { ...t, ...patch } : t)),
+type TaskCacheSnapshot = { key: QueryKey; previous: TasksResponse };
+
+function patchTaskInAllTaskCaches(
+  queryClient: ReturnType<typeof useQueryClient>,
+  id: string,
+  patch: Partial<Task>,
+): TaskCacheSnapshot[] {
+  const snapshots: TaskCacheSnapshot[] = [];
+  const queries = queryClient.getQueryCache().findAll({ queryKey: qk.tasksAll });
+  for (const query of queries) {
+    const previous = queryClient.getQueryData<TasksResponse>(query.queryKey);
+    if (!previous?.items?.some((task) => task.id === id)) continue;
+    snapshots.push({ key: query.queryKey, previous });
+    queryClient.setQueryData<TasksResponse>(query.queryKey, {
+      items: previous.items.map((task) => (task.id === id ? { ...task, ...patch } : task)),
     });
   }
-  return previous;
+  return snapshots;
 }
 
-export function useCompleteTask(activeFilter: TaskFilter) {
+export function useCompleteTask(_activeFilter: TaskFilter) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.completeTask(id),
     onMutate: async (id) => {
-      const key = qk.tasks(activeFilter);
       await queryClient.cancelQueries({ queryKey: qk.tasksAll });
-      const previous = patchTaskInCache(queryClient, key, id, {
+      const snapshots = patchTaskInAllTaskCaches(queryClient, id, {
         status: 'done',
         completed_at: new Date().toISOString(),
       });
-      return { previous, key };
+      return { snapshots };
     },
     onError: (_error, _id, context) => {
-      if (context?.previous) queryClient.setQueryData(context.key, context.previous);
+      context?.snapshots.forEach(({ key, previous }) => queryClient.setQueryData(key, previous));
     },
     onSettled: () => invalidateTaskSurfaces(queryClient),
   });

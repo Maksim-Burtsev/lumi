@@ -85,12 +85,16 @@ beforeEach(() => {
 describe('Mini App English UI smoke', () => {
   it('localizes Tasks page static UI', async () => {
     vi.spyOn(api, 'listTasks').mockResolvedValue({ items: [] } satisfies TasksResponse);
+    vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
+    vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({ items: [] });
 
     renderWithProviders(<TasksPage />);
 
-    expect(await screen.findByPlaceholderText('New task... (Enter to create)')).toBeInTheDocument();
+    expect(await screen.findByPlaceholderText('Search tasks')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add task' })).toBeInTheDocument();
+    expect(screen.getByText('Open')).toBeInTheDocument();
     expect(screen.getByText('Today')).toBeInTheDocument();
-    expect(await screen.findByText('No active tasks yet')).toBeInTheDocument();
+    expect(await screen.findByText('No open tasks here')).toBeInTheDocument();
     expect(screen.queryByText('Сегодня')).not.toBeInTheDocument();
   });
 
