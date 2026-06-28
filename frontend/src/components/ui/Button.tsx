@@ -21,7 +21,7 @@ interface ButtonProps {
 }
 
 const VARIANTS: Record<Variant, string> = {
-  primary: 'bg-accent text-white shadow-[0_6px_18px_rgba(46,99,231,0.3)] font-medium',
+  primary: 'bg-accent text-[var(--accent-foreground)] shadow-[0_6px_18px_var(--accent-shadow)] font-medium',
   secondary: 'bg-[var(--secondary-bg)] text-[var(--secondary-text)] font-medium',
   ghost: 'bg-transparent border border-hairline text-ink font-medium',
   danger: 'bg-[var(--danger-soft)] text-danger font-medium',

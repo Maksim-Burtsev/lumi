@@ -11,7 +11,7 @@ if (!container) throw new Error('#root not found');
 
 captureTelegramInitParams();
 setupTelegramTheme();
-void loadTelegramSdk().then(setupTelegramTheme);
+void loadTelegramSdk().then(() => setupTelegramTheme());
 
 createRoot(container).render(
   <React.StrictMode>

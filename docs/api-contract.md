@@ -34,7 +34,14 @@ GET /api/settings → {
   "app": {"public_url": str|null, "env": str}
 }
 
-PATCH /api/settings  body: {"timezone"?: str, "locale"?: str, "settings"?: object} → {"user": User}
+PATCH /api/settings  body: {
+  "timezone"?: str,
+  "locale"?: str,
+  "reply_language_mode"?: "auto"|"app_locale",
+  "time_format"?: "auto"|"12h"|"24h",
+  "theme_mode"?: "telegram"|"light"|"dark",
+  "settings"?: object
+} → {"user": User}
 ```
 
 ## Today

@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Bell, CalendarDays, Check, Clock3, Minus, Moon, Sparkles } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { ApiError, api } from '../api/client';
-import { openExternalLink } from '../telegram/webapp';
+import { openExternalLink, setThemeMode } from '../telegram/webapp';
 import { qk, useConnectYandex, useDisconnectGoogle, useDisconnectYandex, useHealth, usePatchSettings, useRunPoller, useSettings } from '../api/hooks';
-import type { GoogleStatus, TimeFormat } from '../api/types';
+import type { GoogleStatus, SettingsResponse, ThemeMode, TimeFormat } from '../api/types';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { ErrorState } from '../components/ui/ErrorState';
@@ -18,6 +18,7 @@ import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
 import { formatRelative, normalizeTimeFormat } from '../lib/format';
 import { normalizeAppLocale } from '../lib/i18n';
+import { normalizeThemeMode } from '../lib/theme';
 
 function BoolRow({ label, value }: { label: string; value: boolean }) {
   return (
@@ -151,6 +152,12 @@ function ToggleRow({
 
 const COPY = {
   en: {
+    appearance: 'Appearance',
+    theme: 'Theme',
+    themeTelegram: 'Telegram',
+    themeLight: 'Light',
+    themeDark: 'Dark',
+    themeSaveFailed: 'Could not save theme',
     loadError: 'Could not load settings.',
     timezone: 'Time zone',
     timeFormat: 'Time format',
@@ -225,6 +232,12 @@ const COPY = {
     userFallback: 'User',
   },
   ru: {
+    appearance: 'Внешний вид',
+    theme: 'Тема',
+    themeTelegram: 'Telegram',
+    themeLight: 'Светлая',
+    themeDark: 'Тёмная',
+    themeSaveFailed: 'Не удалось сохранить тему',
     loadError: 'Не удалось загрузить настройки.',
     timezone: 'Часовой пояс',
     timeFormat: 'Формат времени',
@@ -318,9 +331,11 @@ export default function SettingsPage() {
   const [googleConnecting, setGoogleConnecting] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const [planningDraft, setPlanningDraft] = useState<PlanningSettings | null>(null);
+  const [optimisticThemeMode, setOptimisticThemeMode] = useState<ThemeMode | null>(null);
+  const themeSaveVersion = useRef(0);
   const { show } = useToast();
   const yandexSyncPoller = useRunPoller(yandexSyncRunId, [qk.eventsAll, qk.settings, qk.today]);
-  const queryClientForGoogle = useQueryClient();
+  const queryClient = useQueryClient();
   const locale = normalizeAppLocale(settingsQuery.data?.user.locale);
   const copy = COPY[locale];
 
@@ -343,7 +358,7 @@ export default function SettingsPage() {
       return;
     }
     const interval = setInterval(() => {
-      void queryClientForGoogle.invalidateQueries({ queryKey: qk.settings });
+      void queryClient.invalidateQueries({ queryKey: qk.settings });
     }, 3000);
     const stop = setTimeout(() => setGoogleConnecting(false), 180_000);
     return () => {
@@ -374,6 +389,7 @@ export default function SettingsPage() {
     ? user.settings.reply_language_mode
     : 'auto';
   const timeFormat = normalizeTimeFormat(user.settings.time_format);
+  const themeMode = optimisticThemeMode ?? normalizeThemeMode(user.settings.theme_mode);
   const timeDisplay = { locale, timeFormat, timezone: user.timezone };
   const planning = planningDraft ?? readPlanning(user.settings);
 
@@ -453,6 +469,48 @@ export default function SettingsPage() {
     );
   };
 
+  const cacheThemeMode = (nextThemeMode: ThemeMode) => {
+    queryClient.setQueryData<SettingsResponse | undefined>(qk.settings, (current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        user: {
+          ...current.user,
+          settings: {
+            ...current.user.settings,
+            theme_mode: nextThemeMode,
+          },
+        },
+      };
+    });
+  };
+
+  const handleThemeMode = (theme_mode: ThemeMode) => {
+    const version = themeSaveVersion.current + 1;
+    themeSaveVersion.current = version;
+    const previous = themeMode;
+    setOptimisticThemeMode(theme_mode);
+    setThemeMode(theme_mode);
+    void queryClient.cancelQueries({ queryKey: qk.settings });
+    cacheThemeMode(theme_mode);
+    patchSettings.mutate(
+      { theme_mode },
+      {
+        onSuccess: () => {
+          if (themeSaveVersion.current !== version) return;
+          cacheThemeMode(theme_mode);
+        },
+        onError: () => {
+          if (themeSaveVersion.current !== version) return;
+          setOptimisticThemeMode(previous);
+          setThemeMode(previous);
+          cacheThemeMode(previous);
+          show(copy.themeSaveFailed, 'error');
+        },
+      },
+    );
+  };
+
   const handlePlanningPatch = (patch: Partial<PlanningSettings>) => {
     const next = {
       ...planning,
@@ -499,6 +557,28 @@ export default function SettingsPage() {
                 { value: 'app_locale', label: copy.replyAppLocale },
               ]}
             />
+          </label>
+        </Card>
+      </Rise>
+
+      {/* Appearance */}
+      <Rise>
+        <SectionHeader title={copy.appearance} />
+        <Card className="card-strong !p-0 overflow-hidden">
+          <label className="flex min-h-[68px] items-center justify-between gap-3 px-4 py-3">
+            <span className="min-w-0 text-[13.5px] font-medium text-ink">{copy.theme}</span>
+            <span className="w-[178px] shrink-0">
+              <Select
+                value={themeMode}
+                ariaLabel={copy.theme}
+                onChange={(value) => handleThemeMode(normalizeThemeMode(value))}
+                options={[
+                  { value: 'telegram', label: copy.themeTelegram },
+                  { value: 'light', label: copy.themeLight },
+                  { value: 'dark', label: copy.themeDark },
+                ]}
+              />
+            </span>
           </label>
         </Card>
       </Rise>

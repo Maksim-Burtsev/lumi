@@ -4,6 +4,9 @@
  * (window.Telegram absent) so the app never crashes outside Telegram.
  */
 
+import { cacheThemeMode, normalizeThemeMode, readCachedThemeMode, resolveIsDarkTheme } from '../lib/theme';
+import type { ThemeMode } from '../lib/theme';
+
 export interface TelegramThemeParams {
   bg_color?: string;
   text_color?: string;
@@ -49,9 +52,11 @@ type TelegramInitParams = Record<string, string>;
 
 const INIT_PARAMS_STORAGE_KEY = '__telegram__initParams';
 const THEME_PARAMS_STORAGE_KEY = '__telegram__themeParams';
+const THEME_SWAP_CLASS = 'theme-swap';
 
 let telegramSdkLoad: Promise<void> | null = null;
 let cachedInitParams: TelegramInitParams = {};
+let themeSwapFrame: number | null = null;
 
 export function getTelegramWebApp(): TelegramWebApp | null {
   if (typeof window === 'undefined') return null;
@@ -242,14 +247,46 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
   return { r: (v >> 16) & 255, g: (v >> 8) & 255, b: v & 255 };
 }
 
-function applyTheme(): void {
+function prefersDarkTheme(): boolean {
+  if (typeof window.matchMedia !== 'function') return false;
+  return window.matchMedia('(prefers-color-scheme: dark)')?.matches ?? false;
+}
+
+function suppressThemeSwapTransitions(root: HTMLElement): void {
+  if (typeof window === 'undefined') return;
+  if (themeSwapFrame !== null && typeof window.cancelAnimationFrame === 'function') {
+    window.cancelAnimationFrame(themeSwapFrame);
+  }
+
+  root.classList.add(THEME_SWAP_CLASS);
+  const clear = () => {
+    themeSwapFrame = null;
+    root.classList.remove(THEME_SWAP_CLASS);
+  };
+
+  if (typeof window.requestAnimationFrame === 'function') {
+    themeSwapFrame = window.requestAnimationFrame(() => {
+      themeSwapFrame = window.requestAnimationFrame(clear);
+    });
+    return;
+  }
+
+  window.setTimeout(clear, 0);
+}
+
+function applyTheme(mode?: ThemeMode): void {
   const root = document.documentElement;
   const tg = getTelegramWebApp();
 
-  const prefersDark =
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(prefers-color-scheme: dark)').matches;
-  const isDark = tg ? tg.colorScheme === 'dark' : prefersDark;
+  const themeMode = normalizeThemeMode(mode ?? readCachedThemeMode());
+  const isDark = resolveIsDarkTheme({
+    mode: themeMode,
+    telegramColorScheme: tg?.colorScheme ?? null,
+    prefersDark: prefersDarkTheme(),
+  });
+  if (root.classList.contains('dark') !== isDark) {
+    suppressThemeSwapTransitions(root);
+  }
   root.classList.toggle('dark', isDark);
 
   const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
@@ -275,11 +312,16 @@ function applyTheme(): void {
   }
 }
 
-export function setupTelegramTheme(): void {
+export function setThemeMode(mode: ThemeMode): void {
+  cacheThemeMode(mode);
+  applyTheme(mode);
+}
+
+export function setupTelegramTheme(mode?: ThemeMode): void {
   const tg = getTelegramWebApp();
   scheduleReadyFallbacks();
 
-  applyTheme();
+  applyTheme(mode);
 
   try {
     tg?.onEvent?.('themeChanged', applyTheme);

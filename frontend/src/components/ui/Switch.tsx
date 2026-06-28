@@ -20,11 +20,11 @@ export function Switch({ checked, onChange, disabled = false, 'aria-label': aria
         onChange(!checked);
       }}
       className={`relative h-[28px] w-[48px] shrink-0 rounded-full p-[3px] transition-colors duration-200 after:absolute after:-inset-2 after:content-[''] disabled:opacity-50 ${
-        checked ? 'bg-accent' : 'bg-[rgba(138,132,120,0.35)]'
+        checked ? 'bg-accent' : 'bg-[var(--switch-off)]'
       }`}
     >
       <span
-        className={`block h-[22px] w-[22px] rounded-full bg-white shadow-[0_1px_3px_rgba(27,24,19,0.25)] transition-transform duration-200 ${
+        className={`block h-[22px] w-[22px] rounded-full bg-[var(--switch-knob)] shadow-[0_1px_3px_var(--switch-shadow)] transition-transform duration-200 ${
           checked ? 'translate-x-[20px]' : 'translate-x-0'
         }`}
       />

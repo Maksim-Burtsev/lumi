@@ -44,7 +44,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <TopBar title={title} />
       <main
         className="mx-auto w-full max-w-content px-4"
-        style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 88px)' }}
+        style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 88px + var(--timezone-prompt-reserve, 0px))' }}
       >
         {children}
       </main>
