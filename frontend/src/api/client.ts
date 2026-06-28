@@ -83,6 +83,16 @@ export function markUnauthorizedResponse(): void {
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
+export type FocusPeriod = 'week' | 'month' | 'custom';
+
+export interface FocusRangeQuery {
+  period?: FocusPeriod;
+  from_date?: string;
+  to_date?: string;
+  limit?: number;
+  offset?: number;
+}
+
 interface RequestOptions {
   query?: Record<string, string | number | undefined>;
   body?: unknown;
@@ -194,12 +204,14 @@ export class LumiApiClient {
     return request('GET', '/api/focus/state');
   }
 
-  getFocusSummary(period: 'week' | 'month' = 'week'): Promise<FocusSummaryResponse> {
-    return request('GET', '/api/focus/summary', { query: { period } });
+  getFocusSummary(input: FocusPeriod | FocusRangeQuery = 'week'): Promise<FocusSummaryResponse> {
+    const query = typeof input === 'string' ? { period: input } : input;
+    return request('GET', '/api/focus/summary', { query: query as Record<string, string | number | undefined> });
   }
 
-  listFocusSessions(period: 'week' | 'month' = 'week', limit = 100): Promise<FocusSessionsResponse> {
-    return request('GET', '/api/focus/sessions', { query: { period, limit } });
+  listFocusSessions(input: FocusPeriod | FocusRangeQuery = 'week', limit = 100): Promise<FocusSessionsResponse> {
+    const query = typeof input === 'string' ? { period: input, limit } : { limit, ...input };
+    return request('GET', '/api/focus/sessions', { query: query as Record<string, string | number | undefined> });
   }
 
   startFocusSession(input: StartFocusSessionInput): Promise<FocusSessionResponse> {

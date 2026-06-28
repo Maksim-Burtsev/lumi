@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -92,7 +92,25 @@ class FocusService:
         )
         return result.scalar_one_or_none()
 
-    def period_bounds(self, user: User, period: str) -> tuple[datetime, datetime, int]:
+    def period_bounds(
+        self,
+        user: User,
+        period: str,
+        *,
+        from_date: date | None = None,
+        to_date: date | None = None,
+    ) -> tuple[datetime, datetime, int]:
+        if period == "custom":
+            if from_date is None or to_date is None or to_date < from_date:
+                raise ValueError("invalid_focus_range")
+            bucket_count = (to_date - from_date).days + 1
+            if bucket_count > 180:
+                raise ValueError("focus_range_too_large")
+            zone = get_zone(user.timezone)
+            start_local = datetime.combine(from_date, time.min, tzinfo=zone)
+            end_local = datetime.combine(to_date + timedelta(days=1), time.min, tzinfo=zone)
+            return start_local.astimezone(UTC), end_local.astimezone(UTC), bucket_count
+
         now = utc_now()
         today_start, today_end = local_day_bounds(now, user.timezone)
         if period == "month":
@@ -106,8 +124,17 @@ class FocusService:
             return local_start, local_end, (local_end.date() - local_start.date()).days
         return today_start - timedelta(days=6), today_end, 7
 
-    async def list_sessions(self, user: User, *, period: str, limit: int = 100) -> list[FocusSession]:
-        start, end, _ = self.period_bounds(user, period)
+    async def list_sessions(
+        self,
+        user: User,
+        *,
+        period: str,
+        limit: int = 100,
+        offset: int = 0,
+        from_date: date | None = None,
+        to_date: date | None = None,
+    ) -> tuple[list[FocusSession], bool, int | None]:
+        start, end, _ = self.period_bounds(user, period, from_date=from_date, to_date=to_date)
         result = await self.session.execute(
             select(FocusSession)
             .where(
@@ -117,9 +144,13 @@ class FocusService:
                 FocusSession.started_at < end,
             )
             .order_by(FocusSession.started_at.desc())
-            .limit(limit)
+            .offset(offset)
+            .limit(limit + 1)
         )
-        return list(result.scalars())
+        items = list(result.scalars())
+        has_more = len(items) > limit
+        page = items[:limit]
+        return page, has_more, offset + limit if has_more else None
 
     async def finish_session(
         self,
@@ -159,6 +190,8 @@ class FocusService:
         distraction_text: str | None = None,
         next_step_text: str | None = None,
         focus_score: int | None = None,
+        started_at: datetime | None = None,
+        ended_at: datetime | None = None,
     ) -> FocusSession:
         if focus_session.user_id != user.id or focus_session.status != FocusSessionStatus.COMPLETED:
             raise ValueError("focus_session_not_completed")
@@ -173,6 +206,20 @@ class FocusService:
         if project is not None:
             cleaned_project = project.strip() or None
             focus_session.project_snapshot = cleaned_project or (task.project if task else None)
+        if started_at is not None or ended_at is not None:
+            next_started = started_at or focus_session.started_at
+            next_ended = ended_at or focus_session.ended_at or focus_session.target_end_at
+            if next_started.tzinfo is None:
+                next_started = next_started.replace(tzinfo=get_zone(user.timezone))
+            if next_ended.tzinfo is None:
+                next_ended = next_ended.replace(tzinfo=get_zone(user.timezone))
+            next_started = next_started.astimezone(UTC)
+            next_ended = next_ended.astimezone(UTC)
+            if next_ended <= next_started:
+                raise ValueError("invalid_focus_session_time")
+            focus_session.started_at = next_started
+            focus_session.ended_at = next_ended
+            focus_session.duration_seconds = int((next_ended - next_started).total_seconds())
         focus_session.accomplished_text = (accomplished_text or "").strip() or None
         focus_session.distraction_text = (distraction_text or "").strip() or None
         focus_session.next_step_text = (next_step_text or "").strip() or None
@@ -294,10 +341,17 @@ class FocusService:
             cursor -= timedelta(days=1)
         return streak
 
-    async def summary(self, user: User, *, period: str) -> FocusSummary:
-        if period != "month":
+    async def summary(
+        self,
+        user: User,
+        *,
+        period: str,
+        from_date: date | None = None,
+        to_date: date | None = None,
+    ) -> FocusSummary:
+        if period not in {"month", "custom"}:
             period = "week"
-        start, end, bucket_count = self.period_bounds(user, period)
+        start, end, bucket_count = self.period_bounds(user, period, from_date=from_date, to_date=to_date)
         sessions = await self.completed_between(user, start, end)
 
         zone = get_zone(user.timezone)

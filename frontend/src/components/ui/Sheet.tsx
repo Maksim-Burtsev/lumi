@@ -9,11 +9,13 @@ interface SheetProps {
   onClose: () => void;
   onClosed?: () => void;
   title?: string;
+  headerStart?: ReactNode;
+  headerActions?: ReactNode;
   children: ReactNode;
 }
 
 /** Bottom sheet for forms and detail views. */
-export function Sheet({ open, onClose, onClosed, title, children }: SheetProps) {
+export function Sheet({ open, onClose, onClosed, title, headerStart, headerActions, children }: SheetProps) {
   const reduceMotion = useReducedMotion();
   const lockRef = useRef<{
     scrollY: number;
@@ -108,16 +110,22 @@ export function Sheet({ open, onClose, onClosed, title, children }: SheetProps) 
           >
             <div className="sticky top-0 z-10 bg-[var(--surface-strong)] px-5 pb-2 pt-3">
               <div className="mx-auto mb-3 h-1 w-9 rounded-full bg-[var(--hairline)]" />
-              <div className="flex items-center justify-between">
-                <h2 className="text-[17px] font-semibold text-ink">{title}</h2>
-                <button
-                  type="button"
-                  onClick={onClose}
-                  aria-label="Закрыть"
-                  className="-mr-2 flex h-11 w-11 items-center justify-center rounded-full text-hint"
-                >
-                  <X size={20} />
-                </button>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  {headerStart}
+                  <h2 className="truncate text-[17px] font-semibold text-ink">{title}</h2>
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  {headerActions}
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    aria-label="Закрыть"
+                    className="-mr-2 flex h-11 w-11 items-center justify-center rounded-full text-hint"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
               </div>
             </div>
             <div className="px-5 pt-1">{children}</div>
