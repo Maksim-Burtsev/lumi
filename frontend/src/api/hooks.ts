@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { QueryKey } from '@tanstack/react-query';
 import { api, ApiError } from './client';
+import type { FocusPeriod, FocusRangeQuery } from './client';
 import { consumeRealtimeEvents, getRealtimeInvalidationKeys } from './realtime';
 import type {
   AgentRun,
@@ -43,8 +44,8 @@ export const qk = {
   projects: ['projects'] as const,
   assistantSuggestions: ['assistant-suggestions'] as const,
   focus: ['focus'] as const,
-  focusSummary: (period: 'week' | 'month') => ['focus-summary', period] as const,
-  focusSessions: (period: 'week' | 'month') => ['focus-sessions', period] as const,
+  focusSummary: (query: FocusRangeQuery) => ['focus-summary', query] as const,
+  focusSessions: (query: FocusRangeQuery) => ['focus-sessions', query] as const,
   eventsAll: ['calendar-events'] as const,
   events: (start: string, end: string) => ['calendar-events', start, end] as const,
   freeSlotsAll: ['free-slots'] as const,
@@ -205,12 +206,14 @@ export function useFocusState() {
   return useQuery({ queryKey: qk.focus, queryFn: () => api.getFocusState() });
 }
 
-export function useFocusSummary(period: 'week' | 'month') {
-  return useQuery({ queryKey: qk.focusSummary(period), queryFn: () => api.getFocusSummary(period) });
+export function useFocusSummary(period: FocusPeriod, range?: { from_date?: string; to_date?: string }) {
+  const query = { period, from_date: range?.from_date, to_date: range?.to_date };
+  return useQuery({ queryKey: qk.focusSummary(query), queryFn: () => api.getFocusSummary(query) });
 }
 
-export function useFocusSessions(period: 'week' | 'month') {
-  return useQuery({ queryKey: qk.focusSessions(period), queryFn: () => api.listFocusSessions(period, 200) });
+export function useFocusSessions(period: FocusPeriod, range?: { from_date?: string; to_date?: string }) {
+  const query = { period, from_date: range?.from_date, to_date: range?.to_date, limit: 300, offset: 0 };
+  return useQuery({ queryKey: qk.focusSessions(query), queryFn: () => api.listFocusSessions(query) });
 }
 
 export function useCalendarEvents(start: string, end: string) {
@@ -410,10 +413,8 @@ function invalidateFocusQueries(queryClient: ReturnType<typeof useQueryClient>) 
 }
 
 function invalidateFocusDerivedQueries(queryClient: ReturnType<typeof useQueryClient>) {
-  void queryClient.invalidateQueries({ queryKey: qk.focusSummary('week') });
-  void queryClient.invalidateQueries({ queryKey: qk.focusSummary('month') });
-  void queryClient.invalidateQueries({ queryKey: qk.focusSessions('week') });
-  void queryClient.invalidateQueries({ queryKey: qk.focusSessions('month') });
+  void queryClient.invalidateQueries({ queryKey: ['focus-summary'] });
+  void queryClient.invalidateQueries({ queryKey: ['focus-sessions'] });
 }
 
 export function useStartFocusSession() {

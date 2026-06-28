@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
@@ -36,6 +36,8 @@ class FocusUpdate(BaseModel):
     task_id: uuid.UUID | None = None
     project: str | None = Field(default=None, max_length=120)
     intention: str | None = Field(default=None, min_length=1, max_length=300)
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
     accomplished_text: str | None = Field(default=None, max_length=2000)
     distraction_text: str | None = Field(default=None, max_length=2000)
     next_step_text: str | None = Field(default=None, max_length=1000)
@@ -87,11 +89,16 @@ async def focus_state(
 
 @router.get("/focus/summary")
 async def focus_summary(
-    period: str = Query(default="week", pattern="^(week|month)$"),
+    period: str = Query(default="week", pattern="^(week|month|custom)$"),
+    from_date: date | None = Query(default=None),
+    to_date: date | None = Query(default=None),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
-    summary = await FocusService(session).summary(user, period=period)
+    try:
+        summary = await FocusService(session).summary(user, period=period, from_date=from_date, to_date=to_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {
         "period": summary.period,
         "total_focus_seconds": summary.total_focus_seconds,
@@ -111,14 +118,31 @@ async def focus_summary(
 
 @router.get("/focus/sessions")
 async def list_focus_sessions(
-    period: str = Query(default="week", pattern="^(week|month)$"),
+    period: str = Query(default="week", pattern="^(week|month|custom)$"),
+    from_date: date | None = Query(default=None),
+    to_date: date | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=300),
+    offset: int = Query(default=0, ge=0),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
     service = FocusService(session)
-    sessions = await service.list_sessions(user, period=period, limit=limit)
-    return {"items": [await _with_task(service, user, item) for item in sessions]}
+    try:
+        sessions, has_more, next_offset = await service.list_sessions(
+            user,
+            period=period,
+            from_date=from_date,
+            to_date=to_date,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "items": [await _with_task(service, user, item) for item in sessions],
+        "has_more": has_more,
+        "next_offset": next_offset,
+    }
 
 
 @router.post("/focus/sessions", status_code=201)
@@ -212,6 +236,8 @@ async def update_focus_session(
             distraction_text=payload.distraction_text,
             next_step_text=payload.next_step_text,
             focus_score=payload.focus_score,
+            started_at=payload.started_at,
+            ended_at=payload.ended_at,
         )
     except ValueError as exc:
         code = str(exc)

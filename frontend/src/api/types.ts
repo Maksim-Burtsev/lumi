@@ -409,6 +409,8 @@ export interface UpdateFocusSessionInput {
   task_id?: string | null;
   project?: string | null;
   intention?: string;
+  started_at?: string;
+  ended_at?: string;
   accomplished_text?: string | null;
   distraction_text?: string | null;
   next_step_text?: string | null;
@@ -433,6 +435,8 @@ export interface FocusSessionResponse {
 
 export interface FocusSessionsResponse {
   items: FocusSession[];
+  has_more?: boolean;
+  next_offset?: number | null;
 }
 
 export interface FocusDailyActivity {
@@ -449,7 +453,7 @@ export interface FocusProjectBreakdown {
 }
 
 export interface FocusSummaryResponse {
-  period: 'week' | 'month';
+  period: 'week' | 'month' | 'custom';
   total_focus_seconds: number;
   total_sessions: number;
   streak_days: number;

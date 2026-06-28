@@ -264,6 +264,123 @@ async def test_focus_sessions_list_and_patch_completed_review(client):
     }
 
 
+async def test_focus_custom_range_filters_daily_activity_sessions_and_paginates(client):
+    records = [
+        ("Lumi", "Custom first", datetime(2026, 6, 10, 9, 0, tzinfo=UTC), 40),
+        ("QA Project", "Custom second", datetime(2026, 6, 12, 11, 0, tzinfo=UTC), 55),
+        ("Outside", "Outside range", datetime(2026, 6, 20, 11, 0, tzinfo=UTC), 90),
+    ]
+    for project, intention, logged_at, duration in records:
+        response = await client.post(
+            "/api/focus/sessions/log",
+            json={
+                "project": project,
+                "intention": intention,
+                "logged_at": logged_at.isoformat(),
+                "duration_minutes": duration,
+                "focus_score": 4,
+            },
+        )
+        assert response.status_code == 201
+
+    summary = await client.get(
+        "/api/focus/summary",
+        params={"period": "custom", "from_date": "2026-06-10", "to_date": "2026-06-12"},
+    )
+    assert summary.status_code == 200
+    body = summary.json()
+    assert body["period"] == "custom"
+    assert body["total_sessions"] == 2
+    assert body["total_focus_seconds"] == (40 + 55) * 60
+    assert [item["date"] for item in body["daily_activity"]] == [
+        "2026-06-10",
+        "2026-06-11",
+        "2026-06-12",
+    ]
+    assert [item["project"] for item in body["project_breakdown"]] == ["QA Project", "Lumi"]
+
+    first_page = await client.get(
+        "/api/focus/sessions",
+        params={
+            "period": "custom",
+            "from_date": "2026-06-10",
+            "to_date": "2026-06-12",
+            "limit": 1,
+            "offset": 0,
+        },
+    )
+    assert first_page.status_code == 200
+    first_body = first_page.json()
+    assert [item["intention"] for item in first_body["items"]] == ["Custom second"]
+    assert first_body["has_more"] is True
+    assert first_body["next_offset"] == 1
+
+    second_page = await client.get(
+        "/api/focus/sessions",
+        params={
+            "period": "custom",
+            "from_date": "2026-06-10",
+            "to_date": "2026-06-12",
+            "limit": 1,
+            "offset": 1,
+        },
+    )
+    assert second_page.status_code == 200
+    second_body = second_page.json()
+    assert [item["intention"] for item in second_body["items"]] == ["Custom first"]
+    assert second_body["has_more"] is False
+    assert second_body["next_offset"] is None
+
+
+async def test_focus_patch_completed_session_time_updates_duration_and_rejects_invalid_or_active(client):
+    logged = await client.post(
+        "/api/focus/sessions/log",
+        json={
+            "project": "Time edit",
+            "intention": "Editable time",
+            "logged_at": datetime(2026, 6, 16, 10, 0, tzinfo=UTC).isoformat(),
+            "duration_minutes": 30,
+        },
+    )
+    assert logged.status_code == 201
+    session_id = logged.json()["session"]["id"]
+
+    patched = await client.patch(
+        f"/api/focus/sessions/{session_id}",
+        json={
+            "started_at": datetime(2026, 6, 16, 12, 0, tzinfo=UTC).isoformat(),
+            "ended_at": datetime(2026, 6, 16, 13, 15, tzinfo=UTC).isoformat(),
+        },
+    )
+    assert patched.status_code == 200
+    body = patched.json()["session"]
+    assert parse_iso(body["started_at"]) == datetime(2026, 6, 16, 12, 0, tzinfo=UTC)
+    assert parse_iso(body["ended_at"]) == datetime(2026, 6, 16, 13, 15, tzinfo=UTC)
+    assert body["duration_seconds"] == 75 * 60
+
+    invalid = await client.patch(
+        f"/api/focus/sessions/{session_id}",
+        json={
+            "started_at": datetime(2026, 6, 16, 14, 0, tzinfo=UTC).isoformat(),
+            "ended_at": datetime(2026, 6, 16, 13, 0, tzinfo=UTC).isoformat(),
+        },
+    )
+    assert invalid.status_code == 409
+    assert invalid.json() == {"error": "invalid_focus_session_time"}
+
+    active = await client.post(
+        "/api/focus/sessions",
+        json={"project": "Time edit", "intention": "Active time", "planned_minutes": 25},
+    )
+    assert active.status_code == 201
+    active_patch = await client.patch(
+        f"/api/focus/sessions/{active.json()['session']['id']}",
+        json={"ended_at": datetime(2026, 6, 16, 13, 15, tzinfo=UTC).isoformat()},
+    )
+    assert active_patch.status_code == 409
+    assert active_patch.json() == {"error": "focus_session_not_completed"}
+
+
 async def test_focus_month_summary_uses_calendar_month_days(client):
     now = datetime.now(UTC)
     response = await client.get("/api/focus/summary", params={"period": "month"})

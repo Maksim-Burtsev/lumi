@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   BarChart3,
   Check,
+  ChevronLeft,
   ChevronRight,
   CircleDot,
   ClipboardPenLine,
@@ -84,7 +85,7 @@ const COPY = {
     focusModeOn: 'Focus mode is on',
     detailsHistory: 'Details & History',
     detailsHistoryBody: 'See analytics, projects and past sessions',
-    editSession: 'Review session',
+    editSession: 'Edit session',
     finishSession: 'Finish session',
     stopReview: 'Stop & review',
     stopTimerReview: 'Stop timer & review',
@@ -117,6 +118,7 @@ const COPY = {
     analytics: 'Analytics',
     week: 'Week',
     month: 'Month',
+    custom: 'Custom',
     forWeek: 'this week',
     forMonth: 'this month',
     projectsEmpty: 'Projects appear after completed sessions.',
@@ -143,9 +145,23 @@ const COPY = {
     historyDetails: 'Session history',
     days: 'Days',
     projects: 'Projects',
+    projectsThisWeek: 'Projects this week',
+    projectsThisMonth: 'Projects this month',
+    projectsInRange: 'Projects in range',
+    projectsOn: 'Projects on',
     recentSessions: 'Recent sessions',
+    sessionsOn: 'Sessions on',
     searchSessions: 'Search sessions',
     selectedDay: 'Selected day',
+    allDays: 'All days',
+    clearDay: 'Clear day',
+    range: 'Range',
+    from: 'From',
+    to: 'To',
+    applyRange: 'Apply range',
+    saveChanges: 'Save changes',
+    startTime: 'Start time',
+    endTime: 'End time',
     avgFocusScore: 'avg focus score',
     noSessionsForDay: 'No sessions for this day.',
     startAt: 'Start',
@@ -198,7 +214,7 @@ const COPY = {
     focusModeOn: 'Фокус-режим включен',
     detailsHistory: 'Детали и история',
     detailsHistoryBody: 'Аналитика, проекты и прошлые сессии',
-    editSession: 'Итоги сессии',
+    editSession: 'Редактировать сессию',
     finishSession: 'Завершить сессию',
     stopReview: 'Стоп и итог',
     stopTimerReview: 'Остановить и заполнить итог',
@@ -231,6 +247,7 @@ const COPY = {
     analytics: 'Аналитика',
     week: 'Неделя',
     month: 'Месяц',
+    custom: 'Свой период',
     forWeek: 'за неделю',
     forMonth: 'за месяц',
     projectsEmpty: 'Проекты появятся после завершенных сессий.',
@@ -257,9 +274,23 @@ const COPY = {
     historyDetails: 'История сессий',
     days: 'Дни',
     projects: 'Проекты',
+    projectsThisWeek: 'Проекты за неделю',
+    projectsThisMonth: 'Проекты за месяц',
+    projectsInRange: 'Проекты за период',
+    projectsOn: 'Проекты за',
     recentSessions: 'Последние сессии',
+    sessionsOn: 'Сессии за',
     searchSessions: 'Поиск сессий',
     selectedDay: 'Выбранный день',
+    allDays: 'Все дни',
+    clearDay: 'Снять день',
+    range: 'Период',
+    from: 'С',
+    to: 'По',
+    applyRange: 'Применить',
+    saveChanges: 'Сохранить изменения',
+    startTime: 'Время начала',
+    endTime: 'Время окончания',
     avgFocusScore: 'средний фокус',
     noSessionsForDay: 'В этот день сессий нет.',
     startAt: 'Начало',
@@ -361,6 +392,52 @@ function previewStartEnd(date: string, time: string, duration: number): string {
   const start = localPartsToDate(date, time);
   const end = new Date(start.getTime() + duration * 60_000);
   return `${formatTime(start.toISOString())} — ${formatTime(end.toISOString())}`;
+}
+
+function localRangeToIso(date: string, startTime: string, endTime: string): { started_at: string; ended_at: string; valid: boolean } {
+  const start = localPartsToDate(date, startTime);
+  const end = localPartsToDate(date, endTime);
+  return {
+    started_at: start.toISOString(),
+    ended_at: end.toISOString(),
+    valid: end.getTime() > start.getTime(),
+  };
+}
+
+function sessionEndIso(session: FocusSession): string {
+  return session.ended_at ?? session.target_end_at;
+}
+
+function sessionTimeRangeLabel(session: FocusSession): string {
+  return `${formatTime(session.started_at)}–${formatTime(sessionEndIso(session))}`;
+}
+
+function sessionMetaLabel(session: FocusSession, copy: (typeof COPY)[AppLocale]): string {
+  const parts = [sessionTimeRangeLabel(session), session.project ?? copy.noProject];
+  if (session.task?.title) parts.push(session.task.title);
+  return parts.join(' · ');
+}
+
+function projectBreakdownFromSessions(sessions: FocusSession[], copy: (typeof COPY)[AppLocale]): FocusSummaryResponse['project_breakdown'] {
+  const byProject = new Map<string, { project: string; focus_seconds: number; session_count: number }>();
+  for (const session of sessions) {
+    const project = session.project?.trim() || copy.noProject;
+    const current = byProject.get(project) ?? { project, focus_seconds: 0, session_count: 0 };
+    current.focus_seconds += session.duration_seconds ?? 0;
+    current.session_count += 1;
+    byProject.set(project, current);
+  }
+  return [...byProject.values()].sort((a, b) => b.focus_seconds - a.focus_seconds || a.project.localeCompare(b.project, 'ru'));
+}
+
+function averageFocusScore(sessions: FocusSession[]): number | null {
+  const scores = sessions.map((session) => session.reflection.focus_score).filter((score): score is number => score !== null);
+  if (!scores.length) return null;
+  return Math.round((scores.reduce((sum, score) => sum + score, 0) / scores.length) * 10) / 10;
+}
+
+function rangeDefaults(): { from_date: string; to_date: string } {
+  return { from_date: dayValue(-29), to_date: dayValue(0) };
 }
 
 function useNow(intervalMs = 1000): number {
@@ -867,6 +944,147 @@ function ReflectionSheet({
   );
 }
 
+function EditSessionSheet({
+  session,
+  open,
+  onClose,
+  locale,
+}: {
+  session: FocusSession | null;
+  open: boolean;
+  onClose: () => void;
+  locale: AppLocale;
+}) {
+  const copy = COPY[locale];
+  const update = useUpdateFocusSession();
+  const { show } = useToast();
+  const [intention, setIntention] = useState('');
+  const [editDate, setEditDate] = useState(() => dateInputValue(new Date()));
+  const [startTime, setStartTime] = useState(() => timeInputValue(new Date()));
+  const [endTime, setEndTime] = useState(() => timeInputValue(new Date()));
+  const [accomplished, setAccomplished] = useState('');
+  const [distraction, setDistraction] = useState('');
+  const [nextStep, setNextStep] = useState('');
+  const [score, setScore] = useState(4);
+
+  useEffect(() => {
+    if (open && session) {
+      const started = new Date(session.started_at);
+      const ended = new Date(sessionEndIso(session));
+      setIntention(session.intention);
+      setEditDate(dateInputValue(started));
+      setStartTime(timeInputValue(started));
+      setEndTime(timeInputValue(ended));
+      setAccomplished(session.reflection.accomplished_text ?? '');
+      setDistraction(session.reflection.distraction_text ?? '');
+      setNextStep(session.reflection.next_step_text ?? '');
+      setScore(session.reflection.focus_score ?? 4);
+    }
+  }, [open, session]);
+
+  if (!session) return null;
+
+  const range = localRangeToIso(editDate, startTime, endTime);
+  const preview = range.valid
+    ? `${formatTime(range.started_at)} — ${formatTime(range.ended_at)} · ${secondsLabel((new Date(range.ended_at).getTime() - new Date(range.started_at).getTime()) / 1000, locale)}`
+    : '—';
+
+  const submit = () => {
+    const nextRange = localRangeToIso(editDate, startTime, endTime);
+    if (!nextRange.valid) {
+      show(copy.saveError, 'error');
+      return;
+    }
+    update.mutate(
+      {
+        id: session.id,
+        input: {
+          intention: intention.trim() || copy.defaultIntention,
+          started_at: nextRange.started_at,
+          ended_at: nextRange.ended_at,
+          accomplished_text: accomplished.trim() || null,
+          distraction_text: distraction.trim() || null,
+          next_step_text: nextStep.trim() || null,
+          focus_score: score,
+        },
+      },
+      {
+        onSuccess: () => {
+          haptic('success');
+          onClose();
+        },
+        onError: () => show(copy.saveError, 'error'),
+      },
+    );
+  };
+
+  return (
+    <Sheet open={open} onClose={onClose} title={copy.editSession}>
+      <div className="space-y-4">
+        <div className="rounded-2xl bg-[var(--accent-soft)] px-4 py-3">
+          <p className="text-[13px] font-medium text-ink">{session.project ?? copy.noProject}</p>
+          <p className="mt-0.5 text-[12.5px] text-hint">{session.task?.title ?? session.intention}</p>
+        </div>
+        <label>
+          <FieldLabel>{copy.intention}</FieldLabel>
+          <Input value={intention} onChange={setIntention} placeholder={copy.whatWork} />
+        </label>
+        <div className="grid grid-cols-3 gap-2">
+          <label>
+            <span className="sr-only">{copy.date}</span>
+            <input
+              aria-label={copy.date}
+              type="date"
+              value={editDate}
+              onChange={(event) => setEditDate(event.target.value)}
+              className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3 text-[14px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+            />
+          </label>
+          <label>
+            <span className="sr-only">{copy.startTime}</span>
+            <input
+              aria-label={copy.startTime}
+              type="time"
+              value={startTime}
+              onChange={(event) => setStartTime(event.target.value)}
+              className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3 text-[14px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+            />
+          </label>
+          <label>
+            <span className="sr-only">{copy.endTime}</span>
+            <input
+              aria-label={copy.endTime}
+              type="time"
+              value={endTime}
+              onChange={(event) => setEndTime(event.target.value)}
+              className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3 text-[14px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+            />
+          </label>
+        </div>
+        <p className="tnum rounded-xl border border-hairline bg-[var(--surface)] px-3 py-2 text-[12.5px] text-hint">
+          {copy.startEndPreview}: <span className="text-ink">{preview}</span>
+        </p>
+        <label>
+          <FieldLabel>{copy.doneQuestion}</FieldLabel>
+          <Textarea value={accomplished} onChange={setAccomplished} rows={3} placeholder={copy.donePlaceholder} />
+        </label>
+        <label>
+          <FieldLabel>{copy.blockersQuestion}</FieldLabel>
+          <Textarea value={distraction} onChange={setDistraction} rows={2} placeholder={copy.blockersPlaceholder} />
+        </label>
+        <label>
+          <FieldLabel>{copy.nextStep}</FieldLabel>
+          <Textarea value={nextStep} onChange={setNextStep} rows={2} placeholder={copy.nextStepPlaceholder} />
+        </label>
+        <ScorePicker value={score} onChange={setScore} label={copy.score} />
+        <Button fullWidth busy={update.isPending} onClick={submit} icon={<Check size={16} />}>
+          {copy.saveChanges}
+        </Button>
+      </div>
+    </Sheet>
+  );
+}
+
 function ManualLogSheet({
   open,
   onClose,
@@ -1243,16 +1461,18 @@ function ActivityBarChart({
   locale,
   selectedDate,
   onSelectDate,
+  showSummary = true,
 }: {
   items: FocusDailyActivity[];
   locale: AppLocale;
   selectedDate: string | null;
   onSelectDate?: (date: string) => void;
+  showSummary?: boolean;
 }) {
   const copy = COPY[locale];
   const max = Math.max(1, ...items.map((item) => item.focus_seconds));
   const isMonth = items.length > 14;
-  const selected = items.find((item) => item.date === selectedDate) ?? [...items].reverse().find((item) => item.focus_seconds > 0) ?? items[items.length - 1];
+  const selected = selectedDate ? items.find((item) => item.date === selectedDate) ?? null : null;
   const tickIndexes = new Set(
     isMonth
       ? [0, 6, 13, 20, 26, items.length - 1].filter((index) => index >= 0 && index < items.length)
@@ -1281,14 +1501,13 @@ function ActivityBarChart({
                   type="button"
                   data-testid="focus-day-bar"
                   onClick={() => onSelectDate?.(item.date)}
-                  className={`group flex h-full min-w-0 items-end justify-center rounded-t-xl px-0.5 outline-none focus:shadow-[0_0_0_3px_var(--accent-soft)] ${
-                    active ? 'bg-[var(--accent-soft)]' : ''
-                  }`}
+                  className="group flex h-full min-w-0 items-end justify-center rounded-t-xl px-0.5 outline-none focus:shadow-[0_0_0_3px_var(--accent-soft)]"
                   aria-label={`${item.date}: ${secondsLabel(item.focus_seconds, locale)}`}
+                  aria-pressed={active}
                 >
                   <span
                     className={`block w-full max-w-[18px] rounded-t-full transition-all ${
-                      active ? 'bg-accent shadow-[0_0_0_1px_var(--accent-border)]' : item.focus_seconds > 0 ? 'bg-accent opacity-70' : 'bg-[var(--hairline)]'
+                      active ? 'bg-accent shadow-[0_0_0_2px_var(--accent-border),0_0_18px_rgba(95,135,255,0.34)]' : item.focus_seconds > 0 ? 'bg-accent opacity-70' : 'bg-[var(--hairline)]'
                     }`}
                     style={{ height: `${percent}%` }}
                   />
@@ -1308,7 +1527,7 @@ function ActivityBarChart({
           </div>
         </div>
       </div>
-      {selected && (
+      {showSummary && selected && (
         <div className="mt-3 grid grid-cols-4 gap-2 rounded-xl bg-[var(--surface)] px-3 py-2 text-[12px]">
           <div>
             <p className="text-hint">{copy.selectedDay}</p>
@@ -1338,6 +1557,8 @@ function HistoryDetailsSheet({
   locale,
   period,
   onPeriodChange,
+  customRange,
+  onCustomRangeChange,
   summary,
   sessions,
   onSelectSession,
@@ -1345,8 +1566,10 @@ function HistoryDetailsSheet({
   open: boolean;
   onClose: () => void;
   locale: AppLocale;
-  period: 'week' | 'month';
-  onPeriodChange: (period: 'week' | 'month') => void;
+  period: 'week' | 'month' | 'custom';
+  onPeriodChange: (period: 'week' | 'month' | 'custom') => void;
+  customRange: { from_date: string; to_date: string };
+  onCustomRangeChange: (range: { from_date: string; to_date: string }) => void;
   summary: FocusSummaryResponse | undefined;
   sessions: FocusSession[];
   onSelectSession: (session: FocusSession) => void;
@@ -1354,37 +1577,105 @@ function HistoryDetailsSheet({
   const copy = COPY[locale];
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+  const [draftFrom, setDraftFrom] = useState(customRange.from_date);
+  const [draftTo, setDraftTo] = useState(customRange.to_date);
+  const wasOpenRef = useRef(false);
   const daily = summary?.daily_activity ?? [];
-  const activeDate = selectedDate ?? [...daily].reverse().find((item) => item.focus_seconds > 0)?.date ?? daily[daily.length - 1]?.date ?? null;
   const normalizedQuery = query.trim().toLowerCase();
   const visibleSessions = sessions.filter((item) => {
     if (!normalizedQuery) return true;
     return `${item.intention} ${item.project ?? ''} ${item.task?.title ?? ''}`.toLowerCase().includes(normalizedQuery);
   });
-  const groupedSessions = visibleSessions.reduce<Array<{ date: string; items: FocusSession[] }>>((groups, item) => {
+  const scopedSessions = selectedDate ? visibleSessions.filter((item) => sessionDateKey(item) === selectedDate) : visibleSessions;
+  const groupedSessions = scopedSessions.reduce<Array<{ date: string; items: FocusSession[] }>>((groups, item) => {
     const date = sessionDateKey(item);
     const group = groups.find((entry) => entry.date === date);
     if (group) group.items.push(item);
     else groups.push({ date, items: [item] });
     return groups;
   }, []);
-  const maxProjectSeconds = Math.max(1, ...(summary?.project_breakdown ?? []).map((item) => item.focus_seconds));
+  const selectedDay = selectedDate ? daily.find((item) => item.date === selectedDate) ?? null : null;
+  const scopedProjectBreakdown = projectBreakdownFromSessions(scopedSessions, copy);
+  const maxProjectSeconds = Math.max(1, ...scopedProjectBreakdown.map((item) => item.focus_seconds));
+  const scopedFocusSeconds = scopedSessions.reduce((sum, item) => sum + (item.duration_seconds ?? 0), 0);
+  const scopedScore = selectedDate ? averageFocusScore(scopedSessions) : summary?.average_focus_score ?? null;
+  const projectTitle = selectedDate
+    ? `${copy.projectsOn} ${shortDateLabel(selectedDate, locale)}`
+    : period === 'month'
+      ? copy.projectsThisMonth
+      : period === 'custom'
+        ? copy.projectsInRange
+        : copy.projectsThisWeek;
+  const sessionsTitle = selectedDate ? `${copy.sessionsOn} ${shortDateLabel(selectedDate, locale)}` : copy.sessions;
 
-  useEffect(() => {
-    if (open) {
+  useLayoutEffect(() => {
+    if (open && !wasOpenRef.current) {
       setSelectedDate(null);
       setQuery('');
+      setDraftFrom(customRange.from_date);
+      setDraftTo(customRange.to_date);
     }
-  }, [open]);
+    wasOpenRef.current = open;
+  }, [customRange.from_date, customRange.to_date, open]);
+
+  const setPeriod = (next: 'week' | 'month' | 'custom') => {
+    onPeriodChange(next);
+    setSelectedDate(null);
+    if (next === 'custom') onCustomRangeChange(customRange);
+  };
+
+  const applyRange = () => {
+    onPeriodChange('custom');
+    onCustomRangeChange({ from_date: draftFrom, to_date: draftTo });
+    setSelectedDate(null);
+  };
+
+  const toggleDate = (date: string) => {
+    setSelectedDate((current) => (current === date ? null : date));
+  };
 
   return (
     <Sheet open={open} onClose={onClose} title={copy.historyDetails}>
       <div className="space-y-5">
         <div className="flex gap-1.5">
-          <Chip label={copy.week} active={period === 'week'} onClick={() => onPeriodChange('week')} />
-          <Chip label={copy.month} active={period === 'month'} onClick={() => onPeriodChange('month')} />
-          <Chip label="Custom" active={false} onClick={() => undefined} />
+          <Chip label={copy.week} active={period === 'week'} onClick={() => setPeriod('week')} />
+          <Chip label={copy.month} active={period === 'month'} onClick={() => setPeriod('month')} />
+          <Chip label={copy.custom} active={period === 'custom'} onClick={() => setPeriod('custom')} />
         </div>
+        {period === 'custom' && (
+          <div className="rounded-2xl border border-hairline bg-[var(--surface)] p-3">
+            <FieldLabel>{copy.range}</FieldLabel>
+            <div className="grid grid-cols-2 gap-2">
+              <label>
+                <span className="sr-only">{copy.from}</span>
+                <input
+                  aria-label={copy.from}
+                  type="date"
+                  value={draftFrom}
+                  onChange={(event) => setDraftFrom(event.target.value)}
+                  className="h-10 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3 text-[14px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+                />
+              </label>
+              <label>
+                <span className="sr-only">{copy.to}</span>
+                <input
+                  aria-label={copy.to}
+                  type="date"
+                  value={draftTo}
+                  onChange={(event) => setDraftTo(event.target.value)}
+                  className="h-10 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3 text-[14px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+                />
+              </label>
+            </div>
+            <button
+              type="button"
+              onClick={applyRange}
+              className="mt-2 h-10 w-full rounded-full bg-[var(--accent-soft)] text-[13px] font-medium text-accent-text"
+            >
+              {copy.applyRange}
+            </button>
+          </div>
+        )}
         <label className="block">
           <FieldLabel>{copy.search}</FieldLabel>
           <div className="relative">
@@ -1398,36 +1689,8 @@ function HistoryDetailsSheet({
           </div>
         </label>
         <section>
-          <div className="mb-2 flex items-center justify-between">
-            <h3 className="text-[13px] font-semibold text-ink">{copy.days}</h3>
-            <span className="tnum text-[12px] text-hint">{activeDate ?? '—'}</span>
-          </div>
-          <ActivityBarChart items={daily} locale={locale} selectedDate={activeDate} onSelectDate={setSelectedDate} />
-        </section>
-
-        <section>
-          <h3 className="mb-2 text-[13px] font-semibold text-ink">{copy.projects}</h3>
-          <div className="space-y-2.5">
-            {(summary?.project_breakdown ?? []).map((item) => (
-              <div key={item.project}>
-                <div className="mb-1 flex items-center justify-between gap-3 text-[12.5px]">
-                  <span className="truncate font-medium text-ink">{item.project}</span>
-                  <span className="tnum shrink-0 text-hint">{secondsLabel(item.focus_seconds, locale)}</span>
-                </div>
-                <div className="h-2 overflow-hidden rounded-full bg-[var(--hairline)]">
-                  <div
-                    className="h-full rounded-full bg-[var(--accent)]"
-                    style={{ width: `${Math.max(6, Math.round((item.focus_seconds / maxProjectSeconds) * 100))}%` }}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section>
-          <h3 className="mb-2 text-[13px] font-semibold text-ink">{copy.recentSessions}</h3>
-          <div className="max-h-[34dvh] overflow-y-auto rounded-2xl border border-hairline">
+          <h3 className="mb-2 text-[13px] font-semibold text-ink">{sessionsTitle}</h3>
+          <div className="max-h-[42dvh] overflow-y-auto rounded-2xl border border-hairline">
             {groupedSessions.length > 0 ? (
               groupedSessions.map((group) => (
                 <div key={group.date} className="border-b border-hairline last:border-b-0">
@@ -1435,13 +1698,17 @@ function HistoryDetailsSheet({
                     {shortDateLabel(group.date, locale)}
                   </div>
                   {group.items.map((item) => (
-                    <button key={item.id} type="button" onClick={() => onSelectSession(item)} className="block w-full border-t border-hairline px-4 py-3 text-left first:border-t-0">
+                    <button
+                      key={item.id}
+                      type="button"
+                      data-testid="focus-history-session-row"
+                      onClick={() => onSelectSession(item)}
+                      className="block w-full border-t border-hairline px-4 py-3 text-left first:border-t-0"
+                    >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <p className="truncate text-[14px] font-medium text-ink">{item.intention}</p>
-                          <p className="mt-0.5 truncate text-[12.5px] text-hint">
-                            {item.project ?? copy.noProject}{item.task ? ` · ${item.task.title}` : ''}
-                          </p>
+                          <p className="mt-0.5 truncate text-[12.5px] text-hint">{sessionMetaLabel(item, copy)}</p>
                         </div>
                         <span className="tnum shrink-0 text-[13px] font-medium text-ink">{secondsLabel(item.duration_seconds ?? 0, locale)}</span>
                       </div>
@@ -1456,6 +1723,63 @@ function HistoryDetailsSheet({
               ))
             ) : (
               <p className="px-4 py-4 text-[13px] text-hint">{copy.noSessionsForDay}</p>
+            )}
+          </div>
+        </section>
+
+        <section>
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="text-[13px] font-semibold text-ink">{copy.days}</h3>
+            <button
+              type="button"
+              onClick={() => setSelectedDate(null)}
+              className="tnum rounded-full px-2 py-1 text-[12px] text-hint"
+            >
+              {selectedDate ? copy.clearDay : copy.allDays}
+            </button>
+          </div>
+          <ActivityBarChart items={daily} locale={locale} selectedDate={selectedDate} onSelectDate={toggleDate} showSummary={false} />
+          {selectedDate && (
+            <div className="mt-2 grid grid-cols-4 gap-2 rounded-xl bg-[var(--surface)] px-3 py-2 text-[12px]">
+              <div>
+                <p className="text-hint">{copy.selectedDay}</p>
+                <p className="tnum mt-0.5 font-medium text-ink">{shortDateLabel(selectedDate, locale)}</p>
+              </div>
+              <div>
+                <p className="text-hint">{copy.total}</p>
+                <p className="tnum mt-0.5 font-medium text-ink">{secondsLabel(selectedDay?.focus_seconds ?? scopedFocusSeconds, locale)}</p>
+              </div>
+              <div>
+                <p className="text-hint">{copy.sessions}</p>
+                <p className="tnum mt-0.5 font-medium text-ink">{selectedDay?.session_count ?? scopedSessions.length} {copy.countSessions}</p>
+              </div>
+              <div>
+                <p className="text-hint">{copy.score}</p>
+                <p className="tnum mt-0.5 font-medium text-ink">{selectedDay?.average_focus_score ?? scopedScore ?? '—'}</p>
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section>
+          <h3 className="mb-2 text-[13px] font-semibold text-ink">{projectTitle}</h3>
+          <div className="space-y-2.5">
+            {scopedProjectBreakdown.map((item) => (
+              <div key={item.project}>
+                <div className="mb-1 flex items-center justify-between gap-3 text-[12.5px]">
+                  <span className="truncate font-medium text-ink">{item.project}</span>
+                  <span className="tnum shrink-0 text-hint">{secondsLabel(item.focus_seconds, locale)}</span>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-[var(--hairline)]">
+                  <div
+                    className="h-full rounded-full bg-[var(--accent)]"
+                    style={{ width: `${Math.max(6, Math.round((item.focus_seconds / maxProjectSeconds) * 100))}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+            {!scopedProjectBreakdown.length && (
+              <p className="text-[13px] text-hint">{copy.projectsEmpty}</p>
             )}
           </div>
         </section>
@@ -1502,12 +1826,14 @@ function AnalyticsKpis({ summary, locale }: { summary: FocusSummaryResponse | un
 function SessionDetailsSheet({
   open,
   onClose,
+  onBack,
   onDeleted,
   session,
   locale,
 }: {
   open: boolean;
   onClose: () => void;
+  onBack?: () => void;
   onDeleted?: () => void;
   session: FocusSession | null;
   locale: AppLocale;
@@ -1525,7 +1851,31 @@ function SessionDetailsSheet({
   };
   return (
     <>
-      <Sheet open={open} onClose={onClose} title={copy.sessionDetails}>
+      <Sheet
+        open={open}
+        onClose={onClose}
+        title={copy.sessionDetails}
+        headerStart={onBack ? (
+          <button
+            type="button"
+            onClick={onBack}
+            className="-ml-2 inline-flex h-9 items-center gap-1 rounded-full px-2 text-[13px] font-medium text-accent-text"
+          >
+            <ChevronLeft size={17} />
+            {copy.history}
+          </button>
+        ) : undefined}
+        headerActions={(
+          <button
+            type="button"
+            onClick={() => setConfirmDelete(true)}
+            aria-label={copy.deleteSession}
+            className="flex h-10 w-10 items-center justify-center rounded-full text-danger"
+          >
+            <Trash2 size={17} />
+          </button>
+        )}
+      >
         <div className="space-y-4">
           <div className="rounded-2xl border border-hairline bg-[var(--surface)] p-4">
             <p className="text-[19px] font-semibold text-ink">{session.intention}</p>
@@ -1535,7 +1885,7 @@ function SessionDetailsSheet({
             <div className="mt-4 grid grid-cols-2 gap-2 text-[13px]">
               <div className="rounded-xl bg-[var(--surface-strong)] px-3 py-2">
                 <p className="text-hint">{copy.startEndPreview}</p>
-                <p className="tnum mt-0.5 text-ink">{formatTime(session.started_at)} — {formatTime(session.ended_at ?? session.target_end_at)}</p>
+                <p className="tnum mt-0.5 text-ink">{sessionTimeRangeLabel(session)}</p>
               </div>
               <div className="rounded-xl bg-[var(--surface-strong)] px-3 py-2">
                 <p className="text-hint">{copy.duration}</p>
@@ -1559,19 +1909,20 @@ function SessionDetailsSheet({
             )}
           </div>
           <Button fullWidth onClick={() => setEditOpen(true)} icon={<Pencil size={16} />}>
-            {copy.editReview}
-          </Button>
-          <Button fullWidth variant="danger" busy={deleteFocus.isPending} onClick={() => setConfirmDelete(true)} icon={<Trash2 size={16} />}>
-            {copy.deleteSession}
+            {copy.editSession}
           </Button>
         </div>
       </Sheet>
-      <ReflectionSheet session={session} open={editOpen} onClose={() => setEditOpen(false)} locale={locale} />
+      <EditSessionSheet session={session} open={editOpen} onClose={() => setEditOpen(false)} locale={locale} />
       {confirmDelete && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/35 px-5" role="dialog" aria-modal="true" aria-labelledby="focus-delete-title">
           <div className="w-full max-w-[360px] rounded-3xl border border-hairline bg-[var(--surface-strong)] p-5 shadow-card">
             <h3 id="focus-delete-title" className="text-[19px] font-semibold text-ink">{copy.deleteTitle}</h3>
             <p className="mt-2 text-[13.5px] leading-relaxed text-hint">{copy.deleteBody}</p>
+            <div className="mt-4 rounded-2xl border border-hairline bg-[var(--surface)] px-3 py-2">
+              <p className="truncate text-[13.5px] font-medium text-ink">{session.intention}</p>
+              <p className="tnum mt-0.5 text-[12px] text-hint">{shortDateLabel(sessionDateKey(session), locale)} · {sessionTimeRangeLabel(session)} · {secondsLabel(session.duration_seconds ?? 0, locale)}</p>
+            </div>
             <div className="mt-5 grid grid-cols-2 gap-2">
               <Button variant="ghost" onClick={() => setConfirmDelete(false)}>{copy.cancel}</Button>
               <Button
@@ -1601,19 +1952,38 @@ export default function FocusPage() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [reviewSession, setReviewSession] = useState<FocusSession | null>(null);
   const [detailsSession, setDetailsSession] = useState<FocusSession | null>(null);
+  const [detailsFromHistory, setDetailsFromHistory] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
-  const [period, setPeriod] = useState<'week' | 'month'>('week');
+  const [period, setPeriod] = useState<'week' | 'month' | 'custom'>('week');
+  const [customRange, setCustomRange] = useState(() => rangeDefaults());
   const state = useFocusState();
-  const summary = useFocusSummary(period);
-  const sessionsQuery = useFocusSessions(period);
+  const summary = useFocusSummary(period, period === 'custom' ? customRange : undefined);
+  const sessionsQuery = useFocusSessions(period, period === 'custom' ? customRange : undefined);
   const active = state.data?.active_session ?? null;
   const today = state.data?.today;
   const sessions = sessionsQuery.data?.items ?? state.data?.recent_sessions ?? [];
   const daily = summary.data?.daily_activity ?? [];
-  const activeDate = selectedDate ?? [...daily].reverse().find((item) => item.focus_seconds > 0)?.date ?? null;
   const summaryProjects = useMemo(() => summary.data?.project_breakdown.map((item) => item.project) ?? [], [summary.data]);
   const historyPreview = sessions.slice(0, 5);
-  const scopedSessionsLabel = period === 'month' ? copy.sessionsThisMonth : copy.sessionsThisWeek;
+  const scopedSessionsLabel = period === 'month' ? copy.sessionsThisMonth : period === 'custom' ? copy.countSessions : copy.sessionsThisWeek;
+  const mainScopedSessions = selectedDate ? sessions.filter((item) => sessionDateKey(item) === selectedDate) : sessions;
+  const mainProjectBreakdown = selectedDate ? projectBreakdownFromSessions(mainScopedSessions, copy) : (summary.data?.project_breakdown ?? []);
+  const mainMaxProjectSeconds = Math.max(1, ...(mainProjectBreakdown.map((item) => item.focus_seconds)));
+  const openMainDetails = (session: FocusSession) => {
+    setDetailsFromHistory(false);
+    setDetailsSession(session);
+  };
+  const openHistoryDetails = (session: FocusSession) => {
+    setDetailsFromHistory(true);
+    setDetailsSession(session);
+  };
+  const closeDetails = () => {
+    setDetailsSession(null);
+    setDetailsFromHistory(false);
+  };
+  const toggleMainDate = (date: string) => {
+    setSelectedDate((current) => (current === date ? null : date));
+  };
 
   return (
     <Stagger className="pb-32">
@@ -1696,14 +2066,11 @@ export default function FocusPage() {
             <AnalyticsKpis summary={summary.data} locale={locale} />
           </div>
           <div className="mt-4">
-            <ActivityBarChart items={daily} locale={locale} selectedDate={activeDate} onSelectDate={(date) => {
-              setSelectedDate(date);
-              setHistoryOpen(true);
-            }} />
+            <ActivityBarChart items={daily} locale={locale} selectedDate={selectedDate} onSelectDate={toggleMainDate} />
           </div>
-          {summary.data?.project_breakdown.length ? (
+          {mainProjectBreakdown.length ? (
             <div className="mt-4 divide-y divide-hairline">
-              {summary.data.project_breakdown.map((item) => (
+              {mainProjectBreakdown.map((item) => (
                 <div key={item.project} className="py-2.5">
                   <div className="mb-1 flex items-center justify-between gap-3">
                     <span className="flex min-w-0 items-center gap-2 text-[13.5px] font-medium text-ink">
@@ -1716,7 +2083,7 @@ export default function FocusPage() {
                     <div
                       className="h-full rounded-full bg-accent"
                       style={{
-                        width: `${Math.max(4, Math.round((item.focus_seconds / Math.max(1, summary.data.project_breakdown[0]?.focus_seconds ?? 1)) * 100))}%`,
+                        width: `${Math.max(4, Math.round((item.focus_seconds / mainMaxProjectSeconds) * 100))}%`,
                       }}
                     />
                   </div>
@@ -1750,12 +2117,13 @@ export default function FocusPage() {
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setDetailsSession(item)}
+                data-testid="focus-history-preview-row"
+                onClick={() => openMainDetails(item)}
                 className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
               >
                 <div className="min-w-0">
                   <p className="truncate text-[14px] font-medium text-ink">{item.intention}</p>
-                  <p className="truncate text-[12.5px] text-hint">{item.project ?? copy.noProject}{item.task ? ` · ${item.task.title}` : ''}</p>
+                  <p className="truncate text-[12.5px] text-hint">{shortDateLabel(sessionDateKey(item), locale)} · {sessionMetaLabel(item, copy)}</p>
                 </div>
                 <span className="tnum shrink-0 text-[13px] font-medium text-ink">{secondsLabel(item.duration_seconds ?? 0, locale)}</span>
               </button>
@@ -1784,8 +2152,9 @@ export default function FocusPage() {
       <ReflectionSheet session={reviewSession} open={reviewSession !== null} onClose={() => setReviewSession(null)} locale={locale} />
       <SessionDetailsSheet
         open={detailsSession !== null}
-        onClose={() => setDetailsSession(null)}
-        onDeleted={() => setDetailsSession(null)}
+        onClose={closeDetails}
+        onBack={detailsFromHistory ? closeDetails : undefined}
+        onDeleted={closeDetails}
         session={detailsSession}
         locale={locale}
       />
@@ -1795,12 +2164,11 @@ export default function FocusPage() {
         locale={locale}
         period={period}
         onPeriodChange={setPeriod}
+        customRange={customRange}
+        onCustomRangeChange={setCustomRange}
         summary={summary.data}
         sessions={sessions}
-        onSelectSession={(session) => {
-          setHistoryOpen(false);
-          setDetailsSession(session);
-        }}
+        onSelectSession={openHistoryDetails}
       />
     </Stagger>
   );
