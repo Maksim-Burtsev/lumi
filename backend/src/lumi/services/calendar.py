@@ -25,6 +25,18 @@ DEFAULT_DAY_END_HOUR = 19
 MEETING_BUFFER = timedelta(minutes=10)
 
 
+class ExternalCalendarMutationError(ValueError):
+    """Raised when a write tries to mutate a synced external calendar event."""
+
+
+class CalendarConflictError(ValueError):
+    """Raised when a proposed calendar update overlaps another busy event."""
+
+    def __init__(self, conflict: CalendarEvent) -> None:
+        super().__init__("calendar_conflict")
+        self.conflict = conflict
+
+
 def _same_url(a: str | None, b: str | None) -> bool:
     return bool(a and b and a.rstrip("/").lower() == b.rstrip("/").lower())
 
@@ -208,6 +220,98 @@ class CalendarService:
         await self.audit.log(user_id=user.id, actor="user", entity_type="calendar_event",
                              entity_id=event.id, action="confirmed", details={})
         await self._emit_calendar_changed(event, "calendar_event.confirmed")
+        return event
+
+    async def update_internal_event(
+        self,
+        user: User,
+        event: CalendarEvent,
+        *,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        actor: str = "agent",
+    ) -> CalendarEvent:
+        """Update a Lumi-owned block. Synced external events are read-only in v1."""
+        if event.user_id != user.id:
+            raise ValueError("event_not_found")
+        if event.source != CalendarSource.INTERNAL:
+            raise ExternalCalendarMutationError("external_calendar_update_unsupported")
+        new_start_at = start_at or event.start_at
+        new_end_at = end_at or event.end_at
+        if new_end_at <= new_start_at:
+            raise ValueError("end_at_must_be_after_start_at")
+        conflicts = await self.list_events(user, new_start_at, new_end_at)
+        busy_conflicts = [
+            candidate for candidate in conflicts
+            if (
+                candidate.id != event.id
+                and candidate.busy
+                and candidate.status in (
+                    CalendarEventStatus.CONFIRMED,
+                    CalendarEventStatus.TENTATIVE,
+                    CalendarEventStatus.PROPOSED,
+                )
+            )
+        ]
+        if busy_conflicts:
+            raise CalendarConflictError(busy_conflicts[0])
+
+        before = {
+            "title": event.title,
+            "start_at": event.start_at.isoformat(),
+            "end_at": event.end_at.isoformat(),
+        }
+        event.start_at = new_start_at
+        event.end_at = new_end_at
+        if title is not None:
+            event.title = title.strip()[:300] or event.title
+        if description is not None:
+            event.description = description
+            event.metadata_ = {
+                **(event.metadata_ or {}),
+                "links": _clean_links(extract_links(description)),
+            }
+        await self.audit.log(
+            user_id=user.id,
+            actor=actor,
+            entity_type="calendar_event",
+            entity_id=event.id,
+            action="updated",
+            details={
+                "before": before,
+                "after": {
+                    "title": event.title,
+                    "start_at": event.start_at.isoformat(),
+                    "end_at": event.end_at.isoformat(),
+                },
+            },
+        )
+        await self._emit_calendar_changed(event, "calendar_event.updated")
+        return event
+
+    async def cancel_internal_event(
+        self,
+        user: User,
+        event: CalendarEvent,
+        *,
+        actor: str = "agent",
+    ) -> CalendarEvent:
+        if event.user_id != user.id:
+            raise ValueError("event_not_found")
+        if event.source != CalendarSource.INTERNAL:
+            raise ExternalCalendarMutationError("external_calendar_cancel_unsupported")
+        event.status = CalendarEventStatus.CANCELLED
+        await self.audit.log(
+            user_id=user.id,
+            actor=actor,
+            entity_type="calendar_event",
+            entity_id=event.id,
+            action="cancelled",
+            details={"title": event.title},
+        )
+        await self._emit_calendar_changed(event, "calendar_event.cancelled")
         return event
 
     # ------------------------------------------------------------------

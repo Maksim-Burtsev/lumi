@@ -204,6 +204,13 @@ class TaskService:
         if exact:
             return exact[:RENAME_MAX_CANDIDATES]
 
+        substring = [
+            task for task in tasks
+            if wanted in normalize_for_match(task.title)
+        ]
+        if substring:
+            return substring[:RENAME_MAX_CANDIDATES]
+
         scored = [
             candidate for candidate in (
                 _ScoredRenameCandidate(

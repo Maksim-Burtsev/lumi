@@ -3,7 +3,7 @@ from datetime import timedelta
 from lumi.assistant.context_builder import ContextBuilder, PlannerContextBuilder
 from lumi.assistant.memory_service import MemoryService
 from lumi.assistant.schemas import MemoryCandidate
-from lumi.db.models import AgentRunType, Message, MessageRole
+from lumi.db.models import AgentRunType, Message, MessageRole, TaskStatus
 from lumi.db.session import session_scope
 from lumi.services.calendar import CalendarService
 from lumi.services.confirmations import ConfirmationService
@@ -219,6 +219,76 @@ async def test_planner_context_exposes_recent_and_pending_project_refs(user):
     assert str(pending.id) in prompt
     assert "проработать задачи с маркетингом" in prompt
     assert trace["pending_task_ref_count"] == 1
+
+
+async def test_planner_context_exposes_last_notified_task_from_reminder_message(user):
+    async with session_scope() as session:
+        users = UserService(session)
+        u = await users.ensure_user(TEST_TELEGRAM_ID, first_name="Макс", username="tester")
+        conversation = await users.ensure_main_conversation(u)
+        task = await TaskService(session).create_task(
+            u,
+            title="Протереть наушники",
+            reminder_at=utc_now() - timedelta(minutes=2),
+        )
+        session.add(Message(
+            conversation_id=conversation.id,
+            user_id=u.id,
+            role=MessageRole.ASSISTANT,
+            content="⏰ Напоминание: Протереть наушники",
+            content_json={
+                "notification_type": "task_reminder",
+                "task_id": str(task.id),
+                "task_title": task.title,
+                "reminder_at": task.reminder_at.isoformat(),
+            },
+            char_count=33,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=9001,
+        ))
+
+        context = await PlannerContextBuilder(session).build(user=u, conversation=conversation)
+
+    prompt = context.to_prompt_text()
+    trace = context.to_trace_summary()
+    assert "last_notified_task:" in prompt
+    assert "Протереть наушники" in prompt
+    assert str(task.id) in prompt
+    assert context.task_ref_for_recency_hint("last_notified_task").task_id == task.id
+    assert trace["last_notified_task_count"] == 1
+
+
+async def test_planner_context_ignores_done_last_notified_task(user):
+    async with session_scope() as session:
+        users = UserService(session)
+        u = await users.ensure_user(TEST_TELEGRAM_ID)
+        conversation = await users.ensure_main_conversation(u)
+        task = await TaskService(session).create_task(
+            u,
+            title="Закрытое напоминание",
+            reminder_at=utc_now() - timedelta(minutes=2),
+        )
+        await TaskService(session).complete_task(u, task)
+        session.add(Message(
+            conversation_id=conversation.id,
+            user_id=u.id,
+            role=MessageRole.ASSISTANT,
+            content="⏰ Напоминание: Закрытое напоминание",
+            content_json={
+                "notification_type": "task_reminder",
+                "task_id": str(task.id),
+                "task_title": task.title,
+            },
+            char_count=36,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=9002,
+        ))
+
+        context = await PlannerContextBuilder(session).build(user=u, conversation=conversation)
+
+    assert task.status == TaskStatus.DONE
+    assert context.task_ref_for_recency_hint("last_notified_task") is None
+    assert "last_notified_task:\n- none" in context.to_prompt_text()
 
 
 async def test_final_context_includes_task_projects_and_pending_confirmations(user):
