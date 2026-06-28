@@ -1012,6 +1012,69 @@ async def test_text_with_recent_media_skips_media_reference_when_not_about_media
     assert result.reply_text == "На вторник встреч нет."
 
 
+async def test_text_followup_ask_user_plan_uses_focused_vision_for_explicit_recent_media():
+    image_metadata = {
+        "file_id": "recent-file",
+        "file_unique_id": "telegram-unique",
+        "mime_type": "image/png",
+        "file_size": 100,
+        "source": "attached",
+        "telegram_message_id": 30,
+    }
+    provider = MediaFlowProvider(
+        media=SERIAL_MEDIA,
+        plan={
+            "mode": "ask_user",
+            "referenced_media_id": "recent:telegram-unique",
+            "visual_intent": "action_evidence",
+            "tool_calls": [],
+            "final_answer": "I can see the serial number highlighted in red. How should I send it?",
+            "should_answer_normally": True,
+        },
+        focused={
+            "answer": "LXRJ00C058135065891601",
+            "facts": ["serial: LXRJ00C058135065891601"],
+            "visible_text": ["S/N:LXRJ00C058135065891601"],
+            "confidence": 0.95,
+            "limitations": [],
+        },
+    )
+
+    async def image_loader(metadata: dict) -> ImageInput:
+        return _test_image(
+            file_id=metadata["file_id"],
+            file_unique_id=metadata["file_unique_id"],
+            source="latest",
+        )
+
+    async with session_scope() as session:
+        users = UserService(session)
+        user = await users.ensure_user(TEST_TELEGRAM_ID)
+        conversation = await users.ensure_main_conversation(user)
+        session.add(Message(
+            conversation_id=conversation.id,
+            user_id=user.id,
+            role=MessageRole.USER,
+            content="[image] serial sticker",
+            char_count=22,
+            metadata_={"images": [image_metadata], "media_context": SERIAL_MEDIA},
+            content_json={"text": "", "images": [image_metadata], "media_context": SERIAL_MEDIA},
+        ))
+        await session.flush()
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=40,
+            text="send only what is marked in red",
+            image_loader=image_loader,
+        )
+
+    assert provider.calls == ["agent_planner", "focused_vision"]
+    assert result.reply_text == "LXRJ00C058135065891601"
+
+
 async def test_text_followup_uses_media_router_when_planner_does_not_select_recent_media():
     image_metadata = {
         "file_id": "recent-file",

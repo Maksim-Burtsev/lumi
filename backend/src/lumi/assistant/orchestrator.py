@@ -1348,7 +1348,7 @@ class AssistantOrchestrator:
             should_resolve_media_reference
             and selected_media is not None
             and selected_media.source == "recent"
-            and plan.mode == "final_answer"
+            and plan.mode in {"final_answer", "ask_user"}
             and not plan.needs_media_understanding
             and not plan.tool_calls
             and _text_likely_references_media(text)
@@ -1388,7 +1388,7 @@ class AssistantOrchestrator:
                     focused_question_override = media_reference.question or text.strip()
                     if plan.visual_intent == "none" and media_reference.visual_intent != "none":
                         plan = plan.model_copy(update={"visual_intent": media_reference.visual_intent})
-                    if selected_media.source == "recent" and plan.mode == "final_answer" and not plan.tool_calls:
+                    if selected_media.source == "recent" and plan.mode in {"final_answer", "ask_user"} and not plan.tool_calls:
                         plan = plan.model_copy(update={
                             "mode": "needs_focused_vision",
                             "focused_vision": FocusedVisionRequest(
