@@ -58,7 +58,7 @@ const COPY = {
   en: {
     appearance: 'Appearance',
     theme: 'Theme',
-    themeTelegram: 'Use Telegram theme',
+    themeTelegram: 'Telegram',
     themeLight: 'Light',
     themeDark: 'Dark',
     themeSaved: 'Theme saved',
@@ -115,7 +115,7 @@ const COPY = {
   ru: {
     appearance: 'Внешний вид',
     theme: 'Тема',
-    themeTelegram: 'Как в Telegram',
+    themeTelegram: 'Telegram',
     themeLight: 'Светлая',
     themeDark: 'Тёмная',
     themeSaved: 'Тема сохранена',
@@ -173,6 +173,49 @@ const COPY = {
 
 function shortScope(scope: string): string {
   return scope.replace('https://www.googleapis.com/auth/', '');
+}
+
+function ThemeModeControl({
+  value,
+  onChange,
+  copy,
+}: {
+  value: ThemeMode;
+  onChange: (value: ThemeMode) => void;
+  copy: { theme: string; themeTelegram: string; themeLight: string; themeDark: string };
+}) {
+  const options: { value: ThemeMode; label: string }[] = [
+    { value: 'telegram', label: copy.themeTelegram },
+    { value: 'light', label: copy.themeLight },
+    { value: 'dark', label: copy.themeDark },
+  ];
+
+  return (
+    <div
+      role="group"
+      aria-label={copy.theme}
+      className="grid w-full grid-cols-3 gap-1 rounded-xl bg-[var(--secondary-bg)] p-1 sm:w-[248px]"
+    >
+      {options.map((option) => {
+        const selected = value === option.value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={selected}
+            onClick={() => onChange(option.value)}
+            className={`min-w-0 rounded-lg px-2 py-2 text-[12.5px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-border)] ${
+              selected
+                ? 'bg-[var(--surface-strong)] text-ink shadow-[0_1px_6px_rgba(0,0,0,0.12)]'
+                : 'text-hint'
+            }`}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 export default function SettingsPage() {
@@ -389,21 +432,10 @@ export default function SettingsPage() {
       <Rise>
         <SectionHeader title={copy.appearance} />
         <Card className="card-strong !p-0 overflow-hidden">
-          <label className="flex min-h-[68px] items-center justify-between gap-3 px-4 py-3">
+          <div className="flex min-h-[76px] flex-col items-stretch gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
             <span className="min-w-0 text-[13.5px] font-medium text-ink">{copy.theme}</span>
-            <span className="w-[178px] shrink-0">
-              <Select
-                value={themeMode}
-                ariaLabel={copy.theme}
-                onChange={(value) => handleThemeMode(normalizeThemeMode(value))}
-                options={[
-                  { value: 'telegram', label: copy.themeTelegram },
-                  { value: 'light', label: copy.themeLight },
-                  { value: 'dark', label: copy.themeDark },
-                ]}
-              />
-            </span>
-          </label>
+            <ThemeModeControl value={themeMode} onChange={handleThemeMode} copy={copy} />
+          </div>
         </Card>
       </Rise>
 

@@ -234,9 +234,9 @@ describe('SettingsPage language settings', () => {
     renderSettingsPage();
 
     expect(await screen.findByText('Appearance')).toBeInTheDocument();
-    const themeSelect = screen.getByLabelText('Theme');
-    expect(themeSelect).toHaveDisplayValue('Use Telegram theme');
-    await user.selectOptions(themeSelect, 'dark');
+    const themeGroup = screen.getByRole('group', { name: 'Theme' });
+    expect(within(themeGroup).getByRole('button', { name: 'Telegram' })).toHaveAttribute('aria-pressed', 'true');
+    await user.click(within(themeGroup).getByRole('button', { name: 'Dark' }));
 
     await waitFor(() => {
       expect(patchSpy).toHaveBeenCalledWith({ theme_mode: 'dark' });
@@ -259,11 +259,12 @@ describe('SettingsPage language settings', () => {
     renderSettingsPage();
 
     expect(await screen.findByText('Appearance')).toBeInTheDocument();
-    const themeSelect = screen.getByLabelText('Theme');
-    expect(themeSelect).toHaveDisplayValue('Use Telegram theme');
-    await user.selectOptions(themeSelect, 'dark');
+    const themeGroup = screen.getByRole('group', { name: 'Theme' });
+    expect(within(themeGroup).queryByRole('combobox')).not.toBeInTheDocument();
+    expect(within(themeGroup).getByRole('button', { name: 'Telegram' })).toHaveAttribute('aria-pressed', 'true');
+    await user.click(within(themeGroup).getByRole('button', { name: 'Dark' }));
 
-    expect(themeSelect).toHaveDisplayValue('Dark');
+    expect(within(themeGroup).getByRole('button', { name: 'Dark' })).toHaveAttribute('aria-pressed', 'true');
     expect(document.documentElement.classList.contains('dark')).toBe(true);
     expect(patchSpy).toHaveBeenCalledWith({ theme_mode: 'dark' });
 

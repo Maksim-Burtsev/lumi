@@ -89,6 +89,14 @@ html.dark {
   color-scheme: dark;
 }
 
+html.theme-swap,
+html.theme-swap *,
+html.theme-swap *::before,
+html.theme-swap *::after {
+  transition: none !important;
+  transition-delay: 0s !important;
+}
+
 body {
   min-height: 100%;
   margin: 0;
