@@ -19,15 +19,18 @@ cd .worktrees/<task>
 
 Before running compose in a new worktree, copy `.env` from the main checkout if it is missing. From `.worktrees/<task>`, run `cp ../../.env .env`.
 
-Use an override with separate ports:
+Use a branch-specific compose project with separate ports:
 
 ```bash
-COMPOSE_PROJECT_NAME=lumi_fix \
-COMPOSE_FILE=docker-compose.yml:/tmp/lumi-fix.override.yml \
+export COMPOSE_PROJECT_NAME=lumi_<task_slug>
+export LUMI_API_PORT=18000
+export LUMI_POSTGRES_PORT=15432
+export LUMI_REDIS_PORT=16379
+export LUMI_DEV_AUTH_PORT=18001
 docker compose up -d --build api bot worker
 ```
 
-Do not run a second Telegram poller on the same token. If `lumi_fix-bot-1` is active, the main/default bot must be stopped.
+Use a unique `COMPOSE_PROJECT_NAME` for every agent branch. Do not run a second Telegram poller on the same token. If `lumi_<task_slug>-bot-1` is active, the main/default bot must be stopped.
 
 ## Mini App setup
 
@@ -35,7 +38,7 @@ Telegram Mini App requires an HTTPS URL. `localhost` is not enough.
 
 ```bash
 make frontend-build
-cloudflared tunnel --url http://localhost:18000
+cloudflared tunnel --url http://localhost:${LUMI_API_PORT:-18000}
 ```
 
 In the worktree `.env`:
@@ -48,19 +51,15 @@ FRONTEND_PUBLIC_PATH=/app/
 After changing the URL, recreate processes that read `.env` and set the Telegram menu:
 
 ```bash
-COMPOSE_PROJECT_NAME=lumi_fix \
-COMPOSE_FILE=docker-compose.yml:/tmp/lumi-fix.override.yml \
 docker compose up -d --force-recreate api bot worker
 ```
 
 Checks:
 
 ```bash
-curl http://localhost:18000/health
+curl "http://localhost:${LUMI_API_PORT:-18000}/health"
 curl "$APP_PUBLIC_URL/health"
 curl "$APP_PUBLIC_URL/app/"
-COMPOSE_PROJECT_NAME=lumi_fix \
-COMPOSE_FILE=docker-compose.yml:/tmp/lumi-fix.override.yml \
 docker compose logs bot --tail 200 | rg "mini app menu button set|mini app chat menu button set"
 ```
 
@@ -127,8 +126,6 @@ limit 20;
 Logs:
 
 ```bash
-COMPOSE_PROJECT_NAME=lumi_fix \
-COMPOSE_FILE=docker-compose.yml:/tmp/lumi-fix.override.yml \
 docker compose logs api bot worker --tail 300
 ```
 
@@ -152,3 +149,14 @@ Do not release if any condition is true:
 - Mini App menu points at a stale tunnel;
 - `backend/uv.lock` appears untracked;
 - main/default bot and QA bot poll the same token at the same time.
+
+## Finish cleanup
+
+If an agent started Docker, a dev-auth container, or a cloudflared tunnel, it must clean its own runtime after the task finishes or after the PR is confirmed merged:
+
+```bash
+COMPOSE_PROJECT_NAME=lumi_<task_slug> make agent-clean
+docker ps --filter "label=com.docker.compose.project=lumi_<task_slug>"
+```
+
+Use `make agent-clean-full` only for disposable QA runtimes where removing Postgres/Redis volumes is acceptable. Never clean the default/shared `lumi` compose project unless the user explicitly asked for that runtime to stop.

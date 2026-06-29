@@ -1,6 +1,10 @@
 .PHONY: setup up up-detached down logs migrate revision seed test lint smoke \
 	frontend-install frontend-build frontend-dev miniapp-local-up dev-auth-up dev-auth-down tunnel \
-	google-auth-local reset-local-db help
+	google-auth-local reset-local-db agent-clean agent-clean-full help
+
+COMPOSE_PROJECT_NAME ?= lumi
+LUMI_API_PORT ?= 8000
+LUMI_DEV_AUTH_PORT ?= 8001
 
 help:
 	@echo "Lumi — local commands"
@@ -19,6 +23,8 @@ help:
 	@echo "  make logs              tail logs of all services"
 	@echo "  make google-auth-local local Google OAuth flow (browser)"
 	@echo "  make down              stop everything"
+	@echo "  make agent-clean       stop/remove this branch's Docker runtime"
+	@echo "  make agent-clean-full  agent-clean plus DB/Redis volumes"
 
 setup:
 	cp -n .env.example .env || true
@@ -70,34 +76,40 @@ frontend-dev:
 	cd frontend && npm run dev
 
 miniapp-local-up:
-	python3 scripts/miniapp_local_up.py
+	COMPOSE_PROJECT_NAME="$(COMPOSE_PROJECT_NAME)" LUMI_API_PORT="$(LUMI_API_PORT)" \
+		LUMI_TUNNEL_SESSION="$(LUMI_TUNNEL_SESSION)" \
+		python3 scripts/miniapp_local_up.py
 
 dev-auth-up:
 	@if [ ! -f .env ]; then echo "Missing .env. Run: make setup"; exit 1; fi
 	@if [ ! -f frontend/dist/index.html ]; then echo "Missing frontend/dist. Run: make frontend-build"; exit 1; fi
 	@telegram_id=$$(grep -E '^ALLOWED_TELEGRAM_USER_IDS=' .env | head -n1 | cut -d= -f2- | cut -d, -f1 | tr -d '[:space:]'); \
 	if [ -z "$$telegram_id" ]; then echo "ALLOWED_TELEGRAM_USER_IDS is empty in .env"; exit 1; fi; \
-	docker network inspect lumi_default >/dev/null 2>&1 || { echo "Missing lumi_default network. Run: make up-detached"; exit 1; }; \
-	docker rm -f lumi-api-dev-auth >/dev/null 2>&1 || true; \
-	docker run -d --name lumi-api-dev-auth \
-		--network lumi_default \
+	compose_project="$(COMPOSE_PROJECT_NAME)"; \
+	dev_auth_container="$${LUMI_DEV_AUTH_CONTAINER:-$${compose_project}-api-dev-auth}"; \
+	docker network inspect "$${compose_project}_default" >/dev/null 2>&1 || { echo "Missing $${compose_project}_default network. Run: make up-detached"; exit 1; }; \
+	docker rm -f "$$dev_auth_container" >/dev/null 2>&1 || true; \
+	docker run -d --name "$$dev_auth_container" \
+		--network "$${compose_project}_default" \
 		--env-file .env \
 		-e SERVICE_ROLE=api \
 		-e DEV_AUTH_ENABLED=true \
 		-e DEV_AUTH_TELEGRAM_USER_ID=$$telegram_id \
-		-p 127.0.0.1:8001:8000 \
+		-p 127.0.0.1:$(LUMI_DEV_AUTH_PORT):8000 \
 		-v "$(CURDIR)/data/files:/app/data/files" \
 		-v "$(CURDIR)/data/secrets:/app/data/secrets" \
 		-v "$(CURDIR)/frontend/dist:/app/static/app:ro" \
 		lumi-backend:latest \
 		uvicorn lumi.main:app --host 0.0.0.0 --port 8000 >/dev/null; \
-	echo "Dev-auth Mini App: http://localhost:8001/app/"
+	echo "Dev-auth Mini App: http://localhost:$(LUMI_DEV_AUTH_PORT)/app/"
 
 dev-auth-down:
-	docker rm -f lumi-api-dev-auth >/dev/null 2>&1 || true
+	@compose_project="$(COMPOSE_PROJECT_NAME)"; \
+	dev_auth_container="$${LUMI_DEV_AUTH_CONTAINER:-$${compose_project}-api-dev-auth}"; \
+	docker rm -f "$$dev_auth_container" >/dev/null 2>&1 || true
 
 tunnel:
-	cloudflared tunnel --url http://localhost:8000
+	cloudflared tunnel --url http://localhost:$(LUMI_API_PORT)
 
 google-auth-local:
 	python3 scripts/google_auth_local.py
@@ -105,3 +117,15 @@ google-auth-local:
 reset-local-db:
 	docker compose down -v
 	@echo "Postgres/Redis volumes removed. Run: make up-detached && make migrate && make seed"
+
+agent-clean:
+	COMPOSE_PROJECT_NAME="$(COMPOSE_PROJECT_NAME)" COMPOSE_FILE="$(COMPOSE_FILE)" \
+		LUMI_DEV_AUTH_CONTAINER="$(LUMI_DEV_AUTH_CONTAINER)" \
+		LUMI_TUNNEL_SESSION="$(LUMI_TUNNEL_SESSION)" \
+		python3 scripts/agent_cleanup.py
+
+agent-clean-full:
+	COMPOSE_PROJECT_NAME="$(COMPOSE_PROJECT_NAME)" COMPOSE_FILE="$(COMPOSE_FILE)" \
+		LUMI_DEV_AUTH_CONTAINER="$(LUMI_DEV_AUTH_CONTAINER)" \
+		LUMI_TUNNEL_SESSION="$(LUMI_TUNNEL_SESSION)" \
+		python3 scripts/agent_cleanup.py --volumes
