@@ -435,6 +435,8 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
             "payload": dict(turn.payload or {}),
             "status_message_id": turn.status_message_id,
             "retry_count": turn.retry_count,
+            "created_at": turn.created_at,
+            "started_at": turn.started_at,
         }
         user_snapshot = {
             "id": user.id,
@@ -444,6 +446,17 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
             "first_name": user.first_name,
             "last_name": user.last_name,
         }
+
+    queue_wait_ms = None
+    if turn_snapshot.get("created_at") is not None and turn_snapshot.get("started_at") is not None:
+        queue_wait_ms = max(
+            0,
+            int((turn_snapshot["started_at"] - turn_snapshot["created_at"]).total_seconds() * 1000),
+        )
+    log.info(
+        "assistant turn acquired",
+        fields={"turn_id": turn_id, "queue_wait_ms": queue_wait_ms, "retry_count": turn_snapshot["retry_count"]},
+    )
 
     payload = turn_snapshot["payload"]
     image = None
@@ -518,6 +531,15 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
         if next_turn is not None:
             await _enqueue_turn(next_turn)
         return f"turn failed: {exc}"
+
+    if result.agent_run_id is not None and queue_wait_ms is not None:
+        async with session_scope() as session:
+            run = await session.get(AgentRun, result.agent_run_id)
+            if run is not None:
+                metadata = run.metadata_ or {}
+                latency_ms = dict(metadata.get("latency_ms") or {})
+                latency_ms["queue_wait_ms"] = queue_wait_ms
+                run.metadata_ = {**metadata, "latency_ms": latency_ms}
 
     reply_kwargs = {
         "user": user,

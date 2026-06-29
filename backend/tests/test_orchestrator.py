@@ -1094,7 +1094,7 @@ async def test_visual_read_only_without_planner_answer_uses_focused_vision_not_f
     )
 
 
-async def test_text_followup_uses_llm_selected_recent_media_without_keyword_heuristics():
+async def test_text_followup_uses_media_path_for_explicit_recent_media_reference():
     image_metadata = {
         "file_id": "recent-file",
         "file_unique_id": "telegram-unique",
@@ -1113,7 +1113,30 @@ async def test_text_followup_uses_llm_selected_recent_media_without_keyword_heur
             "final_answer": "LXRJ00C058135065891601",
             "should_answer_normally": False,
         },
+        media_reference={
+            "references_media": True,
+            "media_id": "recent:telegram-unique",
+            "visual_intent": "read_only",
+            "question": "read the text marked in red",
+            "reason": "The user asks for the marked visual detail from the recent image.",
+            "confidence": 0.86,
+        },
+        focused={
+            "answer": "LXRJ00C058135065891601",
+            "facts": ["serial: LXRJ00C058135065891601"],
+            "visible_text": ["S/N:LXRJ00C058135065891601"],
+            "confidence": 0.95,
+            "limitations": [],
+        },
     )
+
+    async def image_loader(metadata: dict) -> ImageInput:
+        return _test_image(
+            file_id=metadata["file_id"],
+            file_unique_id=metadata["file_unique_id"],
+            source="latest",
+        )
+
     async with session_scope() as session:
         users = UserService(session)
         user = await users.ensure_user(TEST_TELEGRAM_ID)
@@ -1135,6 +1158,7 @@ async def test_text_followup_uses_llm_selected_recent_media_without_keyword_heur
             telegram_chat_id=TEST_TELEGRAM_ID,
             telegram_message_id=37,
             text="envía solo lo marcado en rojo",
+            image_loader=image_loader,
         )
 
         tasks = (await session.execute(select(Task))).scalars().all()
@@ -1224,6 +1248,117 @@ async def test_text_followup_accepts_router_media_id_with_different_source_prefi
     assert provider.final_chat_calls == 0
     assert result.reply_text == "LXRJ00C058135065891601"
     assert inbound.content_json["referenced_images"][0]["file_id"] == "recent-file"
+
+
+async def test_text_with_recent_media_skips_media_reference_when_not_about_media():
+    image_metadata = {
+        "file_id": "recent-file",
+        "file_unique_id": "telegram-unique",
+        "mime_type": "image/png",
+        "file_size": 100,
+        "source": "attached",
+        "telegram_message_id": 30,
+    }
+    provider = MediaFlowProvider(
+        media=SERIAL_MEDIA,
+        plan={
+            "mode": "final_answer",
+            "visual_intent": "none",
+            "tool_calls": [],
+            "final_answer": "На вторник встреч нет.",
+            "should_answer_normally": False,
+            "language": "ru",
+        },
+    )
+
+    async with session_scope() as session:
+        users = UserService(session)
+        user = await users.ensure_user(TEST_TELEGRAM_ID)
+        conversation = await users.ensure_main_conversation(user)
+        session.add(Message(
+            conversation_id=conversation.id,
+            user_id=user.id,
+            role=MessageRole.USER,
+            content="[image] serial sticker",
+            char_count=22,
+            metadata_={"images": [image_metadata], "media_context": SERIAL_MEDIA},
+            content_json={"text": "", "images": [image_metadata], "media_context": SERIAL_MEDIA},
+        ))
+        await session.flush()
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=39,
+            text="а на следующий вторник?",
+        )
+
+    assert provider.calls == ["agent_planner"]
+    assert result.reply_text == "На вторник встреч нет."
+
+
+async def test_text_followup_ask_user_plan_uses_focused_vision_for_explicit_recent_media():
+    image_metadata = {
+        "file_id": "recent-file",
+        "file_unique_id": "telegram-unique",
+        "mime_type": "image/png",
+        "file_size": 100,
+        "source": "attached",
+        "telegram_message_id": 30,
+    }
+    provider = MediaFlowProvider(
+        media=SERIAL_MEDIA,
+        plan={
+            "mode": "ask_user",
+            "referenced_media_id": "recent:telegram-unique",
+            "visual_intent": "action_evidence",
+            "tool_calls": [],
+            "final_answer": "I can see the serial number highlighted in red. How should I send it?",
+            "should_answer_normally": True,
+        },
+        focused={
+            "answer": "LXRJ00C058135065891601",
+            "facts": ["serial: LXRJ00C058135065891601"],
+            "visible_text": ["S/N:LXRJ00C058135065891601"],
+            "confidence": 0.95,
+            "limitations": [],
+        },
+    )
+
+    async def image_loader(metadata: dict) -> ImageInput:
+        return _test_image(
+            file_id=metadata["file_id"],
+            file_unique_id=metadata["file_unique_id"],
+            source="latest",
+        )
+
+    async with session_scope() as session:
+        users = UserService(session)
+        user = await users.ensure_user(TEST_TELEGRAM_ID)
+        conversation = await users.ensure_main_conversation(user)
+        session.add(Message(
+            conversation_id=conversation.id,
+            user_id=user.id,
+            role=MessageRole.USER,
+            content="[image] serial sticker",
+            char_count=22,
+            metadata_={"images": [image_metadata], "media_context": SERIAL_MEDIA},
+            content_json={"text": "", "images": [image_metadata], "media_context": SERIAL_MEDIA},
+        ))
+        await session.flush()
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=40,
+            text="send only what is marked in red",
+            image_loader=image_loader,
+        )
+
+    assert provider.calls == ["agent_planner", "focused_vision"]
+    assert result.reply_text == "LXRJ00C058135065891601"
 
 
 async def test_text_followup_uses_media_router_when_planner_does_not_select_recent_media():
@@ -3087,6 +3222,47 @@ async def test_agent_loop_progress_uses_english_for_ru_it_es_model_statuses():
     assert "Смотрю календарь..." not in "\n".join(progress_updates)
     assert "Controllo il calendario..." not in "\n".join(progress_updates)
     assert "Revisando tareas..." not in "\n".join(progress_updates)
+
+
+async def test_initial_progress_respects_fixed_reply_language_before_planner():
+    progress_updates: list[str] = []
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "language": "en",
+        "user_visible_status": "Checking task details...",
+        "tool_calls": [
+            {
+                "name": "create_task",
+                "args": {
+                    "title": "Проверить latency progress",
+                    "priority": "medium",
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                },
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID, language_code="en")
+        user.settings = {
+            **user.settings,
+            "reply_language_mode": "fixed",
+            "reply_language": "ru",
+        }
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=51,
+            text="Create a task: Проверить latency progress",
+            on_progress=progress_updates.append,
+        )
+
+    assert progress_updates[0] == "⏳ Понимаю запрос..."
 
 
 async def test_agent_loop_status_falls_back_when_language_mismatches():
