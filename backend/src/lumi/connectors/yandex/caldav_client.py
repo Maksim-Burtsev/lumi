@@ -11,6 +11,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -82,21 +83,23 @@ class YandexCalendarConnector:
     async def list_events(self, *, start: datetime, end: datetime) -> list[YandexEventDTO]:
         return await asyncio.to_thread(self._list_events_sync, start, end)
 
-    def _client(self):
+    def _client(self) -> Any:
         import caldav
 
-        return caldav.DAVClient(
+        caldav_module: Any = caldav
+        return caldav_module.DAVClient(
             url=self._url, username=self._username, password=self._password
         )
 
     def _list_events_sync(self, start: datetime, end: datetime) -> list[YandexEventDTO]:
         import caldav
 
+        caldav_module: Any = caldav
         client = self._client()
         try:
             try:
                 calendars = client.principal().calendars()
-            except caldav.lib.error.AuthorizationError as exc:
+            except caldav_module.lib.error.AuthorizationError as exc:
                 raise YandexNotConnectedError(
                     "Яндекс отклонил логин/пароль приложения — проверь пароль приложения"
                 ) from exc

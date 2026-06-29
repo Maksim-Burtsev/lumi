@@ -823,7 +823,7 @@ class ContextBuilder:
             role = "assistant" if msg.role == MessageRole.ASSISTANT else "user"
             messages.append(LLMMessage(role=role, content=msg.content))
         if current_images:
-            current_parts = [LLMTextPart(text=current_text), *current_images]
+            current_parts: list[LLMTextPart | LLMImagePart] = [LLMTextPart(text=current_text), *current_images]
             messages.append(LLMMessage(role="user", content=current_parts))
         else:
             messages.append(LLMMessage(role="user", content=current_text))

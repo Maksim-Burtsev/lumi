@@ -6,14 +6,18 @@ memories so they enter every future context. "-" skips a question, /cancel abort
 
 from __future__ import annotations
 
+from typing import Literal
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lumi.assistant.memory_service import MemoryService
 from lumi.assistant.schemas import MemoryCandidate
 from lumi.db.models import User
 
+MemoryCandidateKind = Literal["preference", "fact", "project", "instruction", "contact", "workflow", "other"]
+
 # (memory kind, question, prefix for the stored memory text)
-INTRO_QUESTIONS: list[tuple[str, str, str]] = [
+INTRO_QUESTIONS: list[tuple[MemoryCandidateKind, str, str]] = [
     ("fact",
      "Чем ты занимаешься? Роль, компания или проект — пару фраз.",
      "Род занятий"),

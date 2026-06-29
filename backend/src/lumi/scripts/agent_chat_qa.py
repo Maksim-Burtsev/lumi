@@ -243,7 +243,7 @@ async def _free_day_for_qa(telegram_user_id: int):
 async def _event_window(telegram_user_id: int, event_id: str) -> str:
     async with session_scope() as session:
         user = await UserService(session).ensure_user(telegram_user_id)
-        event = await CalendarService(session).get_event(user, event_id)
+        event = await CalendarService(session).get_event(user, uuid.UUID(event_id))
         if event is None:
             return "missing"
         return (
@@ -270,7 +270,7 @@ async def _event_id_by_title(telegram_user_id: int, title: str) -> str:
 async def _task_due(telegram_user_id: int, task_id: str) -> str:
     async with session_scope() as session:
         user = await UserService(session).ensure_user(telegram_user_id)
-        task = await TaskService(session).get(user, task_id)
+        task = await TaskService(session).get(user, uuid.UUID(task_id))
         if task is None or task.due_at is None:
             return "missing"
         return f"{task.title} {utc_to_local(task.due_at, user.timezone).strftime('%H:%M')} {task.status.value}"

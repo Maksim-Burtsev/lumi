@@ -41,7 +41,8 @@ def _entry_published(entry) -> datetime | None:  # type: ignore[no-untyped-def]
         parsed = getattr(entry, attr, None)
         if parsed:
             try:
-                return datetime(*parsed[:6], tzinfo=UTC)
+                year, month, day, hour, minute, second = parsed[:6]
+                return datetime(year, month, day, hour, minute, second, tzinfo=UTC)
             except (TypeError, ValueError):
                 continue
     return None

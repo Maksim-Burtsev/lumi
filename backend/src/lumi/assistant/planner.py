@@ -253,17 +253,17 @@ def _signals_to_plan(signals: ExtractedSignals) -> AgentPlan:
             confidence=candidate.confidence,
             requires_confirmation=candidate.requires_confirmation,
         ))
-    for request in signals.calendar_requests:
+    for calendar_request in signals.calendar_requests:
         calls.append(PlannedToolCall(
             name={
                 "plan_day": "plan_day",
                 "find_focus_slot": "find_focus_slot",
                 "create_internal_block": "create_internal_calendar_block",
                 "create_external_event": "create_external_calendar_event",
-            }[request.kind],
-            args=request.model_dump(mode="json", exclude={"kind"}),
-            confidence=request.confidence,
-            requires_confirmation=request.requires_confirmation,
+            }[calendar_request.kind],
+            args=calendar_request.model_dump(mode="json", exclude={"kind"}),
+            confidence=calendar_request.confidence,
+            requires_confirmation=calendar_request.requires_confirmation,
         ))
     for automation in signals.automation_requests:
         calls.append(PlannedToolCall(
@@ -272,19 +272,19 @@ def _signals_to_plan(signals: ExtractedSignals) -> AgentPlan:
             confidence=automation.confidence,
             requires_confirmation=automation.requires_confirmation,
         ))
-    for request in signals.email_requests:
-        if request.kind == "triage":
+    for email_request in signals.email_requests:
+        if email_request.kind == "triage":
             calls.append(PlannedToolCall(
                 name="email_triage",
-                args=request.model_dump(mode="json", exclude={"kind"}),
-                confidence=request.confidence,
+                args=email_request.model_dump(mode="json", exclude={"kind"}),
+                confidence=email_request.confidence,
             ))
-    for request in signals.news_requests:
-        if request.kind == "digest":
+    for news_request in signals.news_requests:
+        if news_request.kind == "digest":
             calls.append(PlannedToolCall(
                 name="news_digest",
-                args=request.model_dump(mode="json", exclude={"kind"}),
-                confidence=request.confidence,
+                args=news_request.model_dump(mode="json", exclude={"kind"}),
+                confidence=news_request.confidence,
             ))
 
     return AgentPlan(

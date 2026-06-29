@@ -380,10 +380,10 @@ class CalendarSyncService:
         expires_at_raw = watch.get("expires_at")
         if expires_at_raw:
             try:
-                expires_at = datetime.fromisoformat(expires_at_raw)
-                if expires_at.tzinfo is None:
-                    expires_at = expires_at.replace(tzinfo=_UTC)
-                if expires_at - utc_now() > timedelta(days=1):
+                watch_expires_at = datetime.fromisoformat(expires_at_raw)
+                if watch_expires_at.tzinfo is None:
+                    watch_expires_at = watch_expires_at.replace(tzinfo=_UTC)
+                if watch_expires_at - utc_now() > timedelta(days=1):
                     return
             except ValueError:
                 pass
@@ -400,7 +400,7 @@ class CalendarSyncService:
         except Exception as exc:  # noqa: BLE001 - sync itself must not fail on watch setup
             connector.metadata_ = {**metadata, "calendar_watch_error": str(exc)[:500]}
             return
-        expires_at = None
+        expires_at: datetime | None = None
         expiration_ms = response.get("expiration")
         if expiration_ms:
             try:

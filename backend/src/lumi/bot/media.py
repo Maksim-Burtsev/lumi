@@ -235,11 +235,16 @@ def build_logical_message(items: list[ClassifiedAttachmentMessage]) -> LogicalMe
         rejection_reason = "unsupported_attachment"
     elif len(image_refs) > 1:
         rejection_reason = "multiple_supported_images"
+    primary_message_id = first.message_id
+    if (
+        rejection_reason is None
+        and len(image_refs) == 1
+        and image_refs[0].telegram_message_id is not None
+    ):
+        primary_message_id = image_refs[0].telegram_message_id
     return LogicalMessage(
         chat_id=first.chat_id,
-        primary_message_id=image_refs[0].telegram_message_id
-        if rejection_reason is None and len(image_refs) == 1
-        else first.message_id,
+        primary_message_id=primary_message_id,
         text=text,
         media_group_id=first.media_group_id,
         supported_images=image_refs,

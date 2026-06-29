@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
@@ -246,7 +247,7 @@ async def plan_day(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
-    kwargs = {}
+    kwargs: dict[str, Any] = {}
     if payload and payload.date:
         kwargs["plan_date"] = payload.date  # YYYY-MM-DD, плановать можно любой день
     return await start_background_run(session, user, "daily_planning", **kwargs)

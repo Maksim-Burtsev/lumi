@@ -50,6 +50,20 @@ def _deadline_job_id(turn_id: uuid.UUID, enqueue_at) -> str:
     return f"assistant-turn:{turn_id}:at:{int(enqueue_at.timestamp() * 1000)}"
 
 
+async def _answer_callback_message(callback: CallbackQuery, text: str) -> None:
+    message = callback.message
+    answer = getattr(message, "answer", None)
+    if callable(answer):
+        await answer(text)
+
+
+async def _edit_callback_message(callback: CallbackQuery, text: str) -> None:
+    message = callback.message
+    edit_text = getattr(message, "edit_text", None)
+    if callable(edit_text):
+        await edit_text(text)
+
+
 def _compact_text(value: object, *, limit: int = 4000) -> str:
     text = " ".join(str(value or "").split()).strip()
     return text[:limit]
@@ -234,13 +248,15 @@ async def _check_allowed(event: TgMessage | CallbackQuery) -> bool:
             return True
     if get_settings().log_unauthorized_telegram_ids:
         log.warning("unauthorized telegram user",
-                    fields={"telegram_user_id": tg_user.id, "username": tg_user.username})
+                    fields={"telegram_user_id": tg_user.id, "username": getattr(tg_user, "username", None)})
     return False
 
 
 async def _request_access(message: TgMessage) -> None:
     """Create the user row and ping the owner with approve/deny buttons."""
     tg_user = message.from_user
+    if tg_user is None:
+        return
     async with session_scope() as session:
         users = UserService(session)
         user = await users.ensure_user(
@@ -365,6 +381,8 @@ async def cmd_start(message: TgMessage) -> None:
         await _request_access(message)
         return
     tg_user = message.from_user
+    if tg_user is None:
+        return
     async with session_scope() as session:
         users = UserService(session)
         user = await users.ensure_user(
@@ -398,12 +416,15 @@ async def cmd_start(message: TgMessage) -> None:
 async def cmd_intro(message: TgMessage) -> None:
     if not await _check_allowed(message):
         return
+    tg_user = message.from_user
+    if tg_user is None:
+        return
     from lumi.bot.intro import INTRO_START_TEXT, set_intro_step
 
     async with session_scope() as session:
         users = UserService(session)
         user = await users.ensure_user(
-            message.from_user.id,
+            tg_user.id,
             telegram_chat_id=message.chat.id,
             language_code=_language_code(message),
         )
@@ -415,11 +436,14 @@ async def cmd_intro(message: TgMessage) -> None:
 async def cmd_cancel(message: TgMessage) -> None:
     if not await _check_allowed(message):
         return
+    tg_user = message.from_user
+    if tg_user is None:
+        return
     from lumi.bot.intro import intro_step, set_intro_step
 
     async with session_scope() as session:
         user = await UserService(session).ensure_user(
-            message.from_user.id,
+            tg_user.id,
             language_code=_language_code(message),
         )
         if intro_step(user) is not None:
@@ -459,10 +483,13 @@ async def cmd_app(message: TgMessage) -> None:
 async def cmd_today(message: TgMessage) -> None:
     if not await _check_allowed(message):
         return
+    tg_user = message.from_user
+    if tg_user is None:
+        return
     async with session_scope() as session:
         users = UserService(session)
         user = await users.ensure_user(
-            message.from_user.id,
+            tg_user.id,
             telegram_chat_id=message.chat.id,
             language_code=_language_code(message),
         )
@@ -490,10 +517,13 @@ async def cmd_today(message: TgMessage) -> None:
 async def cmd_tasks(message: TgMessage) -> None:
     if not await _check_allowed(message):
         return
+    tg_user = message.from_user
+    if tg_user is None:
+        return
     async with session_scope() as session:
         users = UserService(session)
         user = await users.ensure_user(
-            message.from_user.id,
+            tg_user.id,
             telegram_chat_id=message.chat.id,
             language_code=_language_code(message),
         )
@@ -503,10 +533,13 @@ async def cmd_tasks(message: TgMessage) -> None:
 
 
 async def _enqueue_automation_run(message: TgMessage, automation_type: str, started_text: str) -> None:
+    tg_user = message.from_user
+    if tg_user is None:
+        return
     async with session_scope() as session:
         users = UserService(session)
         user = await users.ensure_user(
-            message.from_user.id,
+            tg_user.id,
             telegram_chat_id=message.chat.id,
             language_code=_language_code(message),
         )
@@ -556,13 +589,16 @@ async def cmd_email(message: TgMessage) -> None:
 async def cmd_settings(message: TgMessage) -> None:
     if not await _check_allowed(message):
         return
+    tg_user = message.from_user
+    if tg_user is None:
+        return
     settings = get_settings()
     from lumi.connectors.google.auth import connection_status
 
     google = await connection_status()
     async with session_scope() as session:
         user = await UserService(session).ensure_user(
-            message.from_user.id,
+            tg_user.id,
             telegram_chat_id=message.chat.id,
             language_code=_language_code(message),
         )
@@ -586,6 +622,9 @@ async def cmd_settings(message: TgMessage) -> None:
 @router.message((F.text & ~F.text.startswith("/")) | F.photo | F.document | F.video)
 async def on_chat_message(message: TgMessage, bot: Bot, telegram_update_id: int | None = None) -> None:
     if not await _check_allowed(message):
+        return
+    tg_user = message.from_user
+    if tg_user is None:
         return
     telegram_update_id_var.set(telegram_update_id or message.message_id)
     batch_item = classify_attachment_message(message)
@@ -627,7 +666,7 @@ async def on_chat_message(message: TgMessage, bot: Bot, telegram_update_id: int 
 
     async with session_scope() as session:
         user = await UserService(session).ensure_user(
-            message.from_user.id,
+            tg_user.id,
             telegram_chat_id=message.chat.id,
             language_code=_language_code(message),
         )
@@ -654,14 +693,14 @@ async def on_chat_message(message: TgMessage, bot: Bot, telegram_update_id: int 
         async with session_scope() as session:
             result = await TelegramIntakeService(session).ingest_chat_message(
                 update_id=telegram_update_id,
-                telegram_user_id=message.from_user.id,
+                telegram_user_id=tg_user.id,
                 telegram_chat_id=message.chat.id,
                 telegram_message_id=logical_message.primary_message_id,
                 text=turn_text,
-                username=message.from_user.username,
-                first_name=message.from_user.first_name,
-                last_name=message.from_user.last_name,
-                language_code=message.from_user.language_code,
+                username=tg_user.username,
+                first_name=tg_user.first_name,
+                last_name=tg_user.last_name,
+                language_code=tg_user.language_code,
                 image_metadata=image_ref.to_metadata() if image_ref else None,
                 ignored_attachments=[],
                 payload={
@@ -692,7 +731,7 @@ async def on_chat_message(message: TgMessage, bot: Bot, telegram_update_id: int 
             async with session_scope() as session:
                 await TurnService(session).set_status_message(result.turn.id, status_message_id)
 
-    enqueue_kwargs = {}
+    enqueue_kwargs: dict[str, Any] = {}
     if result.enqueue_at is not None:
         enqueue_kwargs["_defer_until"] = result.enqueue_at
         enqueue_kwargs["_job_id"] = _deadline_job_id(result.turn.id, result.enqueue_at)
@@ -713,7 +752,11 @@ async def on_confirmation(callback: CallbackQuery) -> None:
     if not await _check_allowed(callback):
         await callback.answer()
         return
-    action, _, confirmation_id_raw = callback.data.partition(":")
+    data = callback.data
+    if data is None:
+        await callback.answer("Неизвестное действие")
+        return
+    action, _, confirmation_id_raw = data.partition(":")
     accept = action == "confirm"
     try:
         confirmation_id = uuid.UUID(confirmation_id_raw)
@@ -740,8 +783,7 @@ async def on_confirmation(callback: CallbackQuery) -> None:
         else:
             text = "Ок, не делаю."
     await callback.answer("Готово" if accept else "Отменено")
-    if callback.message:
-        await callback.message.answer(text)
+    await _answer_callback_message(callback, text)
 
 
 @router.callback_query(F.data.startswith("rename_pick:"))
@@ -816,8 +858,7 @@ async def on_rename_pick(callback: CallbackQuery) -> None:
             text = "Эта задача уже закрыта или удалена — переименовывать нечего."
 
     await callback.answer("Готово" if result.status == "renamed" else "Неактуально")
-    if callback.message:
-        await callback.message.answer(text)
+    await _answer_callback_message(callback, text)
 
 
 @router.callback_query(F.data.startswith("update_pick:"))
@@ -901,8 +942,7 @@ async def on_update_pick(callback: CallbackQuery) -> None:
         )
 
     await callback.answer("Готово")
-    if callback.message:
-        await callback.message.answer(text)
+    await _answer_callback_message(callback, text)
 
 
 @router.callback_query(F.data.startswith("task_done:"))
@@ -910,7 +950,11 @@ async def on_task_done(callback: CallbackQuery) -> None:
     if not await _check_allowed(callback):
         await callback.answer()
         return
-    task_id_raw = callback.data.split(":", 1)[1]
+    data = callback.data
+    if data is None:
+        await callback.answer("Неизвестное действие")
+        return
+    task_id_raw = data.split(":", 1)[1]
     async with session_scope() as session:
         user = await UserService(session).ensure_user(callback.from_user.id)
         tasks = TaskService(session)
@@ -924,8 +968,7 @@ async def on_task_done(callback: CallbackQuery) -> None:
         await tasks.complete_task(user, task)
         title = task.title
     await callback.answer("Отмечено выполненным ✓")
-    if callback.message:
-        await callback.message.answer(f"✓ Готово: {title}")
+    await _answer_callback_message(callback, f"✓ Готово: {title}")
 
 
 @router.callback_query(F.data.startswith("task_snooze:"))
@@ -933,7 +976,11 @@ async def on_task_snooze(callback: CallbackQuery) -> None:
     if not await _check_allowed(callback):
         await callback.answer()
         return
-    parts = callback.data.split(":")
+    data = callback.data
+    if data is None:
+        await callback.answer("Неизвестное действие")
+        return
+    parts = data.split(":")
     task_id_raw = parts[1] if len(parts) > 1 else ""
     preset = parts[2] if len(parts) > 2 else "1h"
     async with session_scope() as session:
@@ -1024,8 +1071,7 @@ async def on_snooze_pick(callback: CallbackQuery) -> None:
         text = f"Готово: отложил «{task.title}» до {when}."
 
     await callback.answer(f"Отложено до {when}")
-    if callback.message:
-        await callback.message.answer(text)
+    await _answer_callback_message(callback, text)
 
 
 @router.callback_query(F.data.startswith("block_confirm:"))
@@ -1033,7 +1079,11 @@ async def on_block_confirm(callback: CallbackQuery) -> None:
     if not await _check_allowed(callback):
         await callback.answer()
         return
-    block_id_raw = callback.data.split(":", 1)[1]
+    data = callback.data
+    if data is None:
+        await callback.answer("Неизвестное действие")
+        return
+    block_id_raw = data.split(":", 1)[1]
     async with session_scope() as session:
         user = await UserService(session).ensure_user(callback.from_user.id)
         from lumi.services.calendar import CalendarService
@@ -1061,8 +1111,7 @@ async def on_block_confirm(callback: CallbackQuery) -> None:
             end_label=fmt_local(event.end_at, user.timezone, "%H:%M"),
         )
     await callback.answer(_block_confirm_accepted_text(language))
-    if callback.message:
-        await callback.message.answer(text)
+    await _answer_callback_message(callback, text)
 
 
 @router.callback_query(F.data == "email_create_tasks")
@@ -1111,12 +1160,13 @@ async def on_email_create_tasks(callback: CallbackQuery) -> None:
             thread.metadata_ = {**thread.metadata_, "task_created": str(task.id)}
             created.append(task.title)
     await callback.answer(f"Создано задач: {len(created)}")
-    if callback.message and created:
-        await callback.message.answer(
+    if created:
+        await _answer_callback_message(
+            callback,
             "Создал задачи из почты:\n" + "\n".join(f"• {t}" for t in created)
         )
-    elif callback.message:
-        await callback.message.answer("Новых задач из почты не нашлось — всё уже создано.")
+    else:
+        await _answer_callback_message(callback, "Новых задач из почты не нашлось — всё уже создано.")
 
 
 @router.callback_query(F.data.startswith("access_grant:") | F.data.startswith("access_deny:"))
@@ -1124,7 +1174,11 @@ async def on_access_decision(callback: CallbackQuery) -> None:
     if callback.from_user is None or not _is_owner(callback.from_user.id):
         await callback.answer()
         return
-    action, _, raw_id = callback.data.partition(":")
+    data = callback.data
+    if data is None:
+        await callback.answer("Ошибка")
+        return
+    action, _, raw_id = data.partition(":")
     try:
         target_id = int(raw_id)
     except ValueError:
@@ -1143,10 +1197,11 @@ async def on_access_decision(callback: CallbackQuery) -> None:
             action="access_granted" if grant else "access_denied", details={},
         )
     await callback.answer("Принят" if grant else "Отклонен")
-    if callback.message:
-        await callback.message.edit_text(
-            (callback.message.text or "") + ("\n\n✓ Доступ выдан" if grant else "\n\n✗ Отклонено")
-        )
+    message_text = str(getattr(callback.message, "text", "") or "")
+    await _edit_callback_message(
+        callback,
+        message_text + ("\n\n✓ Доступ выдан" if grant else "\n\n✗ Отклонено"),
+    )
     from lumi.services.notifier import send_telegram_message
 
     if grant:
@@ -1162,7 +1217,11 @@ async def on_run_automation(callback: CallbackQuery) -> None:
     if not await _check_allowed(callback):
         await callback.answer()
         return
-    automation_type = callback.data.split(":", 1)[1]
+    data = callback.data
+    if data is None:
+        await callback.answer("Неизвестный тип")
+        return
+    automation_type = data.split(":", 1)[1]
     if automation_type not in JOB_BY_AUTOMATION_TYPE:
         await callback.answer("Неизвестный тип")
         return
@@ -1179,11 +1238,11 @@ async def on_run_automation(callback: CallbackQuery) -> None:
         agent_run_id=run_id, trigger="telegram_callback",
     )
     await callback.answer("Запустил" if job_id else "Очередь недоступна")
-    if callback.message and job_id:
+    if job_id:
         names = {
             "news_digest": "Собираю дайджест…",
             "email_triage": "Разбираю почту…",
             "daily_planning": "Собираю план дня…",
             "calendar_sync": "Синхронизирую календарь…",
         }
-        await callback.message.answer(names.get(automation_type, "Запустил…"))
+        await _answer_callback_message(callback, names.get(automation_type, "Запустил…"))

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import uuid
 from datetime import datetime
 from typing import Any, Literal
@@ -502,8 +503,15 @@ class MemoryUpdateRequest(BaseModel):
     memory_id: uuid.UUID
     text: str | None = None
     kind: str | None = None
-    importance: float | None = None
+    importance: int | None = Field(default=None, ge=1, le=5)
     confidence: float = 0.0
+
+    @field_validator("importance", mode="before")
+    @classmethod
+    def normalize_importance(cls, value: Any) -> Any:
+        if isinstance(value, float) and 0 <= value <= 1:
+            return max(1, math.ceil(value * 5))
+        return value
 
     @field_validator("text", "kind")
     @classmethod
