@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import select
 
+from lumi.assistant import orchestrator as orchestrator_module
 from lumi.assistant.media import ImageInput
 from lumi.assistant.memory_service import MemoryService
 from lumi.assistant.orchestrator import AssistantOrchestrator, _schedule_read_request_from_text
@@ -3224,7 +3225,7 @@ async def test_agent_loop_progress_uses_english_for_ru_it_es_model_statuses():
     assert "Revisando tareas..." not in "\n".join(progress_updates)
 
 
-async def test_initial_progress_respects_fixed_reply_language_before_planner():
+async def test_initial_progress_uses_clear_thinking_status_before_planner():
     progress_updates: list[str] = []
     provider = AgentPlannerProvider({
         "mode": "tool_calls",
@@ -3262,7 +3263,7 @@ async def test_initial_progress_respects_fixed_reply_language_before_planner():
             on_progress=progress_updates.append,
         )
 
-    assert progress_updates[0] == "⏳ Понимаю запрос..."
+    assert progress_updates[0] == "Thinking..."
 
 
 async def test_agent_loop_status_falls_back_when_language_mismatches():
@@ -4612,13 +4613,24 @@ async def test_update_task_missing_candidate_asks_safely_without_fake_success():
     assert any(c.tool_name == "update_task" and c.status == "skipped" for c in tool_calls)
 
 
-async def test_agent_planner_final_answer_for_ordinary_question_uses_no_tool():
+async def test_agent_planner_final_answer_for_ordinary_question_uses_no_tool(monkeypatch):
+    monkeypatch.setattr(orchestrator_module, "REPLY_PREVIEW_INTERVAL_SECONDS", 0, raising=False)
+    answer = (
+        "Я умею вести задачи, календарь и напоминания. "
+        "Могу помогать планировать день, находить свободные окна, "
+        "создавать задачи и объяснять, что уже сделано."
+    )
+    deltas: list[str] = []
     provider = AgentPlannerProvider({
         "mode": "final_answer",
         "tool_calls": [],
-        "final_answer": "Я умею вести задачи, календарь и напоминания.",
+        "final_answer": answer,
         "should_answer_normally": True,
     })
+
+    async def on_delta(text: str) -> None:
+        deltas.append(text)
+
     async with session_scope() as session:
         orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
         result = await orchestrator.handle_user_message(
@@ -4626,15 +4638,19 @@ async def test_agent_planner_final_answer_for_ordinary_question_uses_no_tool():
             telegram_chat_id=TEST_TELEGRAM_ID,
             telegram_message_id=53,
             text="что ты умеешь?",
+            on_reply_delta=on_delta,
         )
         tool_calls = (await session.execute(select(ToolCall))).scalars().all()
 
-    assert result.reply_text == "Я умею вести задачи, календарь и напоминания."
+    assert result.reply_text == answer
     assert provider.final_chat_calls == 0
     assert tool_calls == []
+    assert len(deltas) > 1
+    assert deltas[-1] == answer
 
 
 async def test_agent_planner_rename_tool_call_updates_db_without_final_llm():
+    deltas: list[str] = []
     provider = AgentPlannerProvider({
         "mode": "tool_calls",
         "tool_calls": [
@@ -4659,6 +4675,10 @@ async def test_agent_planner_rename_tool_call_updates_db_without_final_llm():
         task_id = task.id
 
         orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+
+        async def on_delta(text: str) -> None:
+            deltas.append(text)
+
         result = await orchestrator.handle_user_message(
             telegram_user_id=TEST_TELEGRAM_ID,
             telegram_chat_id=TEST_TELEGRAM_ID,
@@ -4667,6 +4687,7 @@ async def test_agent_planner_rename_tool_call_updates_db_without_final_llm():
                 "Rename the task about accept/reject scenario to "
                 "«Свой аналог session в Lumi интегрировать»"
             ),
+            on_reply_delta=on_delta,
         )
 
     async with session_scope() as session:
@@ -4676,6 +4697,7 @@ async def test_agent_planner_rename_tool_call_updates_db_without_final_llm():
     assert provider.final_chat_calls == 0
     assert updated.title == "Свой аналог session в Lumi интегрировать"
     assert result.reply_text.startswith("Renamed task")
+    assert deltas == [result.reply_text]
 
 
 async def test_low_confidence_explicit_rename_uses_backend_result_not_final_llm():

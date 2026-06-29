@@ -6,6 +6,7 @@ final LLM reply -> save reply -> (maybe) compaction flag.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import uuid
 from collections.abc import Awaitable, Callable
@@ -166,6 +167,9 @@ AGENT_LOOP_MAX_TOOL_CALLS = 8
 CALENDAR_TELEGRAM_EVENT_LIMIT = 5
 CALENDAR_TELEGRAM_FREE_GAP_MINUTES = 15
 NEUTRAL_PROGRESS_STATUS = "Working on it..."
+REPLY_PREVIEW_INTERVAL_SECONDS = 0.8
+REPLY_PREVIEW_MIN_CHARS = 72
+REPLY_PREVIEW_MAX_UPDATES = 4
 READ_ONLY_LOOP_TOOLS = {
     "read_tasks",
     "read_calendar_events",
@@ -790,7 +794,7 @@ def _safe_no_answer_reply(language: str | None) -> str:
 
 def _progress_status_for_kind(progress_kind: str | None) -> str:
     return {
-        "understanding": "Reading message...",
+        "understanding": "Thinking...",
         "reading_calendar": "Checking your calendar...",
         "resolving": "Working on it...",
         "writing": "Making changes...",
@@ -841,7 +845,49 @@ def _safe_user_visible_status(
 
 
 def _initial_progress_status(user: User) -> str:
-    return "Reading message..."
+    return "Thinking..."
+
+
+def _reply_preview_steps(reply_text: str) -> list[str]:
+    text = reply_text.strip()
+    if not text:
+        return []
+    if len(text) <= REPLY_PREVIEW_MIN_CHARS * 2:
+        return [text]
+    max_updates = max(2, REPLY_PREVIEW_MAX_UPDATES)
+    step_count = min(max_updates, max(2, len(text) // REPLY_PREVIEW_MIN_CHARS))
+    targets = [
+        max(REPLY_PREVIEW_MIN_CHARS, round(len(text) * index / step_count))
+        for index in range(1, step_count)
+    ]
+    previews: list[str] = []
+    previous = ""
+    for target in targets:
+        if target >= len(text):
+            continue
+        boundary = text.rfind(" ", 0, target)
+        if boundary < REPLY_PREVIEW_MIN_CHARS // 2:
+            boundary = target
+        preview = text[:boundary].rstrip()
+        if preview and preview != previous:
+            previews.append(preview + "...")
+            previous = preview
+    if not previews or previews[-1] != text:
+        previews.append(text)
+    return previews
+
+
+async def _emit_reply_preview(on_reply_delta, reply_text: str) -> None:
+    if on_reply_delta is None:
+        return
+    steps = _reply_preview_steps(reply_text)
+    for index, preview in enumerate(steps):
+        try:
+            await on_reply_delta(preview)
+        except Exception:  # noqa: BLE001 — reply preview must never break turn completion
+            return
+        if index < len(steps) - 1 and REPLY_PREVIEW_INTERVAL_SECONDS > 0:
+            await asyncio.sleep(REPLY_PREVIEW_INTERVAL_SECONDS)
 
 
 def _looks_like_multi_step_request(text: str) -> bool:
@@ -2103,6 +2149,7 @@ class AssistantOrchestrator:
             self.session.add(outbound)
             await self.runs.mark_completed(run, result_summary="; ".join(action_results))
             needs_compaction = await self._needs_compaction(conversation)
+            await _emit_reply_preview(on_reply_delta, reply_text)
             return AssistantResult(
                 reply_text=reply_text,
                 buttons=buttons,
@@ -2126,6 +2173,7 @@ class AssistantOrchestrator:
             self.session.add(outbound)
             await self.runs.mark_completed(run, result_summary=reply_text[:2000])
             needs_compaction = await self._needs_compaction(conversation)
+            await _emit_reply_preview(on_reply_delta, reply_text)
             return AssistantResult(
                 reply_text=reply_text,
                 buttons=buttons,
@@ -2148,6 +2196,7 @@ class AssistantOrchestrator:
             self.session.add(outbound)
             await self.runs.mark_completed(run, result_summary="planner_no_final_answer")
             needs_compaction = await self._needs_compaction(conversation)
+            await _emit_reply_preview(on_reply_delta, reply_text)
             return AssistantResult(
                 reply_text=reply_text,
                 buttons=buttons,

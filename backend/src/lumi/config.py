@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     telegram_turn_retry_base_seconds: int = 10
     telegram_max_queue_per_user: int = 25
     telegram_use_rich_messages: bool = False
+    telegram_stream_final_replies: bool = True
+    telegram_stream_edit_interval_seconds: float = 1.15
+    telegram_stream_min_chars: int = 48
+    telegram_stream_max_chars: int = 3900
 
     # --- Worker ---
     worker_max_jobs: int = 10
