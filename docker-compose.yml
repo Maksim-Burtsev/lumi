@@ -41,6 +41,7 @@ services:
     volumes:
       - ./data/files:/app/data/files
       - ./data/secrets:/app/data/secrets
+      - ./scripts:/scripts:ro
       - ./frontend/dist:/app/static/app:ro
     depends_on:
       postgres:

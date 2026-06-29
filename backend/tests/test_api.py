@@ -312,14 +312,14 @@ async def test_confirmations_accept_and_reject(client, db_session):
     assert body["executed"] is True
     assert body["confirmation"]["status"] == "accepted"
     assert body["confirmation"]["risk_class"] == "write_internal_memory"
-    assert body["result_text"] == "Запомнил."
+    assert body["result_text"] == "Remembered."
 
     rejected = await client.post(f"/api/confirmations/{reject_item.id}/reject")
     assert rejected.status_code == 200
     body = rejected.json()
     assert body["executed"] is False
     assert body["confirmation"]["status"] == "rejected"
-    assert body["result_text"] == "Ок, не делаю."
+    assert body["result_text"] == "Ok, I won't do it."
 
     again = await client.post(f"/api/confirmations/{reject_item.id}/reject")
     assert again.status_code == 409
