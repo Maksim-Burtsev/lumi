@@ -15,17 +15,17 @@ Lumi:  Done.
 
 ## MVP capabilities
 
-- **Chat assistant** on MiniMax M3: stateless LLM, all state stored in Lumi's own database
+- **Chat assistant** on MiniMax M3: stateless LLM, all state stored in Lumi's own database; replies match the latest user message language, while progress/status text stays English
 - **Tasks and reminders** from natural language, with confirmations for ambiguous cases
-- **Calendar**: internal calendar plus Google Calendar and Yandex.Calendar sync (CalDAV, read-only), free slots, day planning with focus blocks
+- **Calendar**: internal calendar, Google Calendar sync and confirmed event creation, Yandex.Calendar read-only CalDAV sync, free slots, day planning with focus blocks
 - **Email**: read-only Gmail triage for replies, important mail, and task candidates from emails
 - **News**: scheduled topic digests from Google News RSS
-- **Memory**: Lumi remembers preferences and projects; everything is visible and manageable in the Mini App
+- **Memory**: Lumi remembers preferences and projects as part of assistant context
 - **Automations**: user-defined cron schedules for news, email, daily planning, sync, and custom prompts; no default automations are enabled
-- **Mini App**: Today, Tasks, Calendar, Inbox, News, Automations, Memory, Settings, Agent Runs
+- **Mini App**: English-only UI with Today, Tasks, Calendar, Inbox, and More (News, Automations, Settings, Agent Runs)
 - **Observability**: every agent run, LLM call, and action is logged
 
-Security by default: Telegram ID allowlist, initData validation, confirmation for external writes (calendar/email), and no LLM access to shell or files.
+Security by default: Telegram ID allowlist, initData validation, confirmation for Google Calendar writes and automation enabling, no email send/delete, and no LLM access to shell or files.
 
 ## Architecture at a glance
 
@@ -66,7 +66,7 @@ make setup                 # creates .env from the template and data/ directorie
 make frontend-build        # builds the Mini App into frontend/dist
 make up-detached           # starts all 6 services
 make migrate               # applies migrations
-make seed                  # creates the user, news topics, and automations
+make seed                  # creates/checks the user and main conversation
 
 # 4. Check without external keys
 make smoke                 # end-to-end mock LLM check; should print SMOKE OK
@@ -132,6 +132,7 @@ In the Mini App: Settings -> Yandex.Calendar -> username + app password (id.yand
 3. Run `make google-auth-local`; a browser opens for consent.
 
 After that, `/email`, calendar sync, and morning email triage work. Without Google, Lumi still works fully with the internal calendar.
+External Google Calendar event creation is available only after explicit confirmation.
 
 ## Bot commands
 
@@ -155,6 +156,7 @@ make lint            # ruff
 make smoke           # end-to-end mock LLM check
 make down            # stop everything
 make reset-local-db  # remove volumes and start over
+COMPOSE_PROJECT_NAME=lumi_<task_slug> make agent-clean  # clean an agent branch runtime
 ```
 
 ## Documentation
