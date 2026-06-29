@@ -1,4 +1,6 @@
 .PHONY: setup up up-detached down logs migrate revision seed test lint smoke \
+	assistant-core assistant-core-task assistant-core-calendar assistant-core-memory \
+	assistant-eval-coverage minimax-planner-smoke qa-required \
 	frontend-install frontend-build frontend-dev miniapp-local-up dev-auth-up dev-auth-down tunnel \
 	google-auth-local reset-local-db help
 
@@ -15,6 +17,9 @@ help:
 	@echo "  make migrate           apply DB migrations"
 	@echo "  make seed              create user/conversation/topics/automations"
 	@echo "  make smoke             end-to-end smoke test with mock LLM"
+	@echo "  make assistant-core    backend assistant regression flows with scripted LLM"
+	@echo "  make minimax-planner-smoke real MiniMax planner routing smoke"
+	@echo "  make qa-required       print checks required by changed paths"
 	@echo "  make test              run backend pytest inside docker"
 	@echo "  make logs              tail logs of all services"
 	@echo "  make google-auth-local local Google OAuth flow (browser)"
@@ -59,6 +64,27 @@ lint:
 
 smoke:
 	docker compose run --rm -e LLM_PROVIDER=mock api python -m lumi.scripts.smoke
+
+assistant-core:
+	docker compose run --rm -e LLM_PROVIDER=mock api pytest -q tests/test_assistant_core_flows.py tests/test_assistant_eval_coverage.py
+
+assistant-core-task:
+	docker compose run --rm -e LLM_PROVIDER=mock -e ASSISTANT_CORE_AREA=task api pytest -q tests/test_assistant_core_flows.py
+
+assistant-core-calendar:
+	docker compose run --rm -e LLM_PROVIDER=mock -e ASSISTANT_CORE_AREA=calendar api pytest -q tests/test_assistant_core_flows.py
+
+assistant-core-memory:
+	docker compose run --rm -e LLM_PROVIDER=mock -e ASSISTANT_CORE_AREA=memory,chat api pytest -q tests/test_assistant_core_flows.py
+
+assistant-eval-coverage:
+	docker compose run --rm -e LLM_PROVIDER=mock api pytest -q tests/test_assistant_eval_coverage.py
+
+minimax-planner-smoke:
+	docker compose run --rm -e LLM_PROVIDER=minimax api python -m lumi.evals.minimax_planner_smoke
+
+qa-required:
+	python3 scripts/qa_required.py
 
 frontend-install:
 	cd frontend && npm install

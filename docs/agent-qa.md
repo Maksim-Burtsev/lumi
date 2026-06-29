@@ -2,6 +2,38 @@
 
 This checklist is mandatory for non-trivial Lumi changes, especially bot, Mini App, planner/orchestrator, tools, DB state, observability, and Telegram UX changes.
 
+## Backend assistant regression gates
+
+Run the selector before finalizing any code branch:
+
+```bash
+make qa-required
+```
+
+Execute the commands it prints. The selector maps changed paths to targeted
+checks so frontend-only or docs-only diffs do not pay for backend assistant
+regression.
+
+Core backend assistant commands:
+
+| Command | Purpose | Typical trigger |
+|---|---|---|
+| `make assistant-core` | Scripted planner + real orchestrator/services/DB baseline | assistant harness, schemas, tool catalog |
+| `make assistant-core-task` | Task/project subset | `services/tasks.py` |
+| `make assistant-core-calendar` | Calendar/schedule subset | `services/calendar.py`, schedule rendering |
+| `make assistant-core-memory` | Memory/chat subset | memory or user context changes |
+| `make assistant-eval-coverage` | Tool registry coverage manifest | new/changed assistant tool |
+| `make minimax-planner-smoke` | Real MiniMax planner routing smoke; no tool execution | prompts, planner, tool catalog, LLM provider |
+
+`make assistant-core` is backend-only. It does not use Telegram Web, Mini App,
+browser automation, tunnels, or live calendar connectors. Assertions use
+`tool_calls`, DB state, pending confirmations, `agent_runs.metadata`, and
+rule-based reply checks; they do not compare exact natural-language snapshots.
+
+`make minimax-planner-smoke` requires `MINIMAX_API_KEY`. It calls real MiniMax
+through the planner and validates mode/tool/key arguments for canonical prompts,
+but does not execute backend tools.
+
 ## Canonical manual path
 
 Primary manual path: Telegram Web in Chrome, automated through Chrome/CDP. It uses the real user session, the real Telegram bot, and the same Mini App iframe the user sees.

@@ -2627,7 +2627,9 @@ class AssistantOrchestrator:
                     buttons=buttons,
                 )
             elif call.name == "complete_task":
-                await self._apply_complete_task_tool(user=user, run=run, call=call, results=results)
+                await self._apply_complete_task_tool(
+                    user=user, run=run, call=call, results=results, buttons=buttons
+                )
             elif call.name == "snooze_task":
                 await self._apply_snooze_task_tool(
                     user=user, run=run, call=call, results=results, buttons=buttons
