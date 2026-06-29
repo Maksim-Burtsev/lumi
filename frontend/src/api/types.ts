@@ -86,8 +86,6 @@ export type ThemeMode = 'telegram' | 'light' | 'dark';
 
 export interface PatchSettingsInput {
   timezone?: string;
-  locale?: string;
-  reply_language_mode?: 'auto' | 'app_locale';
   time_format?: TimeFormat;
   theme_mode?: ThemeMode;
   settings?: Record<string, unknown>;

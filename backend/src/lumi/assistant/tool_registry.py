@@ -44,7 +44,6 @@ TOOL_NAMES = {
     "read_settings",
     "update_settings",
     "read_connectors",
-    "set_language",
 }
 
 TOOL_CATALOG = """Available backend tools:
@@ -83,15 +82,14 @@ TOOL_CATALOG = """Available backend tools:
 - update_news_topic(topic_id, title?, query?, language?, enabled?, config?)
 - run_news_digest()
 - read_settings()
-- update_settings(timezone?, locale?, reply_language_mode?, reply_language?, time_format?)
+- update_settings(timezone?, time_format?)
 - read_connectors()
-- set_language(app_locale?: en|ru, reply_language_mode?: auto|fixed|app_locale, reply_language?: language tag)
 
 Rules:
 - Return tool calls as JSON only. Do not claim that a tool was executed.
-- Set user_visible_status on every non-final step: one short line in the user's language,
+- Set user_visible_status on every non-final step: one short English line,
   max 80 chars, no links, no markdown, no success/completion claims before tools succeed.
-- user_visible_status must use the same language as the language field; ignore older chat history language.
+- user_visible_status is always English. The language field still follows the latest user message.
 - progress_kind is for logs only: understanding, reading_calendar, resolving, writing, or answering.
 - Do not request domain lists up front. The backend loads relevant data after a tool call.
 - Any user request to create, read, update, complete, or snooze Lumi-managed state must use mode=tool_calls.
@@ -130,10 +128,9 @@ Rules:
 - For action-only commands set should_answer_normally=false.
 - For ordinary chat or questions without needed tools use mode=final_answer or ask_user.
 - If the user asks to change the app language, interface language, bot language,
-  reply language, or to return replies to automatic language matching, use set_language.
-  app_locale controls Mini App UI. reply_language_mode=auto means match each message;
-  reply_language_mode=fixed means always reply using reply_language; reply_language may be any normalized
-  language tag like it, es, de; reply_language_mode=app_locale means always reply using the app language.
+  reply language, or to return replies to automatic language matching, use mode=final_answer
+  and explain briefly in the latest user message language: the Mini App UI is English only,
+  while assistant replies automatically match each message.
 - If the user refers to media, set referenced_media_id to one available_media id.
 - available_media is listed newest-first. For an elliptical follow-up, prefer the first matching media item.
 - Use visual_intent=read_only for visual questions. Use visual_intent=action_evidence only for explicit backend actions based on media.
@@ -160,12 +157,12 @@ Examples:
   resolve_entity(query="Dalma", domains=["tasks","calendar"]), should_answer_normally=false.
 - User asks "what can you do?" -> mode=final_answer, no tool calls.
 - User asks to show/open/list Lumi tasks -> mode=tool_calls, read_tasks(...), should_answer_normally=false.
-- User asks "Always answer in Russian and switch the app to Russian" -> mode=tool_calls,
-  set_language(app_locale="ru", reply_language_mode="app_locale"), should_answer_normally=false.
-- User asks "Always answer in Italian" -> mode=tool_calls,
-  set_language(reply_language_mode="fixed", reply_language="it"), should_answer_normally=false.
-- User asks "ответы снова авто" -> mode=tool_calls,
-  set_language(reply_language_mode="auto"), should_answer_normally=false.
+- User asks "Always answer in Russian and switch the app to Russian" -> mode=final_answer,
+  final_answer says UI is English only and replies match each message.
+- User asks "Always answer in Italian" -> mode=final_answer,
+  final_answer says fixed reply language is not configurable and replies match each message.
+- User asks "ответы снова авто" -> mode=final_answer,
+  final_answer says replies already match each message.
 """
 
 
@@ -186,7 +183,7 @@ AGENT_PLANNER_SCHEMA_HINT = {
     ],
     "focused_vision": "null unless mode=needs_focused_vision; then object with non-empty question, reason, confidence",
     "final_answer": "string|null",
-    "user_visible_status": "short user-language progress line, max 80 chars, no links/markdown/success claims",
+    "user_visible_status": "short English progress line, max 80 chars, no links/markdown/success claims",
     "progress_kind": "understanding|reading_calendar|resolving|writing|answering|null",
     "should_answer_normally": "boolean",
     "language": "latest user message language tag, e.g. en|ru|it|es|de",

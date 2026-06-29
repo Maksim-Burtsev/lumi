@@ -21,6 +21,7 @@ from lumi.db.models import (
     ToolCall,
     User,
 )
+from lumi.i18n import ensure_language_settings, normalize_app_locale
 from lumi.services.action_policy import policy_for_action, policy_to_dict
 from lumi.services.planning_settings import normalize_planning_settings
 
@@ -30,7 +31,7 @@ def _iso(dt) -> str | None:
 
 
 def user_to_dict(user: User) -> dict[str, Any]:
-    settings = dict(user.settings or {})
+    settings = ensure_language_settings(user.settings)
     settings["planning"] = normalize_planning_settings(settings)
     return {
         "id": str(user.id),
@@ -39,7 +40,7 @@ def user_to_dict(user: User) -> dict[str, Any]:
         "first_name": user.first_name,
         "last_name": user.last_name,
         "timezone": user.timezone,
-        "locale": user.locale,
+        "locale": normalize_app_locale(user.locale),
         "settings": settings,
         "created_at": _iso(user.created_at),
         "last_seen_at": _iso(user.last_seen_at),

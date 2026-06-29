@@ -9,7 +9,7 @@ Lumi does not trust the LLM provider to store the conversation. Every call recei
 Section order (`backend/src/lumi/assistant/context_builder.py`):
 
 1. **System prompt**: Lumi identity and behavior rules (`prompts.py: LUMI_SYSTEM_PROMPT`)
-2. **Runtime**: current date/time in the user's timezone, locale, channel
+2. **Runtime**: current date/time in the user's timezone, English UI locale, reply/progress language policy, channel
 3. **Profile**: name, username, timezone
 4. **Permissions**: what can be automatic and what requires confirmation
 5. **Active tasks as current state** (<=15, with overdue items) and **today's calendar**

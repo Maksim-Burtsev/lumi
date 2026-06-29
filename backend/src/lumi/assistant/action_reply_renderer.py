@@ -176,9 +176,4 @@ class ActionReplyRenderer:
         planner_language: str | None,
         language_settings: dict,
     ) -> str:
-        mode = language_settings.get("reply_language_mode")
-        if mode == "fixed":
-            return normalize_reply_language(str(language_settings.get("reply_language") or "en"))
-        if mode == "app_locale":
-            return normalize_reply_language(user_locale)
         return normalize_reply_language(planner_language)

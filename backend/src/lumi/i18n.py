@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 DEFAULT_APP_LOCALE = "en"
-SUPPORTED_APP_LOCALES = ("en", "ru")
+SUPPORTED_APP_LOCALES = ("en",)
 DEFAULT_REPLY_LANGUAGE_MODE = "auto"
 DEFAULT_REPLY_LANGUAGE = "en"
 DEFAULT_TIME_FORMAT = "auto"
@@ -31,8 +31,7 @@ def primary_language_tag(value: str | None) -> str | None:
 
 
 def normalize_app_locale(value: str | None) -> str:
-    primary = primary_language_tag(value)
-    return primary if primary in SUPPORTED_APP_LOCALES else DEFAULT_APP_LOCALE
+    return DEFAULT_APP_LOCALE
 
 
 def validate_app_locale(value: str | None) -> str:
@@ -48,10 +47,6 @@ def normalize_reply_language(value: str | None) -> str:
 
 
 def normalize_reply_language_mode(value: str | None) -> ReplyLanguageMode:
-    if value == "fixed":
-        return "fixed"
-    if value == "app_locale":
-        return "app_locale"
     return DEFAULT_REPLY_LANGUAGE_MODE
 
 
@@ -90,25 +85,17 @@ def validate_theme_mode(value: str | None) -> ThemeMode:
 def ensure_language_settings(settings: dict | None) -> dict:
     merged = dict(settings or {})
     merged.setdefault("locale_source", "telegram")
-    merged.setdefault("reply_language_mode", DEFAULT_REPLY_LANGUAGE_MODE)
-    merged.setdefault("reply_language", DEFAULT_REPLY_LANGUAGE)
     merged.setdefault("time_format", DEFAULT_TIME_FORMAT)
     merged.setdefault("theme_mode", DEFAULT_THEME_MODE)
-    merged["reply_language_mode"] = normalize_reply_language_mode(
-        str(merged.get("reply_language_mode") or "")
-    )
-    merged["reply_language"] = normalize_reply_language(
-        str(merged.get("reply_language") or DEFAULT_REPLY_LANGUAGE)
-    )
+    merged["locale_source"] = "telegram"
+    merged["reply_language_mode"] = DEFAULT_REPLY_LANGUAGE_MODE
+    merged["reply_language"] = DEFAULT_REPLY_LANGUAGE
     merged["time_format"] = normalize_time_format(str(merged.get("time_format") or ""))
     merged["theme_mode"] = normalize_theme_mode(str(merged.get("theme_mode") or ""))
     return merged
 
 
 def app_locale_name(locale: str) -> str:
-    locale = normalize_app_locale(locale)
-    if locale == "ru":
-        return "Russian"
     return "English"
 
 
@@ -119,13 +106,4 @@ def format_language_settings_reply(
     reply_language: str | None = None,
     language: str | None,
 ) -> str:
-    mode = normalize_reply_language_mode(reply_language_mode)
-    name = app_locale_name(app_locale)
-    if mode == "app_locale":
-        return f"Language updated: {name}. Replies now use the app language."
-    if mode == "fixed":
-        return (
-            f"Language updated: {name}. "
-            f"Replies now use {normalize_reply_language(reply_language or language)}."
-        )
-    return f"Language updated: {name}. Replies now match each message."
+    return "Reply language settings are not configurable. Replies match each message."

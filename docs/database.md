@@ -39,7 +39,7 @@ erDiagram
 
 | Table | Purpose | Written by | Read by |
 |---|---|---|---|
-| `users` | Telegram profile, timezone, locale, settings | bot, api (ensure_user) | all |
+| `users` | Telegram profile, timezone, English UI locale, settings | bot, api (ensure_user) | all |
 | `conversations` | one `main` chat per user (partial unique index) | UserService | orchestrator, compaction |
 | `messages` | all chat messages; `is_compacted` excludes rows from context | orchestrator | ContextBuilder, compaction, `/api/messages` |
 | `conversation_summaries` | compacted history versions | CompactionService | ContextBuilder |
