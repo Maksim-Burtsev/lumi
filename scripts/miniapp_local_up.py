@@ -4,10 +4,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import shlex
 import subprocess
-import sys
 import time
 import urllib.parse
 import urllib.request
@@ -16,14 +17,31 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ENV_PATH = ROOT / ".env"
-TUNNEL_SESSION = "lumi-cloudflared"
-TUNNEL_LOG = Path("/tmp/lumi-cloudflared.log")
 TUNNEL_RE = re.compile(r"https://[a-zA-Z0-9.-]+\.trycloudflare\.com")
 
 
 def run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
     print("+", " ".join(cmd), flush=True)
     return subprocess.run(cmd, cwd=ROOT, check=check, text=True)
+
+
+def compose_project_name() -> str:
+    return os.environ.get("COMPOSE_PROJECT_NAME", "").strip() or "lumi"
+
+
+def local_api_port() -> str:
+    return os.environ.get("LUMI_API_PORT", "").strip() or "8000"
+
+
+def tunnel_session_name() -> str:
+    return os.environ.get("LUMI_TUNNEL_SESSION", "").strip() or f"{compose_project_name()}-cloudflared"
+
+
+def tunnel_log_path() -> Path:
+    value = os.environ.get("LUMI_TUNNEL_LOG", "").strip()
+    if value:
+        return Path(value)
+    return Path(f"/tmp/{tunnel_session_name()}.log")
 
 
 def read_env() -> dict[str, str]:
@@ -65,18 +83,23 @@ def require_tools() -> None:
 
 
 def start_tunnel() -> str:
-    run(["tmux", "kill-session", "-t", TUNNEL_SESSION], check=False)
-    TUNNEL_LOG.unlink(missing_ok=True)
-    command = f"cloudflared tunnel --url http://localhost:8000 --no-autoupdate >{TUNNEL_LOG} 2>&1"
-    run(["tmux", "new-session", "-d", "-s", TUNNEL_SESSION, command])
+    session = tunnel_session_name()
+    log_path = tunnel_log_path()
+    run(["tmux", "kill-session", "-t", session], check=False)
+    log_path.unlink(missing_ok=True)
+    command = (
+        f"cloudflared tunnel --url http://localhost:{local_api_port()} --no-autoupdate "
+        f">{shlex.quote(str(log_path))} 2>&1"
+    )
+    run(["tmux", "new-session", "-d", "-s", session, command])
 
     for _ in range(45):
-        if TUNNEL_LOG.exists():
-            match = TUNNEL_RE.search(TUNNEL_LOG.read_text(errors="ignore"))
+        if log_path.exists():
+            match = TUNNEL_RE.search(log_path.read_text(errors="ignore"))
             if match:
                 return match.group(0)
         time.sleep(1)
-    tail = TUNNEL_LOG.read_text(errors="ignore")[-2000:] if TUNNEL_LOG.exists() else ""
+    tail = log_path.read_text(errors="ignore")[-2000:] if log_path.exists() else ""
     raise SystemExit(f"Tunnel URL was not created. Log tail:\n{tail}")
 
 
