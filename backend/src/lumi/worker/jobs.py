@@ -101,6 +101,10 @@ def _without_none(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if value is not None}
 
 
+def _telegram_message_not_modified(exc: Exception) -> bool:
+    return "message is not modified" in str(exc).lower()
+
+
 def _plain_text_rich_html(text: str) -> str:
     return "".join(f"<p>{escape(line)}</p>" for line in text.splitlines() if line.strip())
 
@@ -179,7 +183,9 @@ async def send_turn_reply(
                         reply_markup=markup,
                     )
                     return True
-            except Exception:  # noqa: BLE001 — status edit can fail after restarts/deletes
+            except Exception as exc:  # noqa: BLE001 — status edit can fail after restarts/deletes
+                if _telegram_message_not_modified(exc):
+                    return True
                 log.exception("telegram status edit failed; falling back to send_message")
         if rich_html:
             if use_bot_api_rich:
@@ -216,7 +222,27 @@ async def send_turn_reply(
                 except Exception:  # noqa: BLE001
                     log.info("telegram status delete skipped after html fallback")
             return True
-        for i, chunk in enumerate(chunks):
+        start_index = 0
+        if turn.status_message_id and chunks:
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=turn.status_message_id,
+                    text=chunks[0],
+                    link_preview_options=link_preview_options,
+                    reply_markup=markup if len(chunks) == 1 else None,
+                )
+                start_index = 1
+                if len(chunks) == 1:
+                    return True
+            except Exception as exc:  # noqa: BLE001 — final delivery must still fall back to fresh messages
+                if _telegram_message_not_modified(exc):
+                    start_index = 1
+                    if len(chunks) == 1:
+                        return True
+                else:
+                    log.exception("telegram status edit failed; falling back to send_message")
+        for i, chunk in enumerate(chunks[start_index:], start=start_index):
             await bot.send_message(
                 chat_id=chat_id,
                 text=chunk,
@@ -457,6 +483,7 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
         "assistant turn acquired",
         fields={"turn_id": turn_id, "queue_wait_ms": queue_wait_ms, "retry_count": turn_snapshot["retry_count"]},
     )
+    turn_work_started_at = monotonic()
 
     payload = turn_snapshot["payload"]
     image = None
@@ -485,6 +512,11 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
 
     last_progress_text: str | None = None
     last_progress_at = 0.0
+    last_stream_text: str | None = None
+    last_stream_at = 0.0
+    first_stream_delta_at: float | None = None
+    stream_edit_count = 0
+    stream_edit_failed = False
 
     async def on_progress(status_text: str) -> None:
         nonlocal last_progress_at, last_progress_text
@@ -499,6 +531,38 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
         last_progress_text = status_text
         last_progress_at = now
         await edit_turn_status_message(user=user, turn=turn, status_text=status_text)
+
+    async def on_reply_delta(visible_text: str) -> None:
+        nonlocal first_stream_delta_at, last_stream_at, last_stream_text, stream_edit_count, stream_edit_failed
+        if stream_edit_failed or not settings.telegram_stream_final_replies or not turn_snapshot["status_message_id"]:
+            return
+        status_text = telegram_plain_text(visible_text).strip()
+        if not status_text or status_text == last_stream_text:
+            return
+        max_chars = max(256, min(4000, settings.telegram_stream_max_chars))
+        status_text = status_text[:max_chars]
+        now = monotonic()
+        if first_stream_delta_at is None:
+            first_stream_delta_at = now
+        if last_stream_text is not None:
+            grew_by = len(status_text) - len(last_stream_text)
+            interval = max(0.5, settings.telegram_stream_edit_interval_seconds)
+            min_chars = max(1, settings.telegram_stream_min_chars)
+            if now - last_stream_at < interval and grew_by < min_chars:
+                return
+        ok = await edit_turn_status_message(user=user, turn=turn, status_text=status_text)
+        if not ok:
+            stream_edit_failed = True
+            return
+        last_stream_text = status_text
+        last_stream_at = now
+        stream_edit_count += 1
+
+    reply_delta_callback = (
+        on_reply_delta
+        if settings.telegram_stream_final_replies and turn_snapshot["status_message_id"]
+        else None
+    )
 
     try:
         async with session_scope() as session:
@@ -515,6 +579,7 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
                 message_context=payload,
                 image_loader=image_loader,
                 on_progress=on_progress,
+                on_reply_delta=reply_delta_callback,
                 touch_last_seen=False,
             )
     except Exception as exc:  # noqa: BLE001
@@ -539,7 +604,15 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
                 metadata = run.metadata_ or {}
                 latency_ms = dict(metadata.get("latency_ms") or {})
                 latency_ms["queue_wait_ms"] = queue_wait_ms
-                run.metadata_ = {**metadata, "latency_ms": latency_ms}
+                stream_stats = dict(metadata.get("telegram_streaming") or {})
+                if first_stream_delta_at is not None:
+                    stream_stats["first_reply_delta_ms"] = max(
+                        0,
+                        int((first_stream_delta_at - turn_work_started_at) * 1000),
+                    )
+                stream_stats["edit_count"] = stream_edit_count
+                stream_stats["edit_failed"] = stream_edit_failed
+                run.metadata_ = {**metadata, "latency_ms": latency_ms, "telegram_streaming": stream_stats}
 
     reply_kwargs = {
         "user": user,

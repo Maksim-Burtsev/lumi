@@ -256,6 +256,86 @@ async def test_send_turn_reply_can_attach_mini_app_button(monkeypatch):
     assert calls[-1] == ("close", {})
 
 
+async def test_send_turn_reply_edits_status_message_for_first_long_plain_chunk(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+
+    class FakeBot:
+        def __init__(self, token: str) -> None:
+            self.token = token
+            self.session = SimpleNamespace(close=self._close)
+
+        async def _close(self) -> None:
+            calls.append(("close", {}))
+
+        async def edit_message_text(self, **kwargs):
+            calls.append(("edit_message_text", kwargs))
+            return SimpleNamespace(message_id=9001)
+
+        async def send_message(self, **kwargs):
+            calls.append(("send_message", kwargs))
+            return SimpleNamespace(message_id=9002)
+
+    monkeypatch.setattr("aiogram.Bot", FakeBot)
+    monkeypatch.setattr(
+        jobs,
+        "get_settings",
+        lambda: SimpleNamespace(telegram_bot_token="123:test", telegram_use_rich_messages=False),
+    )
+
+    delivered = await jobs.send_turn_reply(
+        user=SimpleNamespace(telegram_chat_id=777, telegram_user_id=777),
+        turn=SimpleNamespace(telegram_chat_id=777, status_message_id=9001),
+        reply_text="x" * 5000,
+        buttons=[],
+    )
+
+    assert delivered is True
+    assert [name for name, _ in calls] == ["edit_message_text", "send_message", "close"]
+    assert calls[0][1]["message_id"] == 9001
+    assert calls[0][1]["text"] == "x" * 4096
+    assert calls[1][1]["text"] == "x" * 904
+
+
+async def test_send_turn_reply_treats_status_not_modified_as_delivered(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+
+    class FakeBot:
+        def __init__(self, token: str) -> None:
+            self.token = token
+            self.session = SimpleNamespace(close=self._close)
+
+        async def _close(self) -> None:
+            calls.append(("close", {}))
+
+        async def edit_message_text(self, **kwargs):
+            calls.append(("edit_message_text", kwargs))
+            raise RuntimeError(
+                "Telegram server says - Bad Request: message is not modified: "
+                "specified new message content and reply markup are exactly the same"
+            )
+
+        async def send_message(self, **kwargs):
+            calls.append(("send_message", kwargs))
+            return SimpleNamespace(message_id=9002)
+
+    monkeypatch.setattr("aiogram.Bot", FakeBot)
+    monkeypatch.setattr(
+        jobs,
+        "get_settings",
+        lambda: SimpleNamespace(telegram_bot_token="123:test", telegram_use_rich_messages=False),
+    )
+
+    delivered = await jobs.send_turn_reply(
+        user=SimpleNamespace(telegram_chat_id=777, telegram_user_id=777),
+        turn=SimpleNamespace(telegram_chat_id=777, status_message_id=9001),
+        reply_text="already streamed",
+        buttons=[],
+    )
+
+    assert delivered is True
+    assert [name for name, _ in calls] == ["edit_message_text", "close"]
+
+
 async def test_intake_debounces_fast_messages_into_one_turn():
     async with session_scope() as session:
         intake = TelegramIntakeService(session, now=lambda: BASE_NOW)
@@ -712,6 +792,7 @@ async def test_process_assistant_turn_runs_orchestrator_and_completes(monkeypatc
     assert summary == "turn completed"
     assert seen["telegram_message_id"] == 901
     assert seen["text"] == "ответь"
+    assert seen["on_reply_delta"] is None
     assert seen["touch_last_seen"] is False
     assert sent == ["готово"]
     assert requeued == []
@@ -758,6 +839,156 @@ async def test_process_assistant_turn_edits_progress_status(monkeypatch):
 
     assert summary == "turn completed"
     assert edits == [(9101, "Checking your calendar...")]
+
+
+async def test_process_assistant_turn_streams_final_reply_deltas(monkeypatch):
+    started = utc_now() - timedelta(seconds=10)
+    edits: list[tuple[int, str]] = []
+
+    async with session_scope() as session:
+        result = await TelegramIntakeService(session, now=lambda: started).ingest_chat_message(
+            update_id=1452,
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=912,
+            text="summarize my day",
+            status_message_id=9102,
+        )
+        turn_id = result.turn.id
+
+    class FakeOrchestrator:
+        def __init__(self, session) -> None:
+            self.session = session
+
+        async def handle_user_message(self, **kwargs):
+            await kwargs["on_reply_delta"]("Today")
+            await kwargs["on_reply_delta"](
+                "Today you have 3 events and one open focus window after lunch."
+            )
+            return AssistantResult(
+                reply_text="Today you have 3 events and one open focus window after lunch.",
+                buttons=[],
+                needs_compaction=False,
+            )
+
+    async def fake_edit_turn_status_message(*, user, turn, status_text):
+        edits.append((turn.status_message_id, status_text))
+        return True
+
+    async def fake_send_turn_reply(*, user, turn, reply_text, buttons):
+        return True
+
+    monkeypatch.setattr(jobs, "AssistantOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(jobs, "edit_turn_status_message", fake_edit_turn_status_message)
+    monkeypatch.setattr(jobs, "send_turn_reply", fake_send_turn_reply)
+
+    summary = await jobs.process_assistant_turn({}, str(turn_id))
+
+    assert summary == "turn completed"
+    assert edits == [
+        (9102, "Today"),
+        (9102, "Today you have 3 events and one open focus window after lunch."),
+    ]
+
+
+async def test_process_assistant_turn_throttles_streaming_deltas(monkeypatch):
+    started = utc_now() - timedelta(seconds=10)
+    edits: list[str] = []
+
+    async with session_scope() as session:
+        result = await TelegramIntakeService(session, now=lambda: started).ingest_chat_message(
+            update_id=1453,
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=913,
+            text="write a long reply",
+            status_message_id=9103,
+        )
+        turn_id = result.turn.id
+
+    class FakeClock:
+        def __init__(self) -> None:
+            self.now = 0.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    clock = FakeClock()
+
+    class FakeOrchestrator:
+        def __init__(self, session) -> None:
+            self.session = session
+
+        async def handle_user_message(self, **kwargs):
+            await kwargs["on_reply_delta"]("a")
+            clock.now = 0.2
+            await kwargs["on_reply_delta"]("ab")
+            clock.now = 0.4
+            await kwargs["on_reply_delta"]("abc")
+            clock.now = 1.2
+            await kwargs["on_reply_delta"]("abcd")
+            return AssistantResult(reply_text="abcd", buttons=[], needs_compaction=False)
+
+    async def fake_edit_turn_status_message(*, user, turn, status_text):
+        edits.append(status_text)
+        return True
+
+    async def fake_send_turn_reply(*, user, turn, reply_text, buttons):
+        return True
+
+    monkeypatch.setattr(jobs, "monotonic", clock)
+    monkeypatch.setattr(jobs, "AssistantOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(jobs, "edit_turn_status_message", fake_edit_turn_status_message)
+    monkeypatch.setattr(jobs, "send_turn_reply", fake_send_turn_reply)
+
+    summary = await jobs.process_assistant_turn({}, str(turn_id))
+
+    assert summary == "turn completed"
+    assert edits == ["a", "abcd"]
+
+
+async def test_process_assistant_turn_disables_streaming_after_edit_failure(monkeypatch):
+    started = utc_now() - timedelta(seconds=10)
+    edits: list[str] = []
+    sent: list[str] = []
+
+    async with session_scope() as session:
+        result = await TelegramIntakeService(session, now=lambda: started).ingest_chat_message(
+            update_id=1454,
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=914,
+            text="answer",
+            status_message_id=9104,
+        )
+        turn_id = result.turn.id
+
+    class FakeOrchestrator:
+        def __init__(self, session) -> None:
+            self.session = session
+
+        async def handle_user_message(self, **kwargs):
+            await kwargs["on_reply_delta"]("partial")
+            await kwargs["on_reply_delta"]("partial final")
+            return AssistantResult(reply_text="partial final", buttons=[], needs_compaction=False)
+
+    async def fake_edit_turn_status_message(*, user, turn, status_text):
+        edits.append(status_text)
+        return False
+
+    async def fake_send_turn_reply(*, user, turn, reply_text, buttons):
+        sent.append(reply_text)
+        return True
+
+    monkeypatch.setattr(jobs, "AssistantOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(jobs, "edit_turn_status_message", fake_edit_turn_status_message)
+    monkeypatch.setattr(jobs, "send_turn_reply", fake_send_turn_reply)
+
+    summary = await jobs.process_assistant_turn({}, str(turn_id))
+
+    assert summary == "turn completed"
+    assert edits == ["partial"]
+    assert sent == ["partial final"]
 
 
 async def test_delivery_failure_retries_and_does_not_complete(monkeypatch):
