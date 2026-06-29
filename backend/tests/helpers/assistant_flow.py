@@ -155,7 +155,10 @@ def _render_action_reply(prompt: str) -> dict[str, Any]:
 async def run_assistant_case(case: AssistantCase) -> AssistantCaseResult:
     async with session_scope() as session:
         users = UserService(session)
-        user = await users.ensure_user(TEST_TELEGRAM_ID, first_name="Тест", username="tester")
+        user = await users.ensure_user(TEST_TELEGRAM_ID, first_name="Alex", username="alex_planner")
+        user.timezone = "America/New_York"
+        user.locale = "en"
+        user.language_code = "en"
         await users.ensure_main_conversation(user)
         await seed_case(session, user, case.seed)
 
@@ -194,24 +197,24 @@ async def seed_case(session: AsyncSession, user: User, seed: str | None) -> None
     tasks = TaskService(session)
     calendar = CalendarService(session)
     if seed == "task_candidates":
-        await tasks.create_task(user, title="Dalma task", project="Personal", actor="user")
-        await tasks.create_task(user, title="Dalma notes", project="Work", actor="user")
+        await tasks.create_task(user, title="Onboarding checklist", project="Work", actor="user")
+        await tasks.create_task(user, title="Onboarding notes", project="Work", actor="user")
     elif seed == "task_project":
-        await tasks.create_task(user, title="Regression draft", project="Work", actor="user")
+        await tasks.create_task(user, title="Q3 budget review", project="Work", actor="user")
     elif seed == "calendar_busy":
         start = local_to_utc(datetime(2026, 6, 30, 14, 0), user.timezone)
         await calendar.create_internal_block(
             user,
-            title="Busy block",
+            title="Client check-in",
             start_at=start,
             end_at=start + timedelta(hours=1),
             created_by="user",
         )
-    elif seed == "calendar_dalma":
+    elif seed == "calendar_gym_block":
         start = local_to_utc(datetime(2026, 6, 30, 17, 0), user.timezone)
         await calendar.create_internal_block(
             user,
-            title="Dalma",
+            title="gym block",
             start_at=start,
             end_at=start + timedelta(hours=1),
             created_by="user",
@@ -222,7 +225,11 @@ async def seed_case(session: AsyncSession, user: User, seed: str | None) -> None
 
         await service.store_candidate(
             user,
-            MemoryCandidate(kind=MemoryKind.PREFERENCE.value, text="Люблю короткие ответы.", importance=4),
+            MemoryCandidate(
+                kind=MemoryKind.PREFERENCE.value,
+                text="I prefer short daily planning summaries.",
+                importance=4,
+            ),
             actor="user",
         )
     elif seed == "external_calendar":
