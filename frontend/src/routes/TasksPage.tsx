@@ -3,10 +3,8 @@ import { AnimatePresence, motion } from 'framer-motion';
 import {
   AlertCircle,
   ArrowLeft,
-  CalendarDays,
   CheckCircle2,
   ChevronRight,
-  FolderInput,
   FolderKanban,
   Plus,
   Search,
@@ -23,10 +21,9 @@ import {
   useSnoozeTask,
   useTasks,
 } from '../api/hooks';
-import type { AssistantSuggestion, Project, SnoozePreset, Task, TaskFilter } from '../api/types';
+import type { AssistantSuggestion, Project, SnoozePreset, Task } from '../api/types';
 import { TaskCard } from '../components/task/TaskCard';
 import { TaskEditSheet } from '../components/task/TaskEditSheet';
-import { Chip } from '../components/ui/Chip';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorState } from '../components/ui/ErrorState';
 import { Sheet } from '../components/ui/Sheet';
@@ -37,8 +34,9 @@ import type { AppLocale } from '../lib/i18n';
 import { useAppLocale } from '../lib/useAppLocale';
 import { haptic } from '../telegram/webapp';
 
-type TaskView = 'today' | 'projects' | 'review' | 'done';
-type ReviewMode = 'estimates' | 'due_dates' | 'projects';
+type TaskView = 'open' | 'projects' | 'review' | 'done';
+type OpenScope = 'today' | 'upcoming' | 'no_project' | 'backlog' | 'no_estimate' | 'no_date';
+type SearchScope = 'tasks' | 'projects' | 'done';
 type EstimateSuggestion = { id: string; taskId: string; title: string; minutes: number; reason?: string | null };
 type DueBucket = 'week' | 'backlog' | 'context';
 type DueDateDecision = {
@@ -61,10 +59,25 @@ type ProjectDecision = {
   confidence?: string | null;
   reason: string;
 };
+type ReviewGroup = {
+  key: string;
+  name: string;
+  count: number;
+  estimateCount: number;
+  dueDateCount: number;
+  projectCount: number;
+  tasks: Task[];
+};
+type ProjectReviewCounts = {
+  total: number;
+  estimates: number;
+  dueDates: number;
+  projects: number;
+};
 
 const COPY = {
   en: {
-    tabs: { today: 'Today', projects: 'Projects', review: 'Review', done: 'Done' },
+    tabs: { open: 'Open', today: 'Today', projects: 'Projects', review: 'Review', done: 'Done' },
     newTask: 'New task...',
     searchTasks: 'Search tasks',
     addTask: 'Add task',
@@ -74,6 +87,15 @@ const COPY = {
     emptyProjects: ['Projects will appear here', 'Add #project or set a project in a task.'],
     emptyReview: ['Nothing to review', 'Lumi will show estimates, due dates, and project suggestions here.'],
     emptyDone: ['No completed tasks yet', 'Completed tasks will stay here.'],
+    emptyOpen: ['No open tasks here', 'Try another view or add a task.'],
+    upcoming: 'Upcoming',
+    noProject: 'No project',
+    backlog: 'Backlog',
+    noEstimate: 'No estimate',
+    noDate: 'No date',
+    searchResults: 'Search results',
+    tasksFound: 'tasks found',
+    taskFound: 'task found',
     loadError: 'Could not load tasks.',
     createFailed: 'Could not create task',
     completeFailed: 'Could not complete task',
@@ -94,10 +116,16 @@ const COPY = {
     nextMove: 'Next move',
     next: 'Next',
     later: 'Later',
+    tasksInProject: 'Tasks in this project',
+    lumiSuggestions: 'Lumi suggestions',
     doneRecently: 'Done recently',
     open: 'Open',
     reviewHub: 'Review Hub',
     reviewSubtitle: 'Quick decisions Lumi can prepare without blocking capture',
+    reviewByProject: 'Review by project',
+    reviewProject: 'Review',
+    reviewProjectDecisions: 'Review project decisions',
+    reviewNoProjectDecisions: 'Review No project decisions',
     estimates: 'Estimates',
     estimatesHint: 'Time estimates ready to accept or edit',
     estimateSuggestions: 'Estimate suggestions',
@@ -119,6 +147,7 @@ const COPY = {
     needsContext: 'Needs context',
     suggestedDate: 'Suggested date',
     noDeadline: 'No deadline',
+    noDateAction: 'No date',
     suggestedProject: 'Suggested project',
     keepUnassigned: 'Keep unassigned',
     backlogCleanup: 'Backlog cleanup',
@@ -142,11 +171,11 @@ const COPY = {
     close: 'Close',
     skip: 'Skip',
     change: 'Change',
-    doNotEstimate: 'Do not estimate',
+    doNotEstimate: 'No estimate',
     custom: 'Custom',
   },
   ru: {
-    tabs: { today: 'Сегодня', projects: 'Проекты', review: 'Разбор', done: 'Готово' },
+    tabs: { open: 'Открыто', today: 'Сегодня', projects: 'Проекты', review: 'Разбор', done: 'Готово' },
     newTask: 'Новая задача...',
     searchTasks: 'Поиск задач',
     addTask: 'Добавить задачу',
@@ -156,6 +185,15 @@ const COPY = {
     emptyProjects: ['Проекты появятся здесь', 'Добавь задачу с #проектом или укажи проект в карточке задачи.'],
     emptyReview: ['Разбор пуст', 'Здесь будут оценки, сроки и проекты, где Lumi может помочь.'],
     emptyDone: ['Здесь появятся выполненные задачи', 'Отмечай задачи кружком слева — Lumi сохранит историю.'],
+    emptyOpen: ['Здесь нет открытых задач', 'Попробуй другой вид или добавь задачу.'],
+    upcoming: 'Дальше',
+    noProject: 'Без проекта',
+    backlog: 'Backlog',
+    noEstimate: 'Без оценки',
+    noDate: 'Без даты',
+    searchResults: 'Результаты поиска',
+    tasksFound: 'задач найдено',
+    taskFound: 'задача найдена',
     loadError: 'Не удалось загрузить задачи.',
     createFailed: 'Не удалось создать задачу',
     completeFailed: 'Не удалось выполнить',
@@ -176,10 +214,16 @@ const COPY = {
     nextMove: 'Следующий шаг',
     next: 'Дальше',
     later: 'Позже',
+    tasksInProject: 'Задачи в проекте',
+    lumiSuggestions: 'Предложения Lumi',
     doneRecently: 'Недавно готово',
     open: 'Открыть',
     reviewHub: 'Разбор',
     reviewSubtitle: 'Быстрые решения, которые Lumi подготовила без блокировки создания задач',
+    reviewByProject: 'Разбор по проектам',
+    reviewProject: 'Разбор',
+    reviewProjectDecisions: 'Разобрать решения проекта',
+    reviewNoProjectDecisions: 'Разобрать задачи без проекта',
     estimates: 'Оценки',
     estimatesHint: 'Оценки времени готовы к принятию или правке',
     estimateSuggestions: 'Предложенные оценки',
@@ -201,6 +245,7 @@ const COPY = {
     needsContext: 'Нужен контекст',
     suggestedDate: 'Предложенная дата',
     noDeadline: 'Без срока',
+    noDateAction: 'Без даты',
     suggestedProject: 'Предложенный проект',
     keepUnassigned: 'Оставить без проекта',
     backlogCleanup: 'Разбор Backlog',
@@ -224,20 +269,13 @@ const COPY = {
     close: 'Закрыть',
     skip: 'Пропустить',
     change: 'Изменить',
-    doNotEstimate: 'Не оценивать',
+    doNotEstimate: 'Без оценки',
     custom: 'Свое',
   },
 } satisfies Record<AppLocale, Record<string, unknown>>;
 
 function copyFor(locale: AppLocale) {
   return COPY[locale] as typeof COPY.en;
-}
-
-function viewToTaskFilter(view: TaskView): TaskFilter {
-  if (view === 'done') return 'done';
-  if (view === 'review') return 'review';
-  if (view === 'projects') return 'all';
-  return 'today';
 }
 
 function parseEstimateSuggestion(suggestion: AssistantSuggestion): EstimateSuggestion | null {
@@ -300,13 +338,6 @@ function formatDateDecisionLabel(dueAt: string | null, locale: AppLocale): strin
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(dueAt));
-}
-
-function dueBucketLabel(bucket: DueBucket, locale: AppLocale): string {
-  const copy = copyFor(locale);
-  if (bucket === 'week') return copy.likelyThisWeek;
-  if (bucket === 'backlog') return copy.somedayBacklog;
-  return copy.needsContext;
 }
 
 function parseDueDateSuggestion(suggestion: AssistantSuggestion, task: Task): DueDateDecision | null {
@@ -409,6 +440,127 @@ function matchesProject(project: Project, query: string): boolean {
   ].some((value) => value.toLocaleLowerCase().includes(normalized));
 }
 
+function isBacklogProject(project: Project): boolean {
+  return project.system_key === 'backlog' || project.name.toLocaleLowerCase() === 'backlog';
+}
+
+function isBacklogTask(task: Task, backlogProjectId?: string | null): boolean {
+  return (backlogProjectId !== null && backlogProjectId !== undefined && task.project_id === backlogProjectId)
+    || task.project?.toLocaleLowerCase() === 'backlog';
+}
+
+function isNoProjectTask(task: Task): boolean {
+  return !task.project_id && !task.project;
+}
+
+function dayBounds(date = new Date()): { start: Date; end: Date } {
+  const start = new Date(date);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return { start, end };
+}
+
+function isDueToday(task: Task, now = new Date()): boolean {
+  if (!task.due_at) return false;
+  const { end } = dayBounds(now);
+  return new Date(task.due_at) < end;
+}
+
+function isUpcoming(task: Task, now = new Date()): boolean {
+  if (!task.due_at) return false;
+  const { end } = dayBounds(now);
+  return new Date(task.due_at) >= end;
+}
+
+function taskMatchesOpenScope(task: Task, scope: OpenScope, backlogProjectId?: string | null): boolean {
+  if (scope === 'today') return isDueToday(task);
+  if (scope === 'upcoming') return isUpcoming(task);
+  if (scope === 'no_project') return isNoProjectTask(task);
+  if (scope === 'backlog') return isBacklogTask(task, backlogProjectId);
+  if (scope === 'no_estimate') return task.estimated_minutes === null && task.estimate_source !== 'skipped';
+  return task.due_at === null;
+}
+
+function groupKeyForTask(task: Task, backlogProjectId?: string | null): string {
+  if (isBacklogTask(task, backlogProjectId)) return 'project:backlog';
+  if (task.project_id) return `project:${task.project_id}`;
+  if (task.project) return `project-name:${task.project.toLocaleLowerCase()}`;
+  return 'no-project';
+}
+
+function groupKeyForProject(project: Project): string {
+  if (isBacklogProject(project)) return 'project:backlog';
+  return `project:${project.id}`;
+}
+
+function groupNameForTask(task: Task, locale: AppLocale, backlogProjectId?: string | null): string {
+  const copy = copyFor(locale);
+  if (isBacklogTask(task, backlogProjectId)) return copy.backlog;
+  return task.project ?? copy.noProject;
+}
+
+function reviewGroupAriaLabel(group: ReviewGroup, locale: AppLocale): string {
+  const copy = copyFor(locale);
+  if (group.key === 'no-project') return copy.reviewNoProjectDecisions;
+  return `${copy.reviewProject} ${group.name} decisions`;
+}
+
+function buildReviewGroups(
+  tasks: Task[],
+  estimates: EstimateSuggestion[],
+  dueDates: DueDateDecision[],
+  projects: ProjectDecision[],
+  locale: AppLocale,
+  backlogProjectId?: string | null,
+): ReviewGroup[] {
+  const taskById = new Map(tasks.map((task) => [task.id, task]));
+  const groups = new Map<string, ReviewGroup>();
+  const ensure = (task: Task) => {
+    const key = groupKeyForTask(task, backlogProjectId);
+    const existing = groups.get(key);
+    if (existing) {
+      if (!existing.tasks.some((item) => item.id === task.id)) existing.tasks.push(task);
+      return existing;
+    }
+    const group: ReviewGroup = {
+      key,
+      name: groupNameForTask(task, locale, backlogProjectId),
+      count: 0,
+      estimateCount: 0,
+      dueDateCount: 0,
+      projectCount: 0,
+      tasks: [task],
+    };
+    groups.set(key, group);
+    return group;
+  };
+  for (const suggestion of estimates) {
+    const task = taskById.get(suggestion.taskId);
+    if (!task) continue;
+    const group = ensure(task);
+    group.estimateCount += 1;
+    group.count += 1;
+  }
+  for (const decision of dueDates) {
+    const group = ensure(decision.task);
+    group.dueDateCount += 1;
+    group.count += 1;
+  }
+  for (const decision of projects) {
+    const group = ensure(decision.task);
+    group.projectCount += 1;
+    group.count += 1;
+  }
+  return [...groups.values()].sort((a, b) => {
+    if (a.key === 'no-project') return 1;
+    if (b.key === 'no-project') return -1;
+    if (a.key === 'project:backlog') return b.key === 'no-project' ? -1 : 1;
+    if (b.key === 'project:backlog') return a.key === 'no-project' ? 1 : -1;
+    return b.count - a.count || a.name.localeCompare(b.name, locale === 'ru' ? 'ru' : 'en');
+  });
+}
+
 function formatMinutes(minutes: number, locale: AppLocale): string {
   if (minutes < 60) return `${minutes} ${locale === 'en' ? 'min' : 'мин'}`;
   if (minutes % 60 === 0) return `${minutes / 60} ${locale === 'en' ? 'h' : 'ч'}`;
@@ -425,17 +577,6 @@ function preparedReviewLabel(count: number, locale: AppLocale): string {
       ? 'решения'
       : 'решений';
   return `Lumi подготовила ${count} ${form}`;
-}
-
-function decisionCountLabel(count: number, locale: AppLocale): string {
-  const copy = copyFor(locale);
-  if (locale === 'en') return `${count} ${count === 1 ? copy.decisionReady : copy.decisionsReady}`;
-  const form = count % 10 === 1 && count % 100 !== 11
-    ? 'решение готово'
-    : [2, 3, 4].includes(count % 10) && ![12, 13, 14].includes(count % 100)
-      ? 'решения готово'
-      : 'решений готово';
-  return `${count} ${form}`;
 }
 
 function countPreparedDecisionsForTasks(
@@ -538,22 +679,74 @@ function ProjectList({
   projects,
   locale,
   onOpen,
+  onOpenBacklog,
+  noProjectCount,
+  onOpenNoProject,
 }: {
   projects: Project[];
   locale: AppLocale;
   onOpen: (project: Project) => void;
+  onOpenBacklog: () => void;
+  noProjectCount: number;
+  onOpenNoProject: () => void;
 }) {
   const copy = copyFor(locale);
   const groups: Project['health_status'][] = ['needs_attention', 'moving', 'light', 'quiet'];
+  const backlogProject = projects.find(isBacklogProject);
+  const regularProjects = projects.filter((project) => !isBacklogProject(project));
+  const SystemCard = ({
+    label,
+    hint,
+    count,
+    ariaLabel,
+    onClick,
+  }: {
+    label: string;
+    hint: string;
+    count: number;
+    ariaLabel: string;
+    onClick: () => void;
+  }) => (
+    <button type="button" aria-label={ariaLabel} onClick={onClick} className="card card-strong min-h-[96px] p-4 text-left active:scale-[0.99]">
+      <p className="text-[16px] font-semibold text-ink">{label}</p>
+      <p className="mt-1 text-[12.5px] leading-snug text-hint">{hint}</p>
+      <span className="tnum mt-3 inline-flex rounded-full bg-[var(--accent-soft)] px-2.5 py-1 text-[12px] font-semibold text-accent-text">{count}</span>
+    </button>
+  );
   return (
     <div>
+      <section className="mb-4">
+        <div className="mb-2 flex items-center justify-between px-1">
+          <h2 className="text-[15px] font-semibold tracking-[-0.01em] text-ink">{locale === 'en' ? 'System views' : 'Системные виды'}</h2>
+          <span className="text-[12px] font-semibold text-hint">{locale === 'en' ? 'always available' : 'всегда доступны'}</span>
+        </div>
+        <div className="grid grid-cols-2 gap-2.5">
+          <SystemCard
+            label={copy.backlog}
+            hint={locale === 'en' ? 'Someday, ideas, low-pressure tasks' : 'Идеи и задачи без давления'}
+            count={backlogProject?.active_task_count ?? 0}
+            ariaLabel={locale === 'en' ? 'Open project Backlog' : 'Открыть проект Backlog'}
+            onClick={() => {
+              if (backlogProject) onOpen(backlogProject);
+              else onOpenBacklog();
+            }}
+          />
+          <SystemCard
+            label={copy.noProject}
+            hint={locale === 'en' ? 'Loose tasks to sort' : 'Задачи без проекта'}
+            count={noProjectCount}
+            ariaLabel={locale === 'en' ? 'Open No project tasks' : 'Открыть задачи без проекта'}
+            onClick={onOpenNoProject}
+          />
+        </div>
+      </section>
       <div className="mb-3 px-1">
         <h2 className="text-[19px] font-semibold tracking-[-0.01em] text-ink">{copy.projectHealth}</h2>
         <p className="mt-0.5 text-[13px] text-hint">{copy.projectSubtitle}</p>
       </div>
       <div className="space-y-4">
         {groups.map((status) => {
-          const items = projects.filter((project) => project.health_status === status);
+          const items = regularProjects.filter((project) => project.health_status === status);
           if (items.length === 0) return null;
           return (
             <section key={status}>
@@ -579,7 +772,7 @@ function ProjectDetail({
   project,
   tasks,
   locale,
-  preparedReviewCount,
+  reviewCounts,
   onBack,
   onReviewCleanup,
   onOpenTask,
@@ -588,7 +781,7 @@ function ProjectDetail({
   project: Project;
   tasks: Task[];
   locale: AppLocale;
-  preparedReviewCount: number;
+  reviewCounts: ProjectReviewCounts;
   onBack: () => void;
   onReviewCleanup: () => void;
   onOpenTask: (task: Task) => void;
@@ -596,9 +789,6 @@ function ProjectDetail({
 }) {
   const copy = copyFor(locale);
   const nextTask = project.next_task ?? tasks[0] ?? null;
-  const later = nextTask ? tasks.filter((task) => task.id !== nextTask.id && task.status !== 'done') : tasks;
-  const done = tasks.filter((task) => task.status === 'done').slice(0, 3);
-  const isBacklog = project.system_key === 'backlog';
   return (
     <div>
       <button type="button" onClick={onBack} className="mb-3 inline-flex h-10 items-center gap-2 rounded-full bg-[var(--secondary-bg)] px-3 text-[13px] font-semibold text-ink">
@@ -614,37 +804,6 @@ function ProjectDetail({
           {healthLabel(project, locale)}
         </span>
       </div>
-
-      {project.health_status === 'needs_attention' && (
-        <div className="card card-strong mb-3 p-4">
-          <p className="text-[12px] font-semibold uppercase tracking-wide text-[#f0b35e]">{copy.whyAttention}</p>
-          <p className="mt-1 text-[14px] text-ink">{project.health_reason}</p>
-        </div>
-      )}
-
-      {isBacklog && (
-        <div className="card card-strong mb-3 p-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-[var(--accent-soft)] text-accent-text">
-              <Sparkles size={16} />
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-[15px] font-semibold text-ink">{copy.backlogCleanup}</p>
-              <p className="mt-1 text-[12.5px] leading-snug text-hint">
-                {preparedReviewCount > 0 ? decisionCountLabel(preparedReviewCount, locale) : copy.noPreparedDecisions}
-              </p>
-            </div>
-            <button
-              type="button"
-              disabled={preparedReviewCount === 0}
-              onClick={onReviewCleanup}
-              className="h-10 shrink-0 rounded-full bg-accent px-3.5 text-[12.5px] font-semibold text-white disabled:bg-[var(--secondary-bg)] disabled:text-hint"
-            >
-              {copy.reviewCleanup}
-            </button>
-          </div>
-        </div>
-      )}
 
       {nextTask && (
         <div className="card card-strong mb-4 p-4">
@@ -663,22 +822,47 @@ function ProjectDetail({
         </div>
       )}
 
-      {nextTask && (
-        <>
-          <h3 className="mb-2 px-1 text-[14px] font-semibold text-ink">{copy.next}</h3>
-          {renderTaskList([nextTask])}
-        </>
+      {reviewCounts.total > 0 && (
+        <button type="button" onClick={onReviewCleanup} className="card card-strong mb-4 w-full p-4 text-left active:scale-[0.99]">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h3 className="text-[18px] font-semibold text-ink">{copy.lumiSuggestions}</h3>
+            <span className="tnum rounded-full bg-[var(--accent-soft)] px-2.5 py-1 text-[12px] font-semibold text-accent-text">
+              {reviewCounts.total}
+            </span>
+          </div>
+          <div className="space-y-2 border-t border-hairline pt-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[14px] font-semibold text-ink">{copy.estimates}</p>
+                <p className="text-[12.5px] text-hint">{locale === 'en' ? 'task estimates prepared' : 'оценки задач готовы'}</p>
+              </div>
+              <span className="tnum rounded-full bg-[var(--secondary-bg)] px-2.5 py-1 text-[12px] font-semibold text-ink">{reviewCounts.estimates}</span>
+            </div>
+            <div className="flex items-center justify-between gap-3 border-t border-hairline pt-2">
+              <div>
+                <p className="text-[14px] font-semibold text-ink">{copy.dueDates}</p>
+                <p className="text-[12.5px] text-hint">{locale === 'en' ? 'date decisions prepared' : 'решения по датам готовы'}</p>
+              </div>
+              <span className="tnum rounded-full bg-[var(--secondary-bg)] px-2.5 py-1 text-[12px] font-semibold text-ink">{reviewCounts.dueDates}</span>
+            </div>
+            {reviewCounts.projects > 0 && (
+              <div className="flex items-center justify-between gap-3 border-t border-hairline pt-2">
+                <div>
+                  <p className="text-[14px] font-semibold text-ink">{copy.projectSuggestions}</p>
+                  <p className="text-[12.5px] text-hint">{locale === 'en' ? 'project choices prepared' : 'решения по проектам готовы'}</p>
+                </div>
+                <span className="tnum rounded-full bg-[var(--secondary-bg)] px-2.5 py-1 text-[12px] font-semibold text-ink">{reviewCounts.projects}</span>
+              </div>
+            )}
+          </div>
+        </button>
       )}
-      {later.length > 0 && (
+      {tasks.length > 0 && (
         <>
-          <h3 className="mb-2 mt-4 px-1 text-[14px] font-semibold text-ink">{copy.later}</h3>
-          {renderTaskList(later)}
-        </>
-      )}
-      {done.length > 0 && (
-        <>
-          <h3 className="mb-2 mt-4 px-1 text-[14px] font-semibold text-ink">{copy.doneRecently}</h3>
-          {renderTaskList(done)}
+          <div className="mb-2 flex items-center justify-between px-1">
+            <h3 className="text-[14px] font-semibold text-ink">{copy.tasksInProject}</h3>
+          </div>
+          {renderTaskList(tasks)}
         </>
       )}
     </div>
@@ -686,45 +870,23 @@ function ProjectDetail({
 }
 
 function ReviewHub({
-  suggestions,
-  dueDateDecisions,
-  projectDecisions,
+  groups,
+  total,
+  estimateCount,
+  dueDateCount,
+  projectCount,
   locale,
-  onOpenReview,
+  onOpenGroup,
 }: {
-  suggestions: EstimateSuggestion[];
-  dueDateDecisions: DueDateDecision[];
-  projectDecisions: ProjectDecision[];
+  groups: ReviewGroup[];
+  total: number;
+  estimateCount: number;
+  dueDateCount: number;
+  projectCount: number;
   locale: AppLocale;
-  onOpenReview: (mode: ReviewMode) => void;
+  onOpenGroup: (group: ReviewGroup) => void;
 }) {
   const copy = copyFor(locale);
-  const total = suggestions.length + dueDateDecisions.length + projectDecisions.length;
-  const categories = [
-    { mode: 'estimates' as const, label: copy.estimates, hint: copy.estimatesHint, count: suggestions.length, action: copy.reviewEstimates },
-    { mode: 'due_dates' as const, label: copy.dueDates, hint: copy.dueDatesHint, count: dueDateDecisions.length, action: copy.reviewDueDates },
-    { mode: 'projects' as const, label: copy.projectSuggestions, hint: copy.projectSuggestionsHint, count: projectDecisions.length, action: copy.reviewProjects },
-  ];
-  const previews = [
-    ...suggestions.slice(0, 2).map((suggestion) => ({
-      id: suggestion.id,
-      label: copy.estimates,
-      title: suggestion.title,
-      meta: formatMinutes(suggestion.minutes, locale),
-    })),
-    ...dueDateDecisions.slice(0, 2).map((decision) => ({
-      id: decision.id,
-      label: copy.dueDates,
-      title: decision.title,
-      meta: formatDateDecisionLabel(decision.dueAt, locale),
-    })),
-    ...projectDecisions.slice(0, 2).map((decision) => ({
-      id: decision.id,
-      label: copy.projectSuggestions,
-      title: decision.title,
-      meta: decision.projectName,
-    })),
-  ].slice(0, 2);
   return (
     <div>
       <div className="mb-3 px-1">
@@ -739,45 +901,377 @@ function ReviewHub({
           <div className="min-w-0 flex-1">
             <p className="text-[17px] font-semibold tracking-[-0.01em] text-ink">{preparedReviewLabel(total, locale)}</p>
             <div className="mt-3 flex flex-wrap gap-2">
-              {categories.map((category) => (
-                <button
-                  key={category.mode}
-                  type="button"
-                  aria-label={category.action}
-                  onClick={() => onOpenReview(category.mode)}
-                  className="inline-flex h-8 items-center gap-2 rounded-full border border-hairline bg-[var(--secondary-bg)] px-3 text-[12px] font-semibold text-ink active:bg-[rgba(255,255,255,0.04)]"
-                >
-                  <span>{category.label}</span>
-                  <span className="tnum text-accent-text">{category.count}</span>
-                </button>
-              ))}
+              <span className="inline-flex h-8 items-center gap-2 rounded-full border border-hairline bg-[var(--secondary-bg)] px-3 text-[12px] font-semibold text-ink">
+                {copy.estimates} <span className="tnum text-accent-text">{estimateCount}</span>
+              </span>
+              <span className="inline-flex h-8 items-center gap-2 rounded-full border border-hairline bg-[var(--secondary-bg)] px-3 text-[12px] font-semibold text-ink">
+                {copy.dueDates} <span className="tnum text-accent-text">{dueDateCount}</span>
+              </span>
+              <span className="inline-flex h-8 items-center gap-2 rounded-full border border-hairline bg-[var(--secondary-bg)] px-3 text-[12px] font-semibold text-ink">
+                {copy.projectSuggestions} <span className="tnum text-accent-text">{projectCount}</span>
+              </span>
             </div>
           </div>
         </div>
+      </div>
 
-        {previews.length > 0 ? (
-          <div className="mt-4 border-t border-hairline pt-3">
-            <p className="mb-2 px-0.5 text-[11.5px] font-semibold uppercase tracking-wide text-hint">{copy.preparedNow}</p>
-            <div className="space-y-2">
-              {previews.map((item) => (
-                <div key={item.id} className="rounded-2xl border border-hairline bg-[var(--surface)] px-3 py-2.5">
-                  <div className="flex items-center gap-2">
-                    <span className="min-w-0 flex-1 truncate text-[13.5px] font-semibold text-ink">{item.title}</span>
-                    <span className="tnum shrink-0 rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[11.5px] font-semibold text-accent-text">
-                      {item.meta}
-                    </span>
-                  </div>
-                  <p className="mt-0.5 text-[12px] text-hint">{item.label}</p>
-                </div>
-              ))}
-            </div>
+      <div className="mt-4 px-1">
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-[15px] font-semibold text-ink">{copy.reviewByProject}</h3>
+          <span className="text-[12px] font-semibold text-hint">{locale === 'en' ? 'recommended' : 'рекомендуется'}</span>
+        </div>
+        {groups.length === 0 ? (
+          <div className="rounded-2xl border border-hairline bg-[var(--surface)] px-3 py-3 text-[13px] text-hint">
+            {copy.noPreparedDecisions}
           </div>
         ) : (
-          <div className="mt-4 rounded-2xl border border-hairline bg-[var(--surface)] px-3 py-3 text-[13px] text-hint">
-            {copy.noPreparedDecisions}
+          <div className="space-y-2.5">
+            {groups.map((group) => (
+              <button
+                key={group.key}
+                type="button"
+                aria-label={reviewGroupAriaLabel(group, locale)}
+                onClick={() => onOpenGroup(group)}
+                className="card card-strong w-full p-4 text-left active:scale-[0.99]"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[var(--accent-soft)] text-accent-text">
+                    <span className="text-[15px] font-semibold">{group.name.slice(0, 1).toUpperCase()}</span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[17px] font-semibold text-ink">{group.name}</p>
+                    <p className="mt-0.5 text-[12.5px] text-hint">
+                      {[
+                        group.estimateCount ? `${group.estimateCount} ${copy.estimates.toLocaleLowerCase()}` : null,
+                        group.dueDateCount ? `${group.dueDateCount} ${copy.dueDates.toLocaleLowerCase()}` : null,
+                        group.projectCount ? `${group.projectCount} ${copy.projectSuggestions.toLocaleLowerCase()}` : null,
+                      ].filter(Boolean).join(' · ')}
+                    </p>
+                  </div>
+                  <span className="tnum rounded-full bg-[var(--accent-soft)] px-2.5 py-1 text-[12px] font-semibold text-accent-text">{group.count}</span>
+                  <ChevronRight size={18} className="shrink-0 text-hint" />
+                </div>
+              </button>
+            ))}
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function ReviewProjectView({
+  group,
+  tasks,
+  estimates,
+  dueDates,
+  projectDecisions,
+  locale,
+  onBack,
+  onAcceptEstimate,
+  onEditEstimate,
+  onSkipEstimate,
+  onAcceptDueDate,
+  onChangeDueDate,
+  onNoDate,
+  onAcceptProject,
+  onChangeProject,
+  onKeepUnassigned,
+}: {
+  group: ReviewGroup;
+  tasks: Task[];
+  estimates: EstimateSuggestion[];
+  dueDates: DueDateDecision[];
+  projectDecisions: ProjectDecision[];
+  locale: AppLocale;
+  onBack: () => void;
+  onAcceptEstimate: (id: string) => void;
+  onEditEstimate: (task: Task, suggestion: EstimateSuggestion) => void;
+  onSkipEstimate: (task: Task, suggestion: EstimateSuggestion) => void;
+  onAcceptDueDate: (decision: DueDateDecision) => void;
+  onChangeDueDate: (decision: DueDateDecision) => void;
+  onNoDate: (decision: DueDateDecision) => void;
+  onAcceptProject: (decision: ProjectDecision) => void;
+  onChangeProject: (decision: ProjectDecision) => void;
+  onKeepUnassigned: (decision: ProjectDecision) => void;
+}) {
+  const copy = copyFor(locale);
+  const taskById = new Map(tasks.map((task) => [task.id, task]));
+  const estimatesWithTasks = estimates
+    .map((suggestion) => ({ suggestion, task: taskById.get(suggestion.taskId) }))
+    .filter((row): row is { suggestion: EstimateSuggestion; task: Task } => row.task !== undefined);
+  return (
+    <div>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h2 className="min-w-0 truncate text-[24px] font-semibold tracking-[-0.02em] text-ink">
+          {copy.reviewProject} {group.name}
+        </h2>
+        <span className="tnum shrink-0 rounded-full bg-[var(--accent-soft)] px-2.5 py-1 text-[12px] font-semibold text-accent-text">
+          {group.count}
+        </span>
+      </div>
+      <button type="button" onClick={onBack} className="mb-4 inline-flex h-10 items-center gap-2 rounded-full bg-[var(--secondary-bg)] px-3 text-[13px] font-semibold text-ink">
+        <ArrowLeft size={16} />
+        {copy.tabs.review}
+      </button>
+
+      {estimatesWithTasks.length > 0 && (
+        <section className="mb-4">
+          <div className="mb-2 flex items-center justify-between px-1">
+            <h3 className="text-[15px] font-semibold text-ink">{copy.estimates}</h3>
+            <span className="tnum text-[12px] font-semibold text-hint">{estimatesWithTasks.length}</span>
+          </div>
+          <div className="space-y-2.5">
+            {estimatesWithTasks.map(({ suggestion, task }) => (
+              <div key={suggestion.id} className="rounded-2xl border border-hairline bg-[var(--surface)] p-3.5">
+                <p className="break-words text-[15px] font-semibold leading-snug text-ink">{task.title}</p>
+                <p className="mt-1 text-[12.5px] text-hint">
+                  {copy.suggested}: {formatMinutes(suggestion.minutes, locale)}. {suggestion.reason ?? ''}
+                </p>
+                <div className="mt-3 grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    aria-label={`${locale === 'en' ? 'Accept estimate for' : 'Принять оценку для'} ${task.title}`}
+                    onClick={() => onAcceptEstimate(suggestion.id)}
+                    className="h-9 rounded-full bg-accent text-[12.5px] font-semibold text-white"
+                  >
+                    {locale === 'en' ? 'Accept' : 'Принять'}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`${copy.change} ${locale === 'en' ? 'estimate for' : 'оценку для'} ${task.title}`}
+                    onClick={() => onEditEstimate(task, suggestion)}
+                    className="h-9 rounded-full bg-[var(--secondary-bg)] text-[12.5px] font-semibold text-ink"
+                  >
+                    {copy.change}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`${copy.doNotEstimate} ${locale === 'en' ? 'for' : 'для'} ${task.title}`}
+                    onClick={() => onSkipEstimate(task, suggestion)}
+                    className="h-9 rounded-full bg-[var(--secondary-bg)] text-[12.5px] font-semibold text-ink"
+                  >
+                    {copy.doNotEstimate}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {dueDates.length > 0 && (
+        <section className="mb-4">
+          <div className="mb-2 flex items-center justify-between px-1">
+            <h3 className="text-[15px] font-semibold text-ink">{copy.dueDates}</h3>
+            <span className="tnum text-[12px] font-semibold text-hint">{dueDates.length}</span>
+          </div>
+          <div className="space-y-2.5">
+            {dueDates.map((decision) => (
+              <div key={decision.id} className="rounded-2xl border border-hairline bg-[var(--surface)] p-3.5">
+                <p className="break-words text-[15px] font-semibold leading-snug text-ink">{decision.task.title}</p>
+                <p className="mt-1 text-[12.5px] text-hint">
+                  {copy.suggested}: {formatDateDecisionLabel(decision.dueAt, locale)}. {decision.reason}
+                </p>
+                <div className="mt-3 grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    aria-label={`${locale === 'en' ? 'Accept date for' : 'Принять дату для'} ${decision.task.title}`}
+                    onClick={() => onAcceptDueDate(decision)}
+                    className="h-9 rounded-full bg-accent text-[12.5px] font-semibold text-white"
+                  >
+                    {locale === 'en' ? 'Accept' : 'Принять'}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`${copy.change} ${locale === 'en' ? 'date for' : 'дату для'} ${decision.task.title}`}
+                    onClick={() => onChangeDueDate(decision)}
+                    className="h-9 rounded-full bg-[var(--secondary-bg)] text-[12.5px] font-semibold text-ink"
+                  >
+                    {copy.change}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`${copy.noDateAction} ${locale === 'en' ? 'for' : 'для'} ${decision.task.title}`}
+                    onClick={() => onNoDate(decision)}
+                    className="h-9 rounded-full bg-[var(--secondary-bg)] text-[12.5px] font-semibold text-ink"
+                  >
+                    {copy.noDateAction}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {projectDecisions.length > 0 && (
+        <section className="mb-4">
+          <div className="mb-2 flex items-center justify-between px-1">
+            <h3 className="text-[15px] font-semibold text-ink">{copy.projectSuggestions}</h3>
+            <span className="tnum text-[12px] font-semibold text-hint">{projectDecisions.length}</span>
+          </div>
+          <div className="space-y-2.5">
+            {projectDecisions.map((decision) => (
+              <div key={decision.id} className="rounded-2xl border border-hairline bg-[var(--surface)] p-3.5">
+                <p className="break-words text-[15px] font-semibold leading-snug text-ink">{decision.task.title}</p>
+                <p className="mt-1 text-[12.5px] text-hint">{decision.reason}</p>
+                <span className="mt-2 inline-flex rounded-full bg-[var(--accent-soft)] px-2.5 py-1 text-[12px] font-semibold text-accent-text">
+                  {decision.projectName}
+                </span>
+                <div className="mt-3 grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    aria-label={`${locale === 'en' ? 'Accept project for' : 'Принять проект для'} ${decision.task.title}`}
+                    onClick={() => onAcceptProject(decision)}
+                    className="h-9 rounded-full bg-accent text-[12.5px] font-semibold text-white"
+                  >
+                    {locale === 'en' ? 'Accept' : 'Принять'}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`${copy.change} ${locale === 'en' ? 'project for' : 'проект для'} ${decision.task.title}`}
+                    onClick={() => onChangeProject(decision)}
+                    className="h-9 rounded-full bg-[var(--secondary-bg)] text-[12.5px] font-semibold text-ink"
+                  >
+                    {copy.change}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`${locale === 'en' ? 'Keep' : 'Оставить'} ${decision.task.title} ${locale === 'en' ? 'unassigned' : 'без проекта'}`}
+                    onClick={() => onKeepUnassigned(decision)}
+                    className="h-9 rounded-full bg-[var(--secondary-bg)] text-[12.5px] font-semibold text-ink"
+                  >
+                    {copy.keepUnassigned}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function OpenScopeChips({
+  tasks,
+  scope,
+  locale,
+  backlogProjectId,
+  onChange,
+}: {
+  tasks: Task[];
+  scope: OpenScope;
+  locale: AppLocale;
+  backlogProjectId?: string | null;
+  onChange: (scope: OpenScope) => void;
+}) {
+  const copy = copyFor(locale);
+  const options: { id: OpenScope; label: string }[] = [
+    { id: 'today', label: copy.tabs.today },
+    { id: 'upcoming', label: copy.upcoming },
+    { id: 'no_project', label: copy.noProject },
+    { id: 'backlog', label: copy.backlog },
+    { id: 'no_estimate', label: copy.noEstimate },
+    { id: 'no_date', label: copy.noDate },
+  ];
+  return (
+    <div className="no-scrollbar -mx-4 mt-2 flex gap-2 overflow-x-auto px-4 py-1">
+      {options.map((option) => {
+        const count = tasks.filter((task) => taskMatchesOpenScope(task, option.id, backlogProjectId)).length;
+        return (
+          <button
+            key={option.id}
+            type="button"
+            onClick={() => onChange(option.id)}
+            className={`relative inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3.5 text-[13px] font-semibold transition-colors after:absolute after:-inset-1.5 after:content-[''] ${
+              scope === option.id
+                ? 'border-[var(--accent-border)] bg-[var(--accent-soft)] text-accent-text'
+                : 'border-hairline bg-surface text-hint'
+            }`}
+          >
+            {option.label}
+            <span className="tnum text-[12px]">{count}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function SearchResults({
+  query,
+  scope,
+  tasks,
+  doneTasks,
+  projects,
+  locale,
+  onScopeChange,
+  renderTaskList,
+  onOpenProject,
+  onReopen,
+  onOpenTask,
+}: {
+  query: string;
+  scope: SearchScope;
+  tasks: Task[];
+  doneTasks: Task[];
+  projects: Project[];
+  locale: AppLocale;
+  onScopeChange: (scope: SearchScope) => void;
+  renderTaskList: (tasks: Task[]) => JSX.Element;
+  onOpenProject: (project: Project) => void;
+  onReopen: (id: string) => void;
+  onOpenTask: (task: Task) => void;
+}) {
+  const copy = copyFor(locale);
+  const matchedTasks = tasks.filter((task) => matchesTask(task, query));
+  const matchedDone = doneTasks.filter((task) => matchesTask(task, query));
+  const matchedProjects = projects.filter((project) => matchesProject(project, query));
+  const chips: { id: SearchScope; label: string; count: number }[] = [
+    { id: 'tasks', label: locale === 'en' ? 'Tasks' : 'Задачи', count: matchedTasks.length },
+    { id: 'projects', label: copy.tabs.projects, count: matchedProjects.length },
+    { id: 'done', label: copy.tabs.done, count: matchedDone.length },
+  ];
+  const count = scope === 'tasks' ? matchedTasks.length : scope === 'projects' ? matchedProjects.length : matchedDone.length;
+  return (
+    <div>
+      <h2 className="mb-3 px-1 text-[20px] font-semibold tracking-[-0.01em] text-ink">{copy.searchResults}</h2>
+      <div className="no-scrollbar -mx-4 flex gap-2 overflow-x-auto px-4 py-1">
+        {chips.map((chip) => (
+          <button
+            key={chip.id}
+            type="button"
+            aria-label={`${chip.label} ${chip.count}`}
+            onClick={() => onScopeChange(chip.id)}
+            className={`relative inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3.5 text-[13px] font-semibold transition-colors after:absolute after:-inset-1.5 after:content-[''] ${
+              scope === chip.id
+                ? 'border-[var(--accent-border)] bg-[var(--accent-soft)] text-accent-text'
+                : 'border-hairline bg-surface text-hint'
+            }`}
+          >
+            {chip.label}
+            <span className="tnum text-[12px]">{chip.count}</span>
+          </button>
+        ))}
+      </div>
+      <div className="mb-2 mt-3 flex items-center justify-between px-1">
+        <h3 className="text-[14px] font-semibold text-ink">
+          {scope === 'tasks' && `${count} ${count === 1 ? copy.taskFound : copy.tasksFound}`}
+          {scope === 'projects' && `${count} ${copy.tabs.projects.toLocaleLowerCase()}`}
+          {scope === 'done' && `${count} ${copy.tabs.done.toLocaleLowerCase()}`}
+        </h3>
+      </div>
+      {scope === 'tasks' && (matchedTasks.length > 0
+        ? renderTaskList(matchedTasks)
+        : <EmptyState icon={Search} title={copy.emptyOpen[0]} hint={copy.emptyOpen[1]} />)}
+      {scope === 'projects' && (matchedProjects.length > 0
+        ? <div className="space-y-2.5">{matchedProjects.map((project) => <ProjectRow key={project.id} project={project} locale={locale} onOpen={() => onOpenProject(project)} />)}</div>
+        : <EmptyState icon={Search} title={copy.emptyProjects[0]} hint={copy.emptyProjects[1]} />)}
+      {scope === 'done' && (matchedDone.length > 0
+        ? <DoneView tasks={matchedDone} locale={locale} onReopen={onReopen} onOpenTask={onOpenTask} />
+        : <EmptyState icon={Search} title={copy.emptyDone[0]} hint={copy.emptyDone[1]} />)}
     </div>
   );
 }
@@ -824,229 +1318,6 @@ function NewTaskSheet({
           {copy.create}
         </button>
       </form>
-    </Sheet>
-  );
-}
-
-function EstimateReviewSheet({
-  tasks,
-  suggestions,
-  locale,
-  onClose,
-  onAcceptEstimate,
-  onEditEstimate,
-}: {
-  tasks: Task[];
-  suggestions: EstimateSuggestion[];
-  locale: AppLocale;
-  onClose: () => void;
-  onAcceptEstimate: (id: string) => void;
-  onEditEstimate: (task: Task, suggestion: EstimateSuggestion) => void;
-}) {
-  const copy = copyFor(locale);
-  const rows = suggestions
-    .map((suggestion) => ({ suggestion, task: tasks.find((task) => task.id === suggestion.taskId) }))
-    .filter((row): row is { suggestion: EstimateSuggestion; task: Task } => row.task !== undefined);
-
-  return (
-    <Sheet open onClose={onClose} title={copy.estimateSuggestions} closeLabel={copy.close}>
-      {rows.length === 0 ? (
-        <EmptyState icon={Sparkles} title={copy.noEstimateSuggestions} className="border-0 bg-transparent shadow-none" />
-      ) : (
-        <div className="space-y-2.5">
-          {rows.map(({ suggestion, task }) => (
-            <div key={suggestion.id} className="rounded-2xl border border-hairline bg-[var(--surface)] p-3.5">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="break-words text-[15px] font-semibold leading-snug text-ink">{task.title}</p>
-                  <p className="mt-1 truncate text-[12.5px] text-hint">
-                    {[task.project, suggestion.reason].filter(Boolean).join(' · ')}
-                  </p>
-                </div>
-                <span className="tnum shrink-0 rounded-full bg-[var(--accent-soft)] px-2.5 py-1 text-[12px] font-semibold text-accent-text">
-                  {formatMinutes(suggestion.minutes, locale)}
-                </span>
-              </div>
-              <div className="mt-3 flex gap-2">
-                <button
-                  type="button"
-                  aria-label={`${locale === 'en' ? 'Accept estimate for' : 'Принять оценку для'} ${task.title}`}
-                  onClick={() => onAcceptEstimate(suggestion.id)}
-                  className="h-9 flex-1 rounded-full bg-accent text-[12.5px] font-semibold text-white"
-                >
-                  {locale === 'en' ? 'Accept' : 'Принять'}
-                </button>
-                <button
-                  type="button"
-                  aria-label={`${copy.change} ${locale === 'en' ? 'estimate for' : 'оценку для'} ${task.title}`}
-                  onClick={() => onEditEstimate(task, suggestion)}
-                  className="h-9 flex-1 rounded-full bg-[var(--secondary-bg)] text-[12.5px] font-semibold text-ink"
-                >
-                  {copy.change}
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </Sheet>
-  );
-}
-
-function PlanDatesSheet({
-  decisions,
-  locale,
-  onClose,
-  onAccept,
-  onChange,
-  onNoDeadline,
-}: {
-  decisions: DueDateDecision[];
-  locale: AppLocale;
-  onClose: () => void;
-  onAccept: (decision: DueDateDecision) => void;
-  onChange: (decision: DueDateDecision) => void;
-  onNoDeadline: (decision: DueDateDecision) => void;
-}) {
-  const copy = copyFor(locale);
-  const groups: DueBucket[] = ['week', 'backlog', 'context'];
-  return (
-    <Sheet open onClose={onClose} title={copy.dueDates} closeLabel={copy.close}>
-      {decisions.length === 0 ? (
-        <EmptyState icon={CheckCircle2} title={copy.emptyReview[0]} hint={copy.emptyReview[1]} className="border-0 bg-transparent shadow-none" />
-      ) : (
-        <div className="space-y-4">
-          {groups.map((bucket) => {
-            const items = decisions.filter((decision) => decision.bucket === bucket);
-            if (items.length === 0) return null;
-            return (
-              <section key={bucket}>
-                <div className="mb-2 flex items-center gap-2 px-1">
-                  <CalendarDays size={15} className="text-accent-text" />
-                  <h3 className="text-[13px] font-semibold text-ink">{dueBucketLabel(bucket, locale)}</h3>
-                  <span className="tnum rounded-full bg-[var(--secondary-bg)] px-2 py-px text-[11.5px] text-hint">{items.length}</span>
-                </div>
-                <div className="space-y-2.5">
-                  {items.map((decision) => (
-                    <div key={decision.id} className="rounded-2xl border border-hairline bg-[var(--surface)] p-3.5">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="break-words text-[15px] font-semibold leading-snug text-ink">{decision.task.title}</p>
-                          <p className="mt-1 text-[12.5px] text-hint">{decision.reason}</p>
-                        </div>
-                        <span className="tnum shrink-0 rounded-full bg-[var(--accent-soft)] px-2.5 py-1 text-[12px] font-semibold text-accent-text">
-                          {formatDateDecisionLabel(decision.dueAt, locale)}
-                        </span>
-                      </div>
-                      <p className="mt-3 text-[11.5px] font-semibold uppercase tracking-wide text-hint">{copy.suggestedDate}</p>
-                      <div className="mt-2 flex gap-2">
-                        <button
-                          type="button"
-                          aria-label={`${locale === 'en' ? 'Accept date for' : 'Принять дату для'} ${decision.task.title}`}
-                          onClick={() => onAccept(decision)}
-                          className="h-9 flex-1 rounded-full bg-accent text-[12.5px] font-semibold text-white"
-                        >
-                          {locale === 'en' ? 'Accept' : 'Принять'}
-                        </button>
-                        <button
-                          type="button"
-                          aria-label={`${copy.change} ${locale === 'en' ? 'date for' : 'дату для'} ${decision.task.title}`}
-                          onClick={() => onChange(decision)}
-                          className="h-9 flex-1 rounded-full bg-[var(--secondary-bg)] text-[12.5px] font-semibold text-ink"
-                        >
-                          {copy.change}
-                        </button>
-                        <button
-                          type="button"
-                          aria-label={`${copy.noDeadline} ${locale === 'en' ? 'for' : 'для'} ${decision.task.title}`}
-                          onClick={() => onNoDeadline(decision)}
-                          className="h-9 flex-1 rounded-full bg-[var(--secondary-bg)] text-[12.5px] font-semibold text-ink"
-                        >
-                          {copy.noDeadline}
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            );
-          })}
-        </div>
-      )}
-    </Sheet>
-  );
-}
-
-function SortProjectsSheet({
-  decisions,
-  locale,
-  onClose,
-  onAccept,
-  onChange,
-  onKeepUnassigned,
-}: {
-  decisions: ProjectDecision[];
-  locale: AppLocale;
-  onClose: () => void;
-  onAccept: (decision: ProjectDecision) => void;
-  onChange: (decision: ProjectDecision) => void;
-  onKeepUnassigned: (decision: ProjectDecision) => void;
-}) {
-  const copy = copyFor(locale);
-  return (
-    <Sheet open onClose={onClose} title={copy.projectSuggestions} closeLabel={copy.close}>
-      {decisions.length === 0 ? (
-        <EmptyState icon={CheckCircle2} title={copy.emptyReview[0]} hint={copy.emptyReview[1]} className="border-0 bg-transparent shadow-none" />
-      ) : (
-        <div className="space-y-2.5">
-          {decisions.map((decision) => (
-            <div key={decision.id} className="rounded-2xl border border-hairline bg-[var(--surface)] p-3.5">
-              <div className="flex items-start gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-[var(--accent-soft)] text-accent-text">
-                  <FolderInput size={16} />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="break-words text-[15px] font-semibold leading-snug text-ink">{decision.task.title}</p>
-                  <p className="mt-1 text-[12.5px] text-hint">{decision.reason}</p>
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <span className="text-[11.5px] font-semibold uppercase tracking-wide text-hint">{copy.suggestedProject}</span>
-                    <span className="rounded-full bg-[var(--accent-soft)] px-2.5 py-1 text-[12px] font-semibold text-accent-text">{decision.projectName}</span>
-                    {decision.confidence && (
-                      <span className="rounded-full bg-[var(--secondary-bg)] px-2.5 py-1 text-[12px] font-medium text-hint">{decision.confidence}</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-              <div className="mt-3 flex gap-2">
-                <button
-                  type="button"
-                  aria-label={`${locale === 'en' ? 'Accept project for' : 'Принять проект для'} ${decision.task.title}`}
-                  onClick={() => onAccept(decision)}
-                  className="h-9 flex-1 rounded-full bg-accent text-[12.5px] font-semibold text-white"
-                >
-                  {locale === 'en' ? 'Accept' : 'Принять'}
-                </button>
-                <button
-                  type="button"
-                  aria-label={`${copy.change} ${locale === 'en' ? 'project for' : 'проект для'} ${decision.task.title}`}
-                  onClick={() => onChange(decision)}
-                  className="h-9 flex-1 rounded-full bg-[var(--secondary-bg)] text-[12.5px] font-semibold text-ink"
-                >
-                  {copy.change}
-                </button>
-                <button
-                  type="button"
-                  aria-label={`${locale === 'en' ? 'Keep' : 'Оставить'} ${decision.task.title} ${locale === 'en' ? 'unassigned' : 'без проекта'}`}
-                  onClick={() => onKeepUnassigned(decision)}
-                  className="h-9 flex-1 rounded-full bg-[var(--secondary-bg)] text-[12.5px] font-semibold text-ink"
-                >
-                  {copy.keepUnassigned}
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
     </Sheet>
   );
 }
@@ -1310,17 +1581,18 @@ export default function TasksPage() {
   const locale = useAppLocale();
   const copy = copyFor(locale);
   const tabs: { id: TaskView; label: string }[] = [
-    { id: 'today', label: copy.tabs.today },
+    { id: 'open', label: copy.tabs.open },
     { id: 'projects', label: copy.tabs.projects },
     { id: 'review', label: copy.tabs.review },
     { id: 'done', label: copy.tabs.done },
   ];
-  const [view, setView] = useState<TaskView>('today');
+  const [view, setView] = useState<TaskView>('open');
+  const [openScope, setOpenScope] = useState<OpenScope>('today');
+  const [searchScope, setSearchScope] = useState<SearchScope>('tasks');
   const [title, setTitle] = useState('');
   const [query, setQuery] = useState('');
   const [creating, setCreating] = useState(false);
-  const [project, setProject] = useState<string | null>(null);
-  const [reviewMode, setReviewMode] = useState<ReviewMode | null>(null);
+  const [selectedReviewGroupKey, setSelectedReviewGroupKey] = useState<string | null>(null);
   const [hiddenSuggestionIds, setHiddenSuggestionIds] = useState<Set<string>>(() => new Set());
   const [hiddenReviewDecisionIds, setHiddenReviewDecisionIds] = useState<Set<string>>(() => new Set());
   const [hiddenDoneTaskIds, setHiddenDoneTaskIds] = useState<Set<string>>(() => new Set());
@@ -1331,14 +1603,14 @@ export default function TasksPage() {
   const [projectChanging, setProjectChanging] = useState<ProjectDecision | null>(null);
   const { show } = useToast();
 
-  const taskFilter = viewToTaskFilter(view);
-  const tasksQuery = useTasks(taskFilter);
+  const activeTasksQuery = useTasks('all', 300);
+  const doneTasksQuery = useTasks('done', 300);
   const projectTasksQuery = useProjectTasks(selectedProject?.id ?? null);
   const projectsQuery = useProjects();
   const suggestionsQuery = useAssistantSuggestions();
-  const createTask = useCreateTask(taskFilter);
-  const completeTask = useCompleteTask(taskFilter);
-  const snoozeTask = useSnoozeTask(taskFilter);
+  const createTask = useCreateTask('all');
+  const completeTask = useCompleteTask('all');
+  const snoozeTask = useSnoozeTask('all');
   const patchTask = usePatchTask();
   const decideSuggestion = useDecideAssistantSuggestion();
 
@@ -1354,46 +1626,68 @@ export default function TasksPage() {
     [hiddenSuggestionIds, suggestions],
   );
   const estimatesByTask = useMemo(() => estimateMap(visibleSuggestions), [visibleSuggestions]);
-  const items = useMemo(() => tasksQuery.data?.items ?? [], [tasksQuery.data]);
+  const items = useMemo(() => activeTasksQuery.data?.items ?? [], [activeTasksQuery.data]);
+  const doneItems = useMemo(() => doneTasksQuery.data?.items ?? [], [doneTasksQuery.data]);
   const projectItems = projectTasksQuery.data?.items ?? [];
-  const searchedItems = useMemo(
-    () => items.filter((task) => matchesTask(task, query)),
-    [items, query],
-  );
+  const allProjects = projectsQuery.data?.items ?? [];
+  const backlogProject = allProjects.find(isBacklogProject) ?? null;
+  const backlogProjectId = backlogProject?.id ?? null;
   const visible = useMemo(
-    () => (project ? searchedItems.filter((task) => task.project === project) : searchedItems),
-    [searchedItems, project],
+    () => items.filter((task) => taskMatchesOpenScope(task, openScope, backlogProjectId)),
+    [backlogProjectId, items, openScope],
   );
   const visibleDone = useMemo(
-    () => visible.filter((task) => !hiddenDoneTaskIds.has(task.id)),
-    [hiddenDoneTaskIds, visible],
+    () => doneItems.filter((task) => !hiddenDoneTaskIds.has(task.id)),
+    [doneItems, hiddenDoneTaskIds],
   );
-  const searchedProjectItems = useMemo(
-    () => projectItems.filter((task) => matchesTask(task, query)),
-    [projectItems, query],
-  );
-  const projectNames = useMemo(() => {
-    const set = new Set<string>();
-    for (const task of items) if (task.project) set.add(task.project);
-    return [...set].sort((a, b) => a.localeCompare(b, locale === 'ru' ? 'ru' : 'en'));
-  }, [items, locale]);
-  const projects = useMemo(
-    () => (projectsQuery.data?.items ?? []).filter((item) => matchesProject(item, query)),
-    [projectsQuery.data, query],
-  );
-  const allProjects = projectsQuery.data?.items ?? [];
   const dueDateDecisions = useMemo(
-    () => buildDueDateDecisions(visible, visibleSuggestions, hiddenReviewDecisionIds),
-    [hiddenReviewDecisionIds, visible, visibleSuggestions],
+    () => buildDueDateDecisions(items, visibleSuggestions, hiddenReviewDecisionIds),
+    [hiddenReviewDecisionIds, items, visibleSuggestions],
   );
   const projectDecisions = useMemo(
-    () => buildProjectDecisions(visible, visibleSuggestions, hiddenReviewDecisionIds),
-    [hiddenReviewDecisionIds, visible, visibleSuggestions],
+    () => buildProjectDecisions(items, visibleSuggestions, hiddenReviewDecisionIds),
+    [hiddenReviewDecisionIds, items, visibleSuggestions],
   );
+  const reviewGroups = useMemo(
+    () => buildReviewGroups(items, estimateSuggestions, dueDateDecisions, projectDecisions, locale, backlogProjectId),
+    [backlogProjectId, dueDateDecisions, estimateSuggestions, items, locale, projectDecisions],
+  );
+  const selectedReviewGroup = useMemo(
+    () => reviewGroups.find((group) => group.key === selectedReviewGroupKey) ?? null,
+    [reviewGroups, selectedReviewGroupKey],
+  );
+  const selectedReviewGroupTaskIds = useMemo(
+    () => new Set(selectedReviewGroup?.tasks.map((task) => task.id) ?? []),
+    [selectedReviewGroup],
+  );
+  const selectedReviewEstimates = useMemo(
+    () => estimateSuggestions.filter((suggestion) => selectedReviewGroupTaskIds.has(suggestion.taskId)),
+    [estimateSuggestions, selectedReviewGroupTaskIds],
+  );
+  const selectedReviewDueDates = useMemo(
+    () => dueDateDecisions.filter((decision) => selectedReviewGroupTaskIds.has(decision.task.id)),
+    [dueDateDecisions, selectedReviewGroupTaskIds],
+  );
+  const selectedReviewProjectDecisions = useMemo(
+    () => projectDecisions.filter((decision) => selectedReviewGroupTaskIds.has(decision.task.id)),
+    [projectDecisions, selectedReviewGroupTaskIds],
+  );
+  const projectItemIds = useMemo(() => new Set(projectItems.map((task) => task.id)), [projectItems]);
   const selectedProjectPreparedReviewCount = useMemo(
-    () => countPreparedDecisionsForTasks(searchedProjectItems, estimateSuggestions, dueDateDecisions, projectDecisions),
-    [dueDateDecisions, estimateSuggestions, projectDecisions, searchedProjectItems],
+    () => countPreparedDecisionsForTasks(projectItems, estimateSuggestions, dueDateDecisions, projectDecisions),
+    [dueDateDecisions, estimateSuggestions, projectDecisions, projectItems],
   );
+  const selectedProjectReviewCounts = useMemo<ProjectReviewCounts>(
+    () => ({
+      total: selectedProjectPreparedReviewCount,
+      estimates: estimateSuggestions.filter((suggestion) => projectItemIds.has(suggestion.taskId)).length,
+      dueDates: dueDateDecisions.filter((decision) => projectItemIds.has(decision.task.id)).length,
+      projects: projectDecisions.filter((decision) => projectItemIds.has(decision.task.id)).length,
+    }),
+    [dueDateDecisions, estimateSuggestions, projectDecisions, projectItemIds, selectedProjectPreparedReviewCount],
+  );
+  const isSearching = normalizeSearch(query).length > 0;
+  const noProjectCount = items.filter(isNoProjectTask).length;
 
   const submit = () => {
     const trimmed = title.trim();
@@ -1443,6 +1737,24 @@ export default function TasksPage() {
         },
       );
     };
+  const skipEstimate = (task: Task, suggestion: EstimateSuggestion) => {
+    haptic('light');
+    hideSuggestion(suggestion.id);
+    patchTask.mutate(
+      { id: task.id, input: { estimated_minutes: null, estimate_source: 'skipped' } },
+      {
+        onSuccess: () => {
+          decideSuggestion.mutate({ id: suggestion.id, accept: false });
+          show(copy.estimateSaved, 'success');
+          setEstimateEditing(null);
+        },
+        onError: () => {
+          restoreSuggestion(suggestion.id);
+          show(copy.saveFailed, 'error');
+        },
+      },
+    );
+  };
   const editEstimate = (task: Task, suggestion: { id: string; minutes: number; reason?: string | null; title?: string }) =>
     setEstimateEditing({ task, suggestion: { title: suggestion.title ?? `Estimate ${task.title}`, ...suggestion, taskId: task.id } });
 
@@ -1671,17 +1983,21 @@ export default function TasksPage() {
     </AnimatePresence>
   );
 
-  const loading = tasksQuery.isPending || (view === 'projects' && projectsQuery.isPending);
-  const errored = tasksQuery.isError || (view === 'projects' && projectsQuery.isError);
+  const loading = activeTasksQuery.isPending
+    || projectsQuery.isPending
+    || ((view === 'done' || isSearching) && doneTasksQuery.isPending);
+  const errored = activeTasksQuery.isError
+    || projectsQuery.isError
+    || ((view === 'done' || isSearching) && doneTasksQuery.isError);
   const empty = {
-    today: copy.emptyToday,
+    open: copy.emptyOpen,
     projects: copy.emptyProjects,
     review: copy.emptyReview,
     done: copy.emptyDone,
   } satisfies Record<TaskView, readonly string[]>;
 
   return (
-    <Stagger>
+    <Stagger className="pb-24">
       <Rise>
         <div className="card card-strong flex h-12 items-center gap-2.5 px-4">
           <Search size={18} className="shrink-0 text-accent-text" />
@@ -1705,7 +2021,7 @@ export default function TasksPage() {
               onClick={() => {
                 setView(tab.id);
                 setSelectedProject(null);
-                setReviewMode(null);
+                setSelectedReviewGroupKey(null);
               }}
               className={`h-9 rounded-xl text-[13px] font-semibold transition-colors ${
                 view === tab.id ? 'bg-[var(--surface-strong)] text-accent-text shadow-sm' : 'text-hint'
@@ -1717,13 +2033,15 @@ export default function TasksPage() {
         </div>
       </Rise>
 
-      {view !== 'projects' && view !== 'review' && projectNames.length > 0 && (
+      {view === 'open' && !isSearching && (
         <Rise>
-          <div className="no-scrollbar -mx-4 mt-2 flex gap-2 overflow-x-auto px-4 py-1">
-            {projectNames.map((name) => (
-              <Chip key={name} label={name} active={project === name} onClick={() => setProject(project === name ? null : name)} />
-            ))}
-          </div>
+          <OpenScopeChips
+            tasks={items}
+            scope={openScope}
+            locale={locale}
+            backlogProjectId={backlogProjectId}
+            onChange={setOpenScope}
+          />
         </Rise>
       )}
 
@@ -1732,37 +2050,87 @@ export default function TasksPage() {
           <SkeletonList count={4} lines={1} />
         ) : errored ? (
           <ErrorState message={copy.loadError} onRetry={() => {
-            void tasksQuery.refetch();
+            void activeTasksQuery.refetch();
+            void doneTasksQuery.refetch();
             void projectsQuery.refetch();
+            void suggestionsQuery.refetch();
           }} />
+        ) : isSearching ? (
+          <SearchResults
+            query={query}
+            scope={searchScope}
+            tasks={items}
+            doneTasks={visibleDone}
+            projects={allProjects}
+            locale={locale}
+            onScopeChange={setSearchScope}
+            renderTaskList={renderTaskList}
+            onOpenProject={(project) => {
+              setQuery('');
+              setView('projects');
+              setSelectedProject(project);
+            }}
+            onReopen={reopenTask}
+            onOpenTask={setEditing}
+          />
         ) : view === 'projects' && selectedProject ? (
           <ProjectDetail
             project={selectedProject}
-            tasks={searchedProjectItems}
+            tasks={projectItems}
             locale={locale}
-            preparedReviewCount={selectedProjectPreparedReviewCount}
+            reviewCounts={selectedProjectReviewCounts}
             onBack={() => setSelectedProject(null)}
             onReviewCleanup={() => {
+              setSelectedReviewGroupKey(groupKeyForProject(selectedProject));
               setSelectedProject(null);
               setView('review');
-              setReviewMode(null);
             }}
             onOpenTask={setEditing}
             renderTaskList={renderTaskList}
           />
         ) : view === 'projects' ? (
-          projects.length === 0 ? (
-            <EmptyState icon={CheckCircle2} title={empty.projects[0]} hint={empty.projects[1]} />
-          ) : (
-            <ProjectList projects={projects} locale={locale} onOpen={setSelectedProject} />
-          )
+          <ProjectList
+            projects={allProjects}
+            locale={locale}
+            onOpen={setSelectedProject}
+            onOpenBacklog={() => {
+              setView('open');
+              setOpenScope('backlog');
+            }}
+            noProjectCount={noProjectCount}
+            onOpenNoProject={() => {
+              setView('open');
+              setOpenScope('no_project');
+            }}
+          />
+        ) : view === 'review' && selectedReviewGroup ? (
+          <ReviewProjectView
+            group={selectedReviewGroup}
+            tasks={selectedReviewGroup.tasks}
+            estimates={selectedReviewEstimates}
+            dueDates={selectedReviewDueDates}
+            projectDecisions={selectedReviewProjectDecisions}
+            locale={locale}
+            onBack={() => setSelectedReviewGroupKey(null)}
+            onAcceptEstimate={acceptEstimate}
+            onEditEstimate={editEstimate}
+            onSkipEstimate={skipEstimate}
+            onAcceptDueDate={acceptDueDate}
+            onChangeDueDate={setDateChanging}
+            onNoDate={markNoDeadline}
+            onAcceptProject={acceptProjectDecision}
+            onChangeProject={setProjectChanging}
+            onKeepUnassigned={keepUnassigned}
+          />
         ) : view === 'review' ? (
           <ReviewHub
-            suggestions={estimateSuggestions}
-            dueDateDecisions={dueDateDecisions}
-            projectDecisions={projectDecisions}
+            groups={reviewGroups}
+            total={estimateSuggestions.length + dueDateDecisions.length + projectDecisions.length}
+            estimateCount={estimateSuggestions.length}
+            dueDateCount={dueDateDecisions.length}
+            projectCount={projectDecisions.length}
             locale={locale}
-            onOpenReview={setReviewMode}
+            onOpenGroup={(group) => setSelectedReviewGroupKey(group.key)}
           />
         ) : view === 'done' ? (
           visibleDone.length === 0 ? (
@@ -1771,27 +2139,29 @@ export default function TasksPage() {
             <DoneView tasks={visibleDone} locale={locale} onReopen={reopenTask} onOpenTask={setEditing} />
           )
         ) : visible.length === 0 ? (
-          <EmptyState icon={CheckCircle2} title={empty[view][0]} hint={empty[view][1]} />
+          <EmptyState icon={CheckCircle2} title={empty.open[0]} hint={empty.open[1]} />
         ) : (
           renderTaskList(visible)
         )}
       </Rise>
 
-      <button
-        type="button"
-        aria-label={copy.addTask}
-        onClick={() => {
-          haptic('light');
-          setCreating(true);
-        }}
-        className="fixed z-[55] flex h-14 w-14 items-center justify-center rounded-full bg-accent text-white shadow-card active:scale-95"
-        style={{
-          right: 'max(20px, calc((100vw - 860px) / 2 + 20px))',
-          bottom: 'calc(env(safe-area-inset-bottom) + 96px)',
-        }}
-      >
-        <Plus size={24} strokeWidth={2.2} />
-      </button>
+      {view !== 'done' && (
+        <button
+          type="button"
+          aria-label={copy.addTask}
+          onClick={() => {
+            haptic('light');
+            setCreating(true);
+          }}
+          className="fixed z-[55] flex h-14 w-14 items-center justify-center rounded-full bg-accent text-white shadow-card active:scale-95"
+          style={{
+            right: 'max(20px, calc((100vw - 860px) / 2 + 20px))',
+            bottom: 'calc(env(safe-area-inset-bottom) + 96px)',
+          }}
+        >
+          <Plus size={24} strokeWidth={2.2} />
+        </button>
+      )}
 
       <TaskEditSheet task={editing} onClose={() => setEditing(null)} />
       {creating && (
@@ -1802,36 +2172,6 @@ export default function TasksPage() {
           onClose={() => setCreating(false)}
           onSubmit={submit}
           isPending={createTask.isPending}
-        />
-      )}
-      {reviewMode === 'estimates' && (
-        <EstimateReviewSheet
-          tasks={visible}
-          suggestions={estimateSuggestions}
-          locale={locale}
-          onClose={() => setReviewMode(null)}
-          onAcceptEstimate={acceptEstimate}
-          onEditEstimate={editEstimate}
-        />
-      )}
-      {reviewMode === 'due_dates' && (
-        <PlanDatesSheet
-          decisions={dueDateDecisions}
-          locale={locale}
-          onClose={() => setReviewMode(null)}
-          onAccept={acceptDueDate}
-          onChange={setDateChanging}
-          onNoDeadline={markNoDeadline}
-        />
-      )}
-      {reviewMode === 'projects' && (
-        <SortProjectsSheet
-          decisions={projectDecisions}
-          locale={locale}
-          onClose={() => setReviewMode(null)}
-          onAccept={acceptProjectDecision}
-          onChange={setProjectChanging}
-          onKeepUnassigned={keepUnassigned}
         />
       )}
       {dateChanging && (

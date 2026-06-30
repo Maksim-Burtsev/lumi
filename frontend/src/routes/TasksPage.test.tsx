@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
@@ -119,6 +119,7 @@ describe('TasksPage Projects UX', () => {
 
     const user = userEvent.setup();
     renderTasksPage('en');
+    await user.click(await screen.findByRole('button', { name: /No date/i }));
     await user.click(await screen.findByRole('button', { name: /Buy capsules/i }));
 
     await waitFor(() => {
@@ -155,6 +156,75 @@ describe('TasksPage Projects UX', () => {
     await waitFor(() => {
       expect(createSpy).toHaveBeenCalledWith({ title: 'Write launch notes' });
     });
+  });
+
+  it('shows Open smart views and filters Backlog, No project, No estimate, and No date tasks', async () => {
+    vi.spyOn(api, 'listTasks').mockImplementation(async (filter) => ({
+      items: filter === 'done'
+        ? []
+        : [
+            makeTask({ id: 'task-today', title: 'Today task', due_at: new Date().toISOString() }),
+            makeTask({ id: 'task-upcoming', title: 'Upcoming task', due_at: '2099-06-21T10:00:00Z' }),
+            makeTask({ id: 'task-backlog', title: 'Backlog idea', project: 'Backlog', project_id: 'project-backlog' }),
+            makeTask({ id: 'task-loose', title: 'Loose task' }),
+            makeTask({ id: 'task-skipped', title: 'Skipped estimate task', estimate_source: 'skipped' }),
+          ],
+    }));
+    vi.spyOn(api, 'listProjects').mockResolvedValue({
+      items: [
+        makeProject({ id: 'project-backlog', name: 'Backlog', system_key: 'backlog', is_system: true }),
+      ],
+    });
+    vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({ items: [] });
+
+    const user = userEvent.setup();
+    renderTasksPage('en');
+
+    expect(await screen.findByRole('button', { name: 'Open' })).toHaveClass('text-accent-text');
+    expect(screen.getByRole('button', { name: /Today/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Upcoming/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /No project/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Backlog/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /No estimate/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /No date/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Backlog/i }));
+    expect(screen.getByText('Backlog idea')).toBeInTheDocument();
+    expect(screen.queryByText('Loose task')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /No project/i }));
+    expect(screen.getByText('Loose task')).toBeInTheDocument();
+    expect(screen.queryByText('Backlog idea')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /No estimate/i }));
+    expect(screen.getByText('Loose task')).toBeInTheDocument();
+    expect(screen.queryByText('Skipped estimate task')).not.toBeInTheDocument();
+  });
+
+  it('runs global search while Projects is selected and does not show create-empty filler', async () => {
+    vi.spyOn(api, 'listTasks').mockImplementation(async (filter) => ({
+      items: filter === 'done'
+        ? []
+        : [
+            makeTask({ id: 'task-agent', title: 'Check new agent', project: 'Lumi', project_id: 'project-lumi', estimated_minutes: 15 }),
+          ],
+    }));
+    vi.spyOn(api, 'listProjects').mockResolvedValue({
+      items: [makeProject({ id: 'project-lumi', name: 'Lumi' })],
+    });
+    vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({ items: [] });
+
+    const user = userEvent.setup();
+    renderTasksPage('en');
+    await user.click(await screen.findByRole('button', { name: 'Projects' }));
+    await user.type(screen.getByRole('searchbox', { name: 'Search tasks' }), 'agent');
+
+    expect(await screen.findByText('Search results')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Tasks 1/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Projects 0/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Done 0/i })).toBeInTheDocument();
+    expect(screen.getByText('Check new agent')).toBeInTheDocument();
+    expect(screen.queryByText(/No exact task/i)).not.toBeInTheDocument();
   });
 
   it('renders Health Stack projects without demotivating progress percentages', async () => {
@@ -225,20 +295,19 @@ describe('TasksPage Projects UX', () => {
     await user.click(await screen.findByRole('button', { name: 'Projects' }));
     await user.click(screen.getByRole('button', { name: /Open project Work/i }));
 
-    expect(await screen.findByText('Why it needs attention')).toBeInTheDocument();
     expect(screen.getByText('Next move')).toBeInTheDocument();
     expect(screen.getAllByText('Extend tool pool').length).toBeGreaterThan(0);
-    expect(screen.getByText('Next')).toBeInTheDocument();
-    expect(screen.getByText('Later')).toBeInTheDocument();
+    expect(screen.getByText('Tasks in this project')).toBeInTheDocument();
+    expect(screen.queryByText('Ready')).not.toBeInTheDocument();
   });
 });
 
 describe('TasksPage Review and estimates', () => {
-  it('opens a bulk estimate review from the Estimates category', async () => {
+  it('opens estimate decisions inside a project-scoped review', async () => {
     vi.spyOn(api, 'listTasks').mockResolvedValue({
       items: [
-        makeTask({ id: 'task-1', title: 'Compare Mira design', project: 'Lumi' }),
-        makeTask({ id: 'task-2', title: 'Buy capsules', project: 'Shopping' }),
+        makeTask({ id: 'task-1', title: 'Compare Mira design', project: 'Lumi', project_id: 'project-lumi' }),
+        makeTask({ id: 'task-2', title: 'Buy capsules', project: 'Lumi', project_id: 'project-lumi' }),
       ],
     } satisfies TasksResponse);
     vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
@@ -277,21 +346,20 @@ describe('TasksPage Review and estimates', () => {
     const user = userEvent.setup();
     renderTasksPage('en');
     await user.click(await screen.findByRole('button', { name: 'Review' }));
-    await user.click(screen.getByRole('button', { name: /Review estimates/i }));
+    await user.click(screen.getByRole('button', { name: /Review Lumi decisions/i }));
 
-    const dialog = screen.getByRole('dialog', { name: 'Estimate suggestions' });
-    expect(dialog).toBeInTheDocument();
-    expect(within(dialog).getByText('Compare Mira design')).toBeInTheDocument();
-    expect(within(dialog).getByText('Buy capsules')).toBeInTheDocument();
-    expect(within(dialog).getByText('45 min')).toBeInTheDocument();
-    expect(within(dialog).getByText('10 min')).toBeInTheDocument();
+    expect(screen.getByText('Review Lumi')).toBeInTheDocument();
+    expect(screen.getByText('Compare Mira design')).toBeInTheDocument();
+    expect(screen.getByText('Buy capsules')).toBeInTheDocument();
+    expect(screen.getByText(/45 min/i)).toBeInTheDocument();
+    expect(screen.getByText(/10 min/i)).toBeInTheDocument();
   });
 
-  it('keeps the bulk estimate review open and removes an accepted row', async () => {
+  it('keeps the project review open and removes an accepted estimate row', async () => {
     vi.spyOn(api, 'listTasks').mockResolvedValue({
       items: [
-        makeTask({ id: 'task-1', title: 'Compare Mira design', project: 'Lumi' }),
-        makeTask({ id: 'task-2', title: 'Buy capsules', project: 'Shopping' }),
+        makeTask({ id: 'task-1', title: 'Compare Mira design', project: 'Lumi', project_id: 'project-lumi' }),
+        makeTask({ id: 'task-2', title: 'Buy capsules', project: 'Lumi', project_id: 'project-lumi' }),
       ],
     } satisfies TasksResponse);
     vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
@@ -346,11 +414,11 @@ describe('TasksPage Review and estimates', () => {
     const user = userEvent.setup();
     renderTasksPage('en');
     await user.click(await screen.findByRole('button', { name: 'Review' }));
-    await user.click(screen.getByRole('button', { name: /Review estimates/i }));
+    await user.click(screen.getByRole('button', { name: /Review Lumi decisions/i }));
     await user.click(screen.getByRole('button', { name: /Accept estimate for Compare Mira design/i }));
 
     await waitFor(() => {
-      expect(screen.getByRole('dialog', { name: 'Estimate suggestions' })).toBeInTheDocument();
+      expect(screen.getByText('Review Lumi')).toBeInTheDocument();
       expect(screen.queryByText('Compare Mira design')).not.toBeInTheDocument();
       expect(screen.getByText('Buy capsules')).toBeInTheDocument();
     });
@@ -401,9 +469,9 @@ describe('TasksPage Review and estimates', () => {
     const user = userEvent.setup();
     renderTasksPage('en');
     await user.click(await screen.findByRole('button', { name: 'Review' }));
-    await user.click(screen.getByRole('button', { name: /Review estimates/i }));
+    await user.click(screen.getByRole('button', { name: /Review Lumi decisions/i }));
     await user.click(screen.getByRole('button', { name: /Change estimate for Compare Mira design/i }));
-    await user.click(screen.getByRole('button', { name: 'Do not estimate' }));
+    await user.click(screen.getByRole('button', { name: 'No estimate' }));
 
     await waitFor(() => {
       expect(patchSpy).toHaveBeenCalledWith('task-1', { estimated_minutes: null, estimate_source: 'skipped' });
@@ -411,7 +479,7 @@ describe('TasksPage Review and estimates', () => {
     });
   });
 
-  it('shows a prepared Review command center instead of raw task gaps', async () => {
+  it('groups Review decisions by project and opens project-scoped review', async () => {
     vi.spyOn(api, 'listTasks').mockResolvedValue({
       items: [
         makeTask({ id: 'task-1', title: 'Compare Mira design', project: 'Lumi', project_id: 'project-lumi' }),
@@ -456,14 +524,17 @@ describe('TasksPage Review and estimates', () => {
     renderTasksPage('en');
     await user.click(await screen.findByRole('button', { name: 'Review' }));
 
-    expect(screen.getByText('Review Hub')).toBeInTheDocument();
+    expect(screen.getByText('Review by project')).toBeInTheDocument();
     expect(screen.getByText('Lumi prepared 2 decisions')).toBeInTheDocument();
-    expect(screen.getByText('Estimate Compare Mira design')).toBeInTheDocument();
-    expect(screen.getByText('Sort into Backlog')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Review estimates/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Review project sorting/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Review Lumi decisions/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Review No project decisions/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Review Lumi decisions/i }));
+    expect(screen.getByText('Review Lumi')).toBeInTheDocument();
+    expect(screen.getByText('Estimates')).toBeInTheDocument();
+    expect(screen.getByText('Compare Mira design')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /No estimate for Compare Mira design/i })).toBeInTheDocument();
     expect(screen.queryByText('Need project')).not.toBeInTheDocument();
-    expect(screen.queryByText('Разбор')).not.toBeInTheDocument();
   });
 
   it('opens Plan dates as grouped decision cards and accepts a prepared due date', async () => {
@@ -505,12 +576,12 @@ describe('TasksPage Review and estimates', () => {
     const user = userEvent.setup();
     renderTasksPage('en');
     await user.click(await screen.findByRole('button', { name: 'Review' }));
-    await user.click(screen.getByRole('button', { name: /Review plan dates/i }));
+    await user.click(screen.getByRole('button', { name: /Review Lumi decisions/i }));
 
-    expect(screen.getByRole('dialog', { name: 'Plan dates' })).toBeInTheDocument();
-    expect(screen.getByText('Likely this week')).toBeInTheDocument();
+    expect(screen.getByText('Review Lumi')).toBeInTheDocument();
+    expect(screen.getByText('Plan dates')).toBeInTheDocument();
     expect(screen.getByText('Prepare UI progress notes')).toBeInTheDocument();
-    expect(screen.getByText('Small task that fits this week')).toBeInTheDocument();
+    expect(screen.getByText(/Small task that fits this week/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /Accept date for Prepare UI progress notes/i }));
     await waitFor(() => {
@@ -558,8 +629,8 @@ describe('TasksPage Review and estimates', () => {
     const user = userEvent.setup();
     renderTasksPage('en');
     await user.click(await screen.findByRole('button', { name: 'Review' }));
-    await user.click(screen.getByRole('button', { name: /Review plan dates/i }));
-    await user.click(screen.getByRole('button', { name: /No deadline for Think about subscription UX/i }));
+    await user.click(screen.getByRole('button', { name: /Review Backlog decisions/i }));
+    await user.click(screen.getByRole('button', { name: /No date for Think about subscription UX/i }));
 
     await waitFor(() => {
       expect(patchSpy).toHaveBeenCalledWith('task-backlog-date', { review_skips: { due_date: true } });
@@ -600,13 +671,12 @@ describe('TasksPage Review and estimates', () => {
     const user = userEvent.setup();
     renderTasksPage('en');
     await user.click(await screen.findByRole('button', { name: 'Review' }));
-    await user.click(screen.getByRole('button', { name: /Review project sorting/i }));
+    await user.click(screen.getByRole('button', { name: /Review No project decisions/i }));
 
-    const dialog = screen.getByRole('dialog', { name: 'Sort into projects' });
-    expect(dialog).toBeInTheDocument();
-    expect(within(dialog).getByText('Suggested project')).toBeInTheDocument();
-    expect(within(dialog).getByText('Lumi')).toBeInTheDocument();
-    expect(within(dialog).getByText('Looks related to Lumi docs')).toBeInTheDocument();
+    expect(screen.getByText('Review No project')).toBeInTheDocument();
+    expect(screen.getByText('Sort into projects')).toBeInTheDocument();
+    expect(screen.getByText('Lumi')).toBeInTheDocument();
+    expect(screen.getByText('Looks related to Lumi docs')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /Keep Update office files unassigned/i }));
     await waitFor(() => {
@@ -615,7 +685,7 @@ describe('TasksPage Review and estimates', () => {
     });
   });
 
-  it('shows Backlog as a system project with a cleanup panel', async () => {
+  it('shows Backlog as a system project with project tasks and suggestion summary', async () => {
     const backlogProject = makeProject({
       id: 'project-backlog',
       name: 'Backlog',
@@ -663,9 +733,9 @@ describe('TasksPage Review and estimates', () => {
     await user.click(await screen.findByRole('button', { name: 'Projects' }));
     await user.click(screen.getByRole('button', { name: /Open project Backlog/i }));
 
-    expect(await screen.findByText('Backlog cleanup')).toBeInTheDocument();
-    expect(screen.getByText('1 decision ready')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Review cleanup' })).toBeInTheDocument();
+    expect(await screen.findByText('Lumi suggestions')).toBeInTheDocument();
+    expect(screen.getByText('Tasks in this project')).toBeInTheDocument();
+    expect(screen.getAllByText('Think about subscription UX').length).toBeGreaterThan(0);
   });
 
   it('groups Done tasks and can undo completion inline', async () => {
@@ -689,7 +759,7 @@ describe('TasksPage Review and estimates', () => {
     await user.click(await screen.findByRole('button', { name: 'Done' }));
 
     expect(await screen.findByText('Work done')).toBeInTheDocument();
-    expect(screen.getAllByText('Today').length).toBeGreaterThan(1);
+    expect(screen.getByText('Today')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /Undo completion for Buy capsules/i }));
 
     await waitFor(() => {
@@ -748,6 +818,7 @@ describe('TasksPage Review and estimates', () => {
 
     const user = userEvent.setup();
     renderTasksPage('en');
+    await user.click(await screen.findByRole('button', { name: /No date/i }));
 
     expect(await screen.findByText('Estimate: 45 min')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Edit estimate for Compare Mira design' }));
@@ -799,6 +870,7 @@ describe('TasksPage Review and estimates', () => {
 
     const user = userEvent.setup();
     renderTasksPage('en');
+    await user.click(await screen.findByRole('button', { name: /No date/i }));
     await user.click(await screen.findByRole('button', { name: 'Accept estimate for Compare Mira design' }));
 
     await waitFor(() => {
