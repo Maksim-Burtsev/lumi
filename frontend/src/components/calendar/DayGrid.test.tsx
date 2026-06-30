@@ -42,6 +42,7 @@ function renderGrid(event: CalendarEvent) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+  queryClient.setQueryData(['settings'], makeSettingsResponse());
   render(
     <QueryClientProvider client={queryClient}>
       <DayGrid

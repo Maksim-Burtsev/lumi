@@ -122,6 +122,7 @@ dev-auth-up:
 		-e DEV_AUTH_ENABLED=true \
 		-e DEV_AUTH_TELEGRAM_USER_ID=$$telegram_id \
 		-p 127.0.0.1:$(LUMI_DEV_AUTH_PORT):8000 \
+		-p '[::1]:$(LUMI_DEV_AUTH_PORT):8000' \
 		-v "$(CURDIR)/data/files:/app/data/files" \
 		-v "$(CURDIR)/data/secrets:/app/data/secrets" \
 		-v "$(CURDIR)/frontend/dist:/app/static/app:ro" \
