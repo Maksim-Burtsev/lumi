@@ -58,6 +58,8 @@ jobs:
           uv pip install --no-deps -e .
       - name: Lint backend
         run: uv run ruff check .
+      - name: Typecheck backend
+        run: uv run mypy src/lumi
       - name: Test backend
         run: uv run pytest -q
 
