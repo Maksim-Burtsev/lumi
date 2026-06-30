@@ -34,7 +34,7 @@ def test_alembic_has_single_head():
     config = Config(str(backend_root / "alembic.ini"))
     config.set_main_option("script_location", str(backend_root / "alembic"))
 
-    assert ScriptDirectory.from_config(config).get_heads() == ["9f1d2c3a4b5e"]
+    assert ScriptDirectory.from_config(config).get_heads() == ["c1a2b3d4e5f6"]
 
 
 async def test_timezone_cleanup_migration_repairs_invalid_user_task_and_event(db_session):

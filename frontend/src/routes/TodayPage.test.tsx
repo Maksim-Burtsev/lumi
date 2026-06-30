@@ -28,7 +28,7 @@ vi.mock('../components/timeline/Timeline', () => {
           <div key={entry.id}>
             <button type="button" onClick={entry.onPress}>
               <span>{entry.title}</span>
-              {entry.hasPersonalNote && <span role="img" aria-label="Есть личная заметка" />}
+              {entry.hasPersonalNote && <span role="img" aria-label="Has personal note" />}
             </button>
             <span>
               {time(entry.start_at)}–{time(entry.end_at)}
@@ -89,7 +89,7 @@ function makeSettingsResponse(locale: 'en' | 'ru' = 'ru'): SettingsResponse {
 function makeTodayResponse(overrides: Partial<TodayResponse> = {}): TodayResponse {
   return {
     date: '2026-06-12',
-    greeting: 'Добрый вечер',
+    greeting: 'Good evening',
     summary: {
       meetings_today: 0,
       tasks_active: 0,
@@ -102,30 +102,30 @@ function makeTodayResponse(overrides: Partial<TodayResponse> = {}): TodayRespons
       {
         id: `confirmation-${firstConfirmationId}`,
         kind: 'confirmation',
-        title: 'Создать задачу «Alpha»?',
-        subtitle: 'Ждет решения',
+        title: 'Create task "Alpha"?',
+        subtitle: 'Pending decision',
         ref_id: firstConfirmationId,
         action_type: 'create_task',
         action_payload: { title: 'Alpha', project: 'Lumi' },
         risk_class: 'write_internal',
         approval_mode: 'auto_or_confirm',
         ui_mode: 'inline_confirm',
-        primary_label: 'Создать',
-        secondary_label: 'Отклонить',
+        primary_label: 'Create',
+        secondary_label: 'Decline',
       },
       {
         id: `confirmation-${secondConfirmationId}`,
         kind: 'confirmation',
-        title: 'Создать задачу «Beta»?',
-        subtitle: 'Ждет решения',
+        title: 'Create task "Beta"?',
+        subtitle: 'Pending decision',
         ref_id: secondConfirmationId,
         action_type: 'create_task',
         action_payload: { title: 'Beta', project: 'Lumi' },
         risk_class: 'write_internal',
         approval_mode: 'auto_or_confirm',
         ui_mode: 'inline_confirm',
-        primary_label: 'Создать',
-        secondary_label: 'Отклонить',
+        primary_label: 'Create',
+        secondary_label: 'Decline',
       },
     ],
     suggestions: [],
@@ -138,11 +138,11 @@ function makeTodayResponse(overrides: Partial<TodayResponse> = {}): TodayRespons
 function makeDecisionResponse(): ConfirmationDecisionResponse {
   return {
     executed: true,
-    result_text: 'Создал задачу: «Alpha».',
+    result_text: 'Task created: Alpha.',
     confirmation: {
       id: firstConfirmationId,
       action_type: 'create_task',
-      title: 'Создать задачу «Alpha»?',
+      title: 'Create task "Alpha"?',
       status: 'accepted',
       action_payload: { title: 'Alpha', project: 'Lumi' },
       created_at: '2026-06-12T00:00:00Z',
@@ -151,8 +151,8 @@ function makeDecisionResponse(): ConfirmationDecisionResponse {
       risk_class: 'write_internal',
       approval_mode: 'auto_or_confirm',
       ui_mode: 'inline_confirm',
-      primary_label: 'Создать',
-      secondary_label: 'Отклонить',
+      primary_label: 'Create',
+      secondary_label: 'Decline',
     },
   };
 }
@@ -161,7 +161,7 @@ function makeRejectResponse(): ConfirmationDecisionResponse {
   return {
     ...makeDecisionResponse(),
     executed: false,
-    result_text: 'Ок, не делаю.',
+    result_text: "Ok, I won't do it.",
     confirmation: {
       ...makeDecisionResponse().confirmation,
       status: 'rejected',
@@ -267,7 +267,7 @@ describe('TodayPage timeline gaps', () => {
 
     renderTodayPage();
 
-    expect(await screen.findAllByText('Свободно · 30 мин')).toHaveLength(2);
+    expect(await screen.findAllByText('Free · 30 min')).toHaveLength(2);
     expect(screen.getByText('13:30–14:00')).toBeInTheDocument();
     expect(screen.getByText('15:00–15:30')).toBeInTheDocument();
     expect(screen.queryByText('14:30–14:45')).not.toBeInTheDocument();
@@ -359,7 +359,7 @@ describe('TodayPage personal notes', () => {
     renderTodayPage();
 
     expect(await screen.findByText('Product sync')).toBeInTheDocument();
-    expect(await screen.findByRole('img', { name: 'Есть личная заметка' })).toBeInTheDocument();
+    expect(await screen.findByRole('img', { name: 'Has personal note' })).toBeInTheDocument();
   });
 
   it('opens the event sheet from Today schedule and shows the personal-note section', async () => {
@@ -376,8 +376,8 @@ describe('TodayPage personal notes', () => {
     await user.click(await screen.findByRole('button', { name: /Product sync/ }));
 
     expect(await screen.findByRole('dialog', { name: 'Product sync' })).toBeInTheDocument();
-    expect(screen.getByText('Личная заметка')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Добавить заметку' })).toBeInTheDocument();
+    expect(screen.getByText('Personal note')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add note' })).toBeInTheDocument();
   });
 
   it('uses English personal-note copy when app language is English', async () => {
@@ -419,7 +419,7 @@ describe('TodayPage personal notes', () => {
 
     await user.click(await screen.findByRole('button', { name: /Product sync/ }));
 
-    expect(await screen.findByText('AI-резюме')).toBeInTheDocument();
+    expect(await screen.findByText('AI summary')).toBeInTheDocument();
     expect(screen.getByText('Short generated summary.')).toBeInTheDocument();
     expect(screen.queryByText('AI summary: Short generated summary.')).not.toBeInTheDocument();
   });
@@ -458,11 +458,11 @@ describe('TodayPage personal notes', () => {
     renderTodayPage();
 
     await user.click(await screen.findByRole('button', { name: /Product sync/ }));
-    await user.click(await screen.findByRole('button', { name: 'Добавить заметку' }));
-    fireEvent.change(screen.getByPlaceholderText('Короткий личный контекст'), {
+    await user.click(await screen.findByRole('button', { name: 'Add note' }));
+    fireEvent.change(screen.getByPlaceholderText('Context just for yourself'), {
       target: { value: 'Ask about launch risk.' },
     });
-    await user.click(screen.getByRole('button', { name: 'Сохранить' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => {
       expect(updateSpy).toHaveBeenCalledWith('event-1', { note: 'Ask about launch risk.' });
@@ -497,19 +497,19 @@ describe('TodayPage confirmation decisions', () => {
 
     renderTodayPage();
 
-    const alpha = await screen.findByRole('button', { name: /Создать задачу «Alpha»/ });
+    const alpha = await screen.findByRole('button', { name: /Create task "Alpha"/ });
     await user.click(alpha);
 
-    expect(screen.queryByRole('dialog', { name: 'Решение' })).not.toBeInTheDocument();
-    expect(screen.getByText('Изменение останется внутри Lumi.')).toBeInTheDocument();
-    expect(screen.getByText('Задача')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Создать' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Отклонить' })).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Decision' })).not.toBeInTheDocument();
+    expect(screen.getByText('This change stays inside Lumi.')).toBeInTheDocument();
+    expect(screen.getByText('Task')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Decline' })).toBeInTheDocument();
 
     await user.click(alpha);
 
-    expect(screen.queryByText('Изменение останется внутри Lumi.')).not.toBeInTheDocument();
-    expect(screen.queryByRole('dialog', { name: 'Решение' })).not.toBeInTheDocument();
+    expect(screen.queryByText('This change stays inside Lumi.')).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Decision' })).not.toBeInTheDocument();
   });
 
   it('handles an accepted confirmation inline and keeps the remaining item', async () => {
@@ -519,21 +519,21 @@ describe('TodayPage confirmation decisions', () => {
 
     renderTodayPage();
 
-    await screen.findByRole('button', { name: /Создать задачу «Alpha»/ });
-    await user.click(screen.getByRole('button', { name: /Создать задачу «Alpha»/ }));
+    await screen.findByRole('button', { name: /Create task "Alpha"/ });
+    await user.click(screen.getByRole('button', { name: /Create task "Alpha"/ }));
 
-    expect(screen.queryByRole('dialog', { name: 'Решение' })).not.toBeInTheDocument();
-    expect(screen.getByText('Задача')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Decision' })).not.toBeInTheDocument();
+    expect(screen.getByText('Task')).toBeInTheDocument();
     expect(screen.getByText('Alpha')).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'Создать' }));
+    await user.click(screen.getByRole('button', { name: 'Create' }));
 
     await waitFor(() => {
-      expect(screen.getByText('Создал задачу: «Alpha».')).toBeInTheDocument();
+      expect(screen.getByText('Task created: Alpha.')).toBeInTheDocument();
     });
     expect(acceptSpy).toHaveBeenCalledWith(firstConfirmationId);
-    expect(screen.queryByRole('button', { name: /Создать задачу «Alpha»/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Создать задачу «Beta»/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Create task "Alpha"/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Create task "Beta"/ })).toBeInTheDocument();
     expect(todaySpy).toHaveBeenCalledTimes(1);
   });
 
@@ -544,21 +544,21 @@ describe('TodayPage confirmation decisions', () => {
 
     renderTodayPage();
 
-    await screen.findByRole('button', { name: /Создать задачу «Alpha»/ });
-    await user.click(screen.getByRole('button', { name: /Создать задачу «Alpha»/ }));
+    await screen.findByRole('button', { name: /Create task "Alpha"/ });
+    await user.click(screen.getByRole('button', { name: /Create task "Alpha"/ }));
 
-    expect(screen.queryByRole('dialog', { name: 'Решение' })).not.toBeInTheDocument();
-    expect(screen.getByText('Задача')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Decision' })).not.toBeInTheDocument();
+    expect(screen.getByText('Task')).toBeInTheDocument();
     expect(screen.getByText('Alpha')).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'Отклонить' }));
+    await user.click(screen.getByRole('button', { name: 'Decline' }));
 
     await waitFor(() => {
-      expect(screen.getByText('Ок, не делаю.')).toBeInTheDocument();
+      expect(screen.getByText("Ok, I won't do it.")).toBeInTheDocument();
     });
     expect(rejectSpy).toHaveBeenCalledWith(firstConfirmationId);
-    expect(screen.queryByRole('button', { name: /Создать задачу «Alpha»/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Создать задачу «Beta»/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Create task "Alpha"/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Create task "Beta"/ })).toBeInTheDocument();
     expect(todaySpy).toHaveBeenCalledTimes(1);
   });
 });

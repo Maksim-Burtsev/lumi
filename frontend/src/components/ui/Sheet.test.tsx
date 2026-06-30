@@ -79,7 +79,7 @@ describe('Sheet scroll lock', () => {
     expect(document.body.style.top).toBe('-420px');
     expect(document.body.style.width).toBe('100%');
 
-    await user.click(screen.getByRole('button', { name: 'Закрыть' }));
+    await user.click(screen.getByRole('button', { name: 'Close' }));
 
     await waitFor(() => {
       expect(screen.queryByRole('dialog', { name: 'Decision' })).not.toBeInTheDocument();
@@ -105,7 +105,7 @@ describe('Sheet scroll lock', () => {
 
     expect(screen.getByRole('dialog', { name: 'Decision' })).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'Закрыть' }));
+    await user.click(screen.getByRole('button', { name: 'Close' }));
 
     await waitFor(() => {
       expect(screen.queryByRole('dialog', { name: 'Decision' })).not.toBeInTheDocument();

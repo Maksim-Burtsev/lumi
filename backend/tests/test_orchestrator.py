@@ -3262,7 +3262,7 @@ async def test_initial_progress_respects_fixed_reply_language_before_planner():
             on_progress=progress_updates.append,
         )
 
-    assert progress_updates[0] == "⏳ Понимаю запрос..."
+    assert progress_updates[0] == "Reading message..."
 
 
 async def test_agent_loop_status_falls_back_when_language_mismatches():
@@ -3478,6 +3478,7 @@ async def test_update_task_due_time_choice_applies_to_selected_candidate():
     })
     async with session_scope() as session:
         user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        user.is_allowed = True
         first = await TaskService(session).create_task(
             user,
             title="посмотреть ответ chatGPT по X",
@@ -3506,7 +3507,7 @@ async def test_update_task_due_time_choice_applies_to_selected_candidate():
 
     callback = type("Callback", (), {})()
     callback.data = f"update_pick:{confirmations[0].id.hex[:8]}:1"
-    callback.from_user = type("User", (), {"id": TEST_TELEGRAM_ID, "language_code": "ru"})()
+    callback.from_user = type("User", (), {"id": TEST_TELEGRAM_ID, "language_code": "ru", "username": None})()
     callback.message = type(
         "Message",
         (),
