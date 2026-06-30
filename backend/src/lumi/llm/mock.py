@@ -373,7 +373,8 @@ class MockLLMProvider:
                     "confidence": "high" if minutes <= 10 else "medium",
                     "reason": "Looks like a quick operational task." if minutes <= 10 else "Small enough for one focus block.",
                 })
-            skips = task.get("review_skips") if isinstance(task.get("review_skips"), dict) else {}
+            review_skips = task.get("review_skips")
+            skips: dict[str, Any] = review_skips if isinstance(review_skips, dict) else {}
             if task.get("due_at") is None and skips.get("due_date") is not True:
                 if task.get("project") == "Backlog":
                     decisions.append({

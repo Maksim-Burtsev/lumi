@@ -289,6 +289,8 @@ async def _run_case(case: ChatCase, gateway: LLMGateway) -> dict[str, Any]:
         )
         run = await session.get(AgentRun, result.agent_run_id)
         user = await UserService(session).get_by_telegram_id(QA_TELEGRAM_ID)
+        if user is None:
+            raise RuntimeError("QA user was not created")
         tool_rows = (
             await session.execute(
                 select(ToolCall).where(ToolCall.agent_run_id == result.agent_run_id).order_by(ToolCall.created_at)

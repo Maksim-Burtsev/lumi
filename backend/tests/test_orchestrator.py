@@ -43,6 +43,11 @@ from lumi.utils.time import local_now, local_to_utc, utc_to_local
 from .conftest import TEST_TELEGRAM_ID
 
 
+def _future_local_at(user, hour: int, minute: int = 0, *, days: int = 2) -> datetime:
+    target = (local_now(user.timezone) + timedelta(days=days)).date()
+    return datetime(target.year, target.month, target.day, hour, minute)
+
+
 class PendingTaskProvider:
     name = "pending-task"
     model = "pending-task-1"
@@ -546,8 +551,8 @@ async def test_agent_updates_internal_calendar_block_by_query(user):
         event = await calendar.create_internal_block(
             db_user,
             title="Dalma",
-            start_at=local_to_utc(datetime(2026, 6, 28, 17, 0), db_user.timezone),
-            end_at=local_to_utc(datetime(2026, 6, 28, 18, 0), db_user.timezone),
+            start_at=local_to_utc(_future_local_at(db_user, 17), db_user.timezone),
+            end_at=local_to_utc(_future_local_at(db_user, 18), db_user.timezone),
             created_by="agent",
         )
         provider = AgentPlannerProvider({
@@ -589,15 +594,15 @@ async def test_resolve_entity_asks_when_task_and_block_match(user):
         await TaskService(session).create_task(
             db_user,
             title="Dalma",
-            due_at=local_to_utc(datetime(2026, 6, 28, 15, 0), db_user.timezone),
+            due_at=local_to_utc(_future_local_at(db_user, 15), db_user.timezone),
             actor="user",
         )
         calendar = CalendarService(session)
         event = await calendar.create_internal_block(
             db_user,
             title="Dalma",
-            start_at=local_to_utc(datetime(2026, 6, 28, 17, 0), db_user.timezone),
-            end_at=local_to_utc(datetime(2026, 6, 28, 18, 0), db_user.timezone),
+            start_at=local_to_utc(_future_local_at(db_user, 17), db_user.timezone),
+            end_at=local_to_utc(_future_local_at(db_user, 18), db_user.timezone),
             created_by="agent",
         )
         provider = AgentPlannerProvider({
@@ -639,8 +644,8 @@ async def test_agent_cancels_internal_calendar_block_by_query(user):
         event = await calendar.create_internal_block(
             db_user,
             title="Dalma",
-            start_at=local_to_utc(datetime(2026, 6, 28, 17, 0), db_user.timezone),
-            end_at=local_to_utc(datetime(2026, 6, 28, 18, 0), db_user.timezone),
+            start_at=local_to_utc(_future_local_at(db_user, 17), db_user.timezone),
+            end_at=local_to_utc(_future_local_at(db_user, 18), db_user.timezone),
             created_by="agent",
         )
         provider = AgentPlannerProvider({
@@ -681,8 +686,8 @@ async def test_agent_refuses_external_calendar_update(user):
             external_calendar_id="primary",
             external_event_id="ext-1",
             title="External Dalma",
-            start_at=local_to_utc(datetime(2026, 6, 28, 17, 0), db_user.timezone),
-            end_at=local_to_utc(datetime(2026, 6, 28, 18, 0), db_user.timezone),
+            start_at=local_to_utc(_future_local_at(db_user, 17), db_user.timezone),
+            end_at=local_to_utc(_future_local_at(db_user, 18), db_user.timezone),
             timezone=db_user.timezone,
             status=CalendarEventStatus.CONFIRMED,
             created_by="external_sync",

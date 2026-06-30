@@ -4,17 +4,18 @@ from __future__ import annotations
 
 from typing import Literal
 
-DEFAULT_APP_LOCALE = "en"
-SUPPORTED_APP_LOCALES = ("en",)
-DEFAULT_REPLY_LANGUAGE_MODE = "auto"
-DEFAULT_REPLY_LANGUAGE = "en"
-DEFAULT_TIME_FORMAT = "auto"
-DEFAULT_THEME_MODE = "telegram"
-SUPPORTED_TIME_FORMATS = ("auto", "24h", "12h")
-SUPPORTED_THEME_MODES = ("telegram", "light", "dark")
 ReplyLanguageMode = Literal["auto", "fixed", "app_locale"]
 TimeFormat = Literal["auto", "24h", "12h"]
 ThemeMode = Literal["telegram", "light", "dark"]
+
+DEFAULT_APP_LOCALE = "en"
+SUPPORTED_APP_LOCALES = ("en",)
+DEFAULT_REPLY_LANGUAGE_MODE: ReplyLanguageMode = "auto"
+DEFAULT_REPLY_LANGUAGE = "en"
+DEFAULT_TIME_FORMAT: TimeFormat = "auto"
+DEFAULT_THEME_MODE: ThemeMode = "telegram"
+SUPPORTED_TIME_FORMATS: tuple[TimeFormat, ...] = ("auto", "24h", "12h")
+SUPPORTED_THEME_MODES: tuple[ThemeMode, ...] = ("telegram", "light", "dark")
 
 
 def primary_language_tag(value: str | None) -> str | None:

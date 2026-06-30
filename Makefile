@@ -1,4 +1,4 @@
-.PHONY: setup up up-detached down logs migrate revision seed test lint smoke \
+.PHONY: setup up up-detached down logs migrate revision seed test lint typecheck smoke \
 	assistant-core assistant-core-task assistant-core-calendar assistant-core-memory \
 	assistant-eval-coverage minimax-planner-smoke qa-required \
 	frontend-install frontend-build frontend-dev miniapp-local-up dev-auth-up dev-auth-down tunnel \
@@ -25,6 +25,8 @@ help:
 	@echo "  make minimax-planner-smoke real MiniMax planner routing smoke"
 	@echo "  make qa-required       print checks required by changed paths"
 	@echo "  make test              run backend pytest inside docker"
+	@echo "  make lint              run backend ruff and mypy inside docker"
+	@echo "  make typecheck         run backend mypy inside docker"
 	@echo "  make logs              tail logs of all services"
 	@echo "  make google-auth-local local Google OAuth flow (browser)"
 	@echo "  make down              stop everything"
@@ -66,7 +68,10 @@ test:
 	docker compose run --rm -e LLM_PROVIDER=mock api pytest -q
 
 lint:
-	docker compose run --rm api ruff check .
+	docker compose run --rm api sh -c 'ruff check . && mypy src/lumi'
+
+typecheck:
+	docker compose run --rm api mypy src/lumi
 
 smoke:
 	docker compose run --rm -e LLM_PROVIDER=mock api python -m lumi.scripts.smoke

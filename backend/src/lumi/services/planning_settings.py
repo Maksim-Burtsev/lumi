@@ -38,6 +38,10 @@ def _string_choice(value: object, choices: set[str], fallback: str) -> str:
     return value if isinstance(value, str) and value in choices else fallback
 
 
+def _dict_value(value: object) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
 def normalize_planning_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
     raw = dict((settings or {}).get("planning") or {})
     defaults = DEFAULT_PLANNING_SETTINGS
@@ -49,9 +53,9 @@ def normalize_planning_settings(settings: dict[str, Any] | None) -> dict[str, An
     if not work_days:
         work_days = list(defaults["work_days"])
 
-    raw_work = raw.get("work_hours") if isinstance(raw.get("work_hours"), dict) else {}
-    raw_quiet = raw.get("quiet_hours") if isinstance(raw.get("quiet_hours"), dict) else {}
-    raw_micro = raw.get("micro_slots") if isinstance(raw.get("micro_slots"), dict) else {}
+    raw_work = _dict_value(raw.get("work_hours"))
+    raw_quiet = _dict_value(raw.get("quiet_hours"))
+    raw_micro = _dict_value(raw.get("micro_slots"))
 
     micro_min = raw_micro.get("min_minutes", defaults["micro_slots"]["min_minutes"])
     if not isinstance(micro_min, int):

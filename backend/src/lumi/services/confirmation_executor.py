@@ -38,19 +38,23 @@ class ConfirmationExecutor:
         try:
             if action == "create_task":
                 signal = ExtractedTask.model_validate(payload)
-                task = await self.tasks.create_task_from_signal(user, signal)
-                text = _text(locale, f"Created task: \"{task.title}\".", f"Создал задачу: «{task.title}».")
-                if task.project:
+                created_task = await self.tasks.create_task_from_signal(user, signal)
+                text = _text(
+                    locale,
+                    f"Created task: \"{created_task.title}\".",
+                    f"Создал задачу: «{created_task.title}».",
+                )
+                if created_task.project:
                     text = _text(
                         locale,
-                        f"Created task: \"{task.title}\" in project {task.project}.",
-                        f"Создал задачу: «{task.title}» в проекте {task.project}.",
+                        f"Created task: \"{created_task.title}\" in project {created_task.project}.",
+                        f"Создал задачу: «{created_task.title}» в проекте {created_task.project}.",
                     )
-                if task.reminder_at:
+                if created_task.reminder_at:
                     text += _text(
                         locale,
-                        f" Reminder {fmt_local(task.reminder_at, user.timezone)}.",
-                        f" Напоминание {fmt_local(task.reminder_at, user.timezone)}.",
+                        f" Reminder {fmt_local(created_task.reminder_at, user.timezone)}.",
+                        f" Напоминание {fmt_local(created_task.reminder_at, user.timezone)}.",
                     )
                 return text
 
@@ -68,8 +72,8 @@ class ConfirmationExecutor:
                     task_id = uuid.UUID(str(payload.get("task_id") or ""))
                 except ValueError:
                     return _text(locale, "I couldn't find an active task. Clarify the title.", "Не нашёл активную задачу. Уточни название.")
-                task = await self.tasks.get(user, task_id)
-                if task is None or task.status == TaskStatus.DONE:
+                task_to_update = await self.tasks.get(user, task_id)
+                if task_to_update is None or task_to_update.status == TaskStatus.DONE:
                     return _text(
                         locale,
                         "This task is already done or deleted — there is nothing to update.",
@@ -79,7 +83,7 @@ class ConfirmationExecutor:
                 if not isinstance(updates, dict) or not updates:
                     return _text(locale, "I didn't understand what to change in the task. Clarify the update.", "Не понял, что изменить в задаче. Уточни изменение.")
                 raw_updates = updates
-                updates = resolve_task_update_fields(user=user, task=task, updates=raw_updates)
+                updates = resolve_task_update_fields(user=user, task=task_to_update, updates=raw_updates)
                 if not updates:
                     return _text(locale, "I didn't understand what to change in the task. Clarify the update.", "Не понял, что изменить в задаче. Уточни изменение.")
                 agent_run_id = None
@@ -88,15 +92,15 @@ class ConfirmationExecutor:
                         agent_run_id = uuid.UUID(str(payload["agent_run_id"]))
                     except ValueError:
                         agent_run_id = None
-                task = await self.tasks.update_task(
+                updated_task = await self.tasks.update_task(
                     user,
-                    task,
+                    task_to_update,
                     updates,
                     actor="user",
                     agent_run_id=agent_run_id,
                 )
                 return format_task_update_reply(
-                    task,
+                    updated_task,
                     updates,
                     language=str(payload.get("language") or locale),
                     timezone=user.timezone,
@@ -159,14 +163,14 @@ class ConfirmationExecutor:
                 )
 
             if action == "create_automation":
-                request = AutomationRequest.model_validate(payload)
+                automation_request = AutomationRequest.model_validate(payload)
                 automation = await self.automations.create(
                     user,
-                    type_=request.type,
-                    title=request.title,
-                    cron_expression=request.cron_expression or "30 8 * * 1-5",
-                    timezone=request.timezone,
-                    config=request.config,
+                    type_=automation_request.type,
+                    title=automation_request.title,
+                    cron_expression=automation_request.cron_expression or "30 8 * * 1-5",
+                    timezone=automation_request.timezone,
+                    config=automation_request.config,
                     enabled=True,
                 )
                 return _text(
@@ -176,17 +180,17 @@ class ConfirmationExecutor:
                 )
 
             if action == "create_google_calendar_event":
-                request = CalendarRequest.model_validate(payload)
+                calendar_request = CalendarRequest.model_validate(payload)
                 from lumi.connectors.google.auth import GoogleNotConnectedError
                 from lumi.connectors.google.calendar import GoogleCalendarConnector
 
-                if not request.start_at_local or not request.end_at_local:
+                if not calendar_request.start_at_local or not calendar_request.end_at_local:
                     return _text(locale, "Start/end time is missing — please clarify.", "Не хватает времени начала/конца — уточни, пожалуйста.")
-                start_utc = local_to_utc(request.start_at_local, user.timezone)
-                end_utc = local_to_utc(request.end_at_local, user.timezone)
+                start_utc = local_to_utc(calendar_request.start_at_local, user.timezone)
+                end_utc = local_to_utc(calendar_request.end_at_local, user.timezone)
                 try:
                     ref = await GoogleCalendarConnector().create_event(
-                        title=request.title or "Событие от Lumi",
+                        title=calendar_request.title or "Событие от Lumi",
                         start_at=start_utc,
                         end_at=end_utc,
                         timezone=user.timezone,
@@ -201,11 +205,11 @@ class ConfirmationExecutor:
                     user,
                     external_calendar_id=ref.external_calendar_id,
                     external_event_id=ref.external_event_id,
-                    title=request.title or "Событие от Lumi",
+                    title=calendar_request.title or "Событие от Lumi",
                     start_at=start_utc,
                     end_at=end_utc,
                 )
-                title = request.title or _text(locale, "event", "событие")
+                title = calendar_request.title or _text(locale, "event", "событие")
                 return _text(locale, f"Added \"{title}\" to Google Calendar.", f"Добавил «{title}» в Google Calendar.")
 
             log.warning("unknown confirmation action", fields={"action": action})

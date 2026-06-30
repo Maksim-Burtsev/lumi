@@ -75,6 +75,7 @@ make logs                                      # all services
 docker compose logs bot -f --tail 100          # bot only
 docker compose up -d --force-recreate bot api  # after .env changes
 make test                                      # pytest in container
+make lint                                      # ruff + mypy in container
 make down / make up-detached                   # stop/start
 make reset-local-db                            # remove volumes (data!) and start over
 ```
