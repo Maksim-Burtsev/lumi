@@ -1,7 +1,7 @@
 import { StrictMode, useState } from 'react';
 import type { ReactElement } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { SettingsResponse } from '../../api/types';
@@ -65,6 +65,24 @@ function renderWithSettings(ui: ReactElement) {
   return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
 }
 
+function NestedSheetHarness() {
+  const [parentOpen, setParentOpen] = useState(true);
+  const [childOpen, setChildOpen] = useState(false);
+  return (
+    <>
+      <Sheet open={parentOpen} onClose={() => setParentOpen(false)} title="History">
+        <button type="button" onClick={() => setChildOpen(true)}>
+          Open details
+        </button>
+        <p>History body</p>
+      </Sheet>
+      <Sheet open={childOpen} onClose={() => setChildOpen(false)} title="Details">
+        <p>Details body</p>
+      </Sheet>
+    </>
+  );
+}
+
 describe('Sheet scroll lock', () => {
   it('locks the body at the current scroll position and restores it on close', async () => {
     const user = userEvent.setup();
@@ -111,5 +129,45 @@ describe('Sheet scroll lock', () => {
       expect(screen.queryByRole('dialog', { name: 'Decision' })).not.toBeInTheDocument();
     });
     expect(scrollTo).toHaveBeenLastCalledWith(0, 260);
+  });
+
+  it('keeps body locked while a nested sheet closes and restores only after the last sheet closes', async () => {
+    const user = userEvent.setup();
+    const scrollTo = vi.fn();
+    setWindowScrollY(320);
+    window.scrollTo = scrollTo;
+
+    renderWithSettings(<NestedSheetHarness />);
+
+    expect(screen.getByRole('dialog', { name: 'History' })).toBeInTheDocument();
+    expect(document.body.style.position).toBe('fixed');
+    expect(document.body.style.top).toBe('-320px');
+
+    await user.click(screen.getByRole('button', { name: 'Open details' }));
+
+    expect(screen.getByRole('dialog', { name: 'Details' })).toBeInTheDocument();
+    expect(document.body.style.position).toBe('fixed');
+    expect(document.body.style.top).toBe('-320px');
+
+    await user.click(within(screen.getByRole('dialog', { name: 'Details' })).getByRole('button', { name: 'Close' }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Details' })).not.toBeInTheDocument();
+    });
+    expect(screen.getByRole('dialog', { name: 'History' })).toBeInTheDocument();
+    expect(document.body.style.position).toBe('fixed');
+    expect(document.body.style.top).toBe('-320px');
+    expect(scrollTo).not.toHaveBeenCalled();
+
+    await user.click(within(screen.getByRole('dialog', { name: 'History' })).getByRole('button', { name: 'Close' }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'History' })).not.toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(document.body.style.position).toBe('');
+      expect(scrollTo).toHaveBeenCalledTimes(1);
+      expect(scrollTo).toHaveBeenCalledWith(0, 320);
+    });
   });
 });

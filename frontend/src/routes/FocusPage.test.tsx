@@ -578,7 +578,8 @@ describe('FocusPage', () => {
     await screen.findByRole('dialog', { name: /session history/i });
 
     const history = () => screen.getByRole('dialog', { name: /session history/i });
-    fireEvent.click(within(history()).getByRole('button', { name: /2026-06-24: 39m/i }));
+    const selectedDayButton = () => within(history()).getByRole('button', { name: /2026-06-24: 39m/i });
+    fireEvent.click(selectedDayButton());
 
     expect(await within(history()).findByText('Projects on Jun 24')).toBeInTheDocument();
     expect(within(history()).getByText('Sessions on Jun 24')).toBeInTheDocument();
@@ -587,11 +588,15 @@ describe('FocusPage', () => {
     expect(within(history()).getByText('QA Project')).toBeInTheDocument();
     expect(within(history()).queryByText('Lumi')).not.toBeInTheDocument();
 
-    fireEvent.click(within(history()).getByRole('button', { name: /2026-06-24: 39m/i }));
+    expect(selectedDayButton()).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(selectedDayButton());
 
     expect(within(history()).getByText('Projects this week')).toBeInTheDocument();
     expect(within(history()).getByText('Lumi other day')).toBeInTheDocument();
     expect(within(history()).getByText('QA day session')).toBeInTheDocument();
+    expect(selectedDayButton()).toHaveAttribute('aria-pressed', 'false');
+    expect(selectedDayButton().className).toContain('focus-visible:shadow');
+    expect(selectedDayButton().className).not.toContain('focus:shadow');
   });
 
   it('renders weekly KPI strip with baseline deltas and most focused daypart', async () => {
@@ -675,7 +680,9 @@ describe('FocusPage', () => {
 
     await user.click(screen.getByRole('button', { name: /view all history/i }));
 
-    expect(await screen.findByText('Session history')).toBeInTheDocument();
+    const dialog = await screen.findByRole('dialog', { name: /session history/i });
+    expect(dialog).toHaveClass('h-[88dvh]');
+    expect(dialog).toHaveClass('max-h-[88dvh]');
     expect(screen.getByText('History session 8')).toBeInTheDocument();
   });
 

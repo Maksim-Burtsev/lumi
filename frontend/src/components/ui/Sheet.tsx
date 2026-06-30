@@ -13,8 +13,24 @@ interface SheetProps {
   closeLabel?: string;
   headerStart?: ReactNode;
   headerActions?: ReactNode;
+  height?: 'content' | 'stable';
   children: ReactNode;
 }
+
+interface BodyLockState {
+  count: number;
+  scrollY: number;
+  previous: {
+    left: string;
+    overflow: string;
+    position: string;
+    right: string;
+    top: string;
+    width: string;
+  };
+}
+
+let bodyLockState: BodyLockState | null = null;
 
 /** Bottom sheet for forms and detail views. */
 export function Sheet({
@@ -25,50 +41,55 @@ export function Sheet({
   closeLabel,
   headerStart,
   headerActions,
+  height = 'content',
   children,
 }: SheetProps) {
   const reduceMotion = useReducedMotion();
   const locale = useAppLocale();
-  const lockRef = useRef<{
-    scrollY: number;
-    previous: {
-      left: string;
-      overflow: string;
-      position: string;
-      right: string;
-      top: string;
-      width: string;
-    };
-  } | null>(null);
+  const lockedRef = useRef(false);
   const sheetTransition = reduceMotion
     ? { duration: 0.12 }
     : { duration: 0.22, ease: 'easeOut', type: 'tween' as const };
 
   const lockBody = useCallback(() => {
-    if (lockRef.current) return;
-    const scrollY = window.scrollY;
-    const previous = {
-      left: document.body.style.left,
-      overflow: document.body.style.overflow,
-      position: document.body.style.position,
-      right: document.body.style.right,
-      top: document.body.style.top,
-      width: document.body.style.width,
+    if (lockedRef.current) return;
+    if (bodyLockState) {
+      bodyLockState.count += 1;
+      lockedRef.current = true;
+      return;
+    }
+
+    bodyLockState = {
+      count: 1,
+      scrollY: window.scrollY,
+      previous: {
+        left: document.body.style.left,
+        overflow: document.body.style.overflow,
+        position: document.body.style.position,
+        right: document.body.style.right,
+        top: document.body.style.top,
+        width: document.body.style.width,
+      },
     };
 
     document.body.style.left = '0';
     document.body.style.overflow = 'hidden';
     document.body.style.position = 'fixed';
     document.body.style.right = '0';
-    document.body.style.top = `-${scrollY}px`;
+    document.body.style.top = `-${bodyLockState.scrollY}px`;
     document.body.style.width = '100%';
-    lockRef.current = { scrollY, previous };
+    lockedRef.current = true;
   }, []);
 
   const unlockBody = useCallback(() => {
-    const lock = lockRef.current;
+    if (!lockedRef.current) return;
+    lockedRef.current = false;
+    const lock = bodyLockState;
     if (!lock) return;
-    lockRef.current = null;
+    lock.count -= 1;
+    if (lock.count > 0) return;
+
+    bodyLockState = null;
     document.body.style.left = lock.previous.left;
     document.body.style.overflow = lock.previous.overflow;
     document.body.style.position = lock.previous.position;
@@ -80,7 +101,12 @@ export function Sheet({
 
   useEffect(() => {
     if (open) lockBody();
-  }, [lockBody, open]);
+    if (!open && lockedRef.current) {
+      const timeout = window.setTimeout(unlockBody, 260);
+      return () => window.clearTimeout(timeout);
+    }
+    return undefined;
+  }, [lockBody, open, unlockBody]);
 
   useEffect(() => () => unlockBody(), [unlockBody]);
 
@@ -89,6 +115,7 @@ export function Sheet({
     unlockBody();
     onClosed?.();
   };
+  const heightClass = height === 'stable' ? 'h-[88dvh] max-h-[88dvh]' : 'max-h-[88dvh]';
 
   return createPortal(
     <AnimatePresence onExitComplete={handleExitComplete}>
@@ -114,7 +141,7 @@ export function Sheet({
             animate={reduceMotion ? { opacity: 1 } : { y: 0 }}
             exit={reduceMotion ? { opacity: 0 } : { y: '100%' }}
             transition={sheetTransition}
-            className="relative max-h-[88dvh] w-full max-w-[640px] overflow-y-auto rounded-t-[28px] border border-b-0 border-hairline bg-[var(--surface-strong)] shadow-card"
+            className={`relative ${heightClass} w-full max-w-[640px] overflow-y-auto rounded-t-[28px] border border-b-0 border-hairline bg-[var(--surface-strong)] shadow-card`}
             style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 20px)' }}
             role="dialog"
             aria-modal="true"

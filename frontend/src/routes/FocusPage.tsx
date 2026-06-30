@@ -1501,7 +1501,8 @@ function ActivityBarChart({
                   type="button"
                   data-testid="focus-day-bar"
                   onClick={() => onSelectDate?.(item.date)}
-                  className="group flex h-full min-w-0 items-end justify-center rounded-t-xl px-0.5 outline-none focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+                  onPointerUp={(event) => event.currentTarget.blur()}
+                  className="group flex h-full min-w-0 items-end justify-center rounded-t-xl px-0.5 outline-none focus-visible:shadow-[0_0_0_3px_var(--accent-soft)]"
                   aria-label={`${item.date}: ${secondsLabel(item.focus_seconds, locale)}`}
                   aria-pressed={active}
                 >
@@ -1635,7 +1636,7 @@ function HistoryDetailsSheet({
   };
 
   return (
-    <Sheet open={open} onClose={onClose} title={copy.historyDetails}>
+    <Sheet open={open} onClose={onClose} title={copy.historyDetails} height="stable">
       <div className="space-y-5">
         <div className="flex gap-1.5">
           <Chip label={copy.week} active={period === 'week'} onClick={() => setPeriod('week')} />
