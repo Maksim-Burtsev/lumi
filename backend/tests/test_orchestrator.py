@@ -44,6 +44,11 @@ from lumi.utils.time import local_now, local_to_utc, utc_to_local
 from .conftest import TEST_TELEGRAM_ID
 
 
+def _future_local_datetime(timezone: str, hour: int, minute: int = 0) -> datetime:
+    day = (local_now(timezone) + timedelta(days=1)).date()
+    return datetime(day.year, day.month, day.day, hour, minute)
+
+
 class PendingTaskProvider:
     name = "pending-task"
     model = "pending-task-1"
@@ -547,8 +552,8 @@ async def test_agent_updates_internal_calendar_block_by_query(user):
         event = await calendar.create_internal_block(
             db_user,
             title="Dalma",
-            start_at=local_to_utc(datetime(2026, 6, 28, 17, 0), db_user.timezone),
-            end_at=local_to_utc(datetime(2026, 6, 28, 18, 0), db_user.timezone),
+            start_at=local_to_utc(_future_local_datetime(db_user.timezone, 17), db_user.timezone),
+            end_at=local_to_utc(_future_local_datetime(db_user.timezone, 18), db_user.timezone),
             created_by="agent",
         )
         provider = AgentPlannerProvider({
@@ -590,15 +595,15 @@ async def test_resolve_entity_asks_when_task_and_block_match(user):
         await TaskService(session).create_task(
             db_user,
             title="Dalma",
-            due_at=local_to_utc(datetime(2026, 6, 28, 15, 0), db_user.timezone),
+            due_at=local_to_utc(_future_local_datetime(db_user.timezone, 15), db_user.timezone),
             actor="user",
         )
         calendar = CalendarService(session)
         event = await calendar.create_internal_block(
             db_user,
             title="Dalma",
-            start_at=local_to_utc(datetime(2026, 6, 28, 17, 0), db_user.timezone),
-            end_at=local_to_utc(datetime(2026, 6, 28, 18, 0), db_user.timezone),
+            start_at=local_to_utc(_future_local_datetime(db_user.timezone, 17), db_user.timezone),
+            end_at=local_to_utc(_future_local_datetime(db_user.timezone, 18), db_user.timezone),
             created_by="agent",
         )
         provider = AgentPlannerProvider({
@@ -640,8 +645,8 @@ async def test_agent_cancels_internal_calendar_block_by_query(user):
         event = await calendar.create_internal_block(
             db_user,
             title="Dalma",
-            start_at=local_to_utc(datetime(2026, 6, 28, 17, 0), db_user.timezone),
-            end_at=local_to_utc(datetime(2026, 6, 28, 18, 0), db_user.timezone),
+            start_at=local_to_utc(_future_local_datetime(db_user.timezone, 17), db_user.timezone),
+            end_at=local_to_utc(_future_local_datetime(db_user.timezone, 18), db_user.timezone),
             created_by="agent",
         )
         provider = AgentPlannerProvider({
@@ -682,8 +687,8 @@ async def test_agent_refuses_external_calendar_update(user):
             external_calendar_id="primary",
             external_event_id="ext-1",
             title="External Dalma",
-            start_at=local_to_utc(datetime(2026, 6, 28, 17, 0), db_user.timezone),
-            end_at=local_to_utc(datetime(2026, 6, 28, 18, 0), db_user.timezone),
+            start_at=local_to_utc(_future_local_datetime(db_user.timezone, 17), db_user.timezone),
+            end_at=local_to_utc(_future_local_datetime(db_user.timezone, 18), db_user.timezone),
             timezone=db_user.timezone,
             status=CalendarEventStatus.CONFIRMED,
             created_by="external_sync",
@@ -4646,6 +4651,36 @@ async def test_agent_planner_final_answer_for_ordinary_question_uses_no_tool(mon
     assert provider.final_chat_calls == 0
     assert tool_calls == []
     assert len(deltas) > 1
+    assert deltas[-1] == answer
+
+
+async def test_agent_planner_final_answer_emits_smoother_previews(monkeypatch):
+    monkeypatch.setattr(orchestrator_module, "REPLY_PREVIEW_INTERVAL_SECONDS", 0, raising=False)
+    answer = " ".join(f"Пункт {index}: подробное описание шага для проверки плавного Telegram streaming." for index in range(1, 13))
+    deltas: list[str] = []
+    provider = AgentPlannerProvider({
+        "mode": "final_answer",
+        "tool_calls": [],
+        "final_answer": answer,
+        "should_answer_normally": True,
+    })
+
+    async def on_delta(text: str) -> None:
+        deltas.append(text)
+
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=54,
+            text="составь длинный ответ",
+            on_reply_delta=on_delta,
+        )
+
+    assert result.reply_text == answer
+    assert provider.final_chat_calls == 0
+    assert len(deltas) >= 6
     assert deltas[-1] == answer
 
 

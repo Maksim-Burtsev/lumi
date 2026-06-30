@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
+from contextlib import suppress
 from datetime import datetime, timedelta
 from html import escape
 from time import monotonic
@@ -103,6 +105,26 @@ def _without_none(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _telegram_message_not_modified(exc: Exception) -> bool:
     return "message is not modified" in str(exc).lower()
+
+
+def _float_setting(settings, name: str, default: float) -> float:
+    try:
+        return float(getattr(settings, name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _progress_heartbeat_text(settings, *, elapsed_seconds: float, tick: int, last_progress_text: str | None) -> str:
+    stale_after = _float_setting(settings, "telegram_progress_stale_after_seconds", 12.0)
+    long_after = _float_setting(settings, "telegram_progress_long_after_seconds", 30.0)
+    if elapsed_seconds >= long_after:
+        base = "Still working, this is taking longer than usual"
+    elif elapsed_seconds >= stale_after:
+        base = "Still thinking"
+    else:
+        base = (last_progress_text or "Thinking").strip().rstrip(".") or "Thinking"
+    dots = "." * ((tick % 3) + 1)
+    return f"{base}{dots}"
 
 
 def _plain_text_rich_html(text: str) -> str:
@@ -284,6 +306,61 @@ async def edit_turn_status_message(
         return False
     finally:
         await bot.session.close()
+
+
+async def send_turn_chat_action(
+    *,
+    user: User,
+    turn: AssistantTurn,
+    action: str = "typing",
+) -> bool:
+    settings = get_settings()
+    if not settings.telegram_bot_token:
+        return False
+    from aiogram import Bot
+
+    bot = Bot(token=settings.telegram_bot_token)
+    chat_id = turn.telegram_chat_id or user.telegram_chat_id or user.telegram_user_id
+    try:
+        await bot.send_chat_action(chat_id=chat_id, action=action)
+        return True
+    except Exception:  # noqa: BLE001 — chat actions are best-effort
+        log.info("telegram chat action skipped")
+        return False
+    finally:
+        await bot.session.close()
+
+
+async def _run_turn_progress_heartbeat(
+    *,
+    settings,
+    user: User,
+    turn: AssistantTurn,
+    started_at: float,
+    stream_started,
+    current_progress_text,
+) -> None:
+    status_interval = max(0.01, _float_setting(settings, "telegram_progress_heartbeat_interval_seconds", 3.0))
+    chat_action_interval = max(0.01, _float_setting(settings, "telegram_chat_action_interval_seconds", 4.0))
+    next_status_at = monotonic() + status_interval
+    next_chat_action_at = monotonic()
+    tick = 0
+    while True:
+        now = monotonic()
+        if now >= next_chat_action_at:
+            await send_turn_chat_action(user=user, turn=turn, action="typing")
+            next_chat_action_at = now + chat_action_interval
+        if turn.status_message_id and not stream_started() and now >= next_status_at:
+            status_text = _progress_heartbeat_text(
+                settings,
+                elapsed_seconds=now - started_at,
+                tick=tick,
+                last_progress_text=current_progress_text(),
+            )
+            await edit_turn_status_message(user=user, turn=turn, status_text=status_text)
+            tick += 1
+            next_status_at = now + status_interval
+        await asyncio.sleep(min(0.5, status_interval, chat_action_interval))
 
 
 async def _enqueue_turn(turn: AssistantTurn, *, delay_seconds: float | None = None) -> None:
@@ -563,6 +640,18 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
         if settings.telegram_stream_final_replies and turn_snapshot["status_message_id"]
         else None
     )
+    heartbeat_task = None
+    if getattr(settings, "telegram_progress_heartbeat_enabled", True):
+        heartbeat_task = asyncio.create_task(
+            _run_turn_progress_heartbeat(
+                settings=settings,
+                user=user,
+                turn=turn,
+                started_at=turn_work_started_at,
+                stream_started=lambda: first_stream_delta_at is not None,
+                current_progress_text=lambda: last_progress_text,
+            )
+        )
 
     try:
         async with session_scope() as session:
@@ -596,6 +685,11 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
         if next_turn is not None:
             await _enqueue_turn(next_turn)
         return f"turn failed: {exc}"
+    finally:
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat_task
 
     if result.agent_run_id is not None and queue_wait_ms is not None:
         async with session_scope() as session:

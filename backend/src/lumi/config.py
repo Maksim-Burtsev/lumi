@@ -64,9 +64,14 @@ class Settings(BaseSettings):
     telegram_max_queue_per_user: int = 25
     telegram_use_rich_messages: bool = False
     telegram_stream_final_replies: bool = True
-    telegram_stream_edit_interval_seconds: float = 1.15
-    telegram_stream_min_chars: int = 48
+    telegram_stream_edit_interval_seconds: float = 0.75
+    telegram_stream_min_chars: int = 24
     telegram_stream_max_chars: int = 3900
+    telegram_progress_heartbeat_enabled: bool = True
+    telegram_progress_heartbeat_interval_seconds: float = 3.0
+    telegram_chat_action_interval_seconds: float = 4.0
+    telegram_progress_stale_after_seconds: float = 12.0
+    telegram_progress_long_after_seconds: float = 30.0
 
     # --- Worker ---
     worker_max_jobs: int = 10
