@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,11 +14,7 @@ from lumi.config import get_settings
 from lumi.connectors.google.auth import connection_status
 from lumi.db.models import Message, MessageRole, User
 from lumi.i18n import (
-    ReplyLanguageMode,
     ensure_language_settings,
-    normalize_reply_language,
-    normalize_reply_language_mode,
-    validate_app_locale,
     validate_theme_mode,
     validate_time_format,
 )
@@ -70,18 +66,12 @@ async def list_timezones() -> dict:
 
 
 class SettingsPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     timezone: str | None = None
-    locale: str | None = None
-    reply_language_mode: ReplyLanguageMode | None = None
-    reply_language: str | None = None
     time_format: str | None = None
     theme_mode: str | None = None
     settings: dict | None = None
-
-    @field_validator("locale")
-    @classmethod
-    def locale_supported(cls, value: str | None) -> str | None:
-        return validate_app_locale(value) if value else None
 
 
 @router.patch("/settings")
@@ -95,21 +85,8 @@ async def patch_settings(
             user.timezone = validate_timezone_name(payload.timezone)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="invalid_timezone") from exc
-    if payload.locale:
-        user.locale = payload.locale
-        user.settings = {**ensure_language_settings(user.settings), "locale_source": "manual"}
-    else:
-        user.settings = ensure_language_settings(user.settings)
-    if payload.reply_language_mode:
-        user.settings = {
-            **ensure_language_settings(user.settings),
-            "reply_language_mode": normalize_reply_language_mode(payload.reply_language_mode),
-        }
-    if payload.reply_language:
-        user.settings = {
-            **ensure_language_settings(user.settings),
-            "reply_language": normalize_reply_language(payload.reply_language),
-        }
+    user.locale = "en"
+    user.settings = ensure_language_settings(user.settings)
     if payload.time_format is not None:
         try:
             user.settings = {
@@ -144,10 +121,6 @@ async def patch_settings(
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail="invalid_theme_mode") from exc
-        if "reply_language" in payload.settings:
-            merged_settings["reply_language"] = normalize_reply_language(
-                str(payload.settings["reply_language"] or "")
-            )
         user.settings = ensure_language_settings(merged_settings)
     session.add(user)
     await RealtimeEventService(session).emit(

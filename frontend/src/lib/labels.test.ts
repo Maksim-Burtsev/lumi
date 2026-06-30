@@ -21,14 +21,15 @@ describe('localized API labels', () => {
     expect(priorityLabel('urgent', 'en')).toBe('urgent');
   });
 
-  it('keeps Russian labels when locale is Russian', () => {
-    expect(runTypeLabel('daily_planning', 'ru')).toBe('План дня');
-    expect(runStatusLabel('queued', 'ru')).toBe('В очереди');
-    expect(inboxCategoryLabel('needs_reply', 'ru')).toBe('Ждут ответа');
-    expect(memoryKindLabel('preference', 'ru')).toBe('Предпочтение');
-    expect(memorySourceLabel('chat', 'ru')).toBe('из чата');
-    expect(automationTypeLabel('calendar_sync', 'ru')).toBe('Синхронизация календаря');
-    expect(priorityLabel('urgent', 'ru')).toBe('срочно');
+  it('normalizes Russian locale to English labels', () => {
+    expect(normalizeAppLocale('ru')).toBe('en');
+    expect(runTypeLabel('daily_planning', 'ru')).toBe('Day plan');
+    expect(runStatusLabel('queued', 'ru')).toBe('Queued');
+    expect(inboxCategoryLabel('needs_reply', 'ru')).toBe('Needs reply');
+    expect(memoryKindLabel('preference', 'ru')).toBe('Preference');
+    expect(memorySourceLabel('chat', 'ru')).toBe('from chat');
+    expect(automationTypeLabel('calendar_sync', 'ru')).toBe('Calendar sync');
+    expect(priorityLabel('urgent', 'ru')).toBe('urgent');
   });
 
   it('falls back to English for missing or unsupported locale values', () => {

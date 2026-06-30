@@ -69,9 +69,9 @@ class UserService:
             user.settings = ensure_language_settings(user.settings)
             if language_code:
                 user.language_code = language_code
-                if user.settings.get("locale_source") != "manual":
-                    user.locale = normalize_app_locale(language_code)
+            user.locale = normalize_app_locale(language_code or user.locale)
         user.settings = ensure_language_settings(user.settings)
+        user.locale = normalize_app_locale(user.locale)
         if touch_last_seen:
             user.last_seen_at = utc_now()
         return user

@@ -210,42 +210,18 @@ class MockLLMProvider:
         if not wants_language:
             return None
 
-        args: dict[str, str] = {}
-        if "italian" in lowered or "итальян" in lowered:
-            args["reply_language_mode"] = "fixed"
-            args["reply_language"] = "it"
-        elif "spanish" in lowered or "испан" in lowered:
-            args["reply_language_mode"] = "fixed"
-            args["reply_language"] = "es"
-        elif "german" in lowered or "немец" in lowered:
-            args["reply_language_mode"] = "fixed"
-            args["reply_language"] = "de"
-        elif "russian" in lowered or "русск" in lowered or "по-русски" in lowered:
-            args["app_locale"] = "ru"
-            if "reply" in lowered or "отвечай" in lowered or "ответы" in lowered:
-                args["reply_language_mode"] = "app_locale"
-        elif "english" in lowered or "англ" in lowered or "по-английски" in lowered:
-            args["app_locale"] = "en"
-            if "reply" in lowered or "отвечай" in lowered or "ответы" in lowered:
-                args["reply_language_mode"] = "app_locale"
-
-        if "auto" in lowered or "automatic" in lowered or "авто" in lowered or "как пишу" in lowered:
-            args["reply_language_mode"] = "auto"
-
-        if not args:
-            return None
+        language = "en" if re.search(r"[a-zA-Z]", message) else "ru"
+        answer = (
+            "The Mini App UI is English only. Replies already match each message."
+            if language == "en"
+            else "Интерфейс Mini App только на английском. Ответы уже совпадают с языком каждого сообщения."
+        )
         return {
-            "mode": "tool_calls",
-            "language": "en" if re.search(r"[a-zA-Z]", message) else "ru",
-            "tool_calls": [
-                {
-                    "name": "set_language",
-                    "args": args,
-                    "confidence": 0.98,
-                    "requires_confirmation": False,
-                }
-            ],
-            "should_answer_normally": False,
+            "mode": "final_answer",
+            "language": language,
+            "tool_calls": [],
+            "final_answer": answer,
+            "should_answer_normally": True,
         }
 
     @staticmethod

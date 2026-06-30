@@ -39,7 +39,7 @@ erDiagram
 
 | Table | Purpose | Written by | Read by |
 |---|---|---|---|
-| `users` | Telegram profile, timezone, locale, settings | bot, api (ensure_user) | all |
+| `users` | Telegram profile, timezone, English UI locale, settings | bot, api (ensure_user) | all |
 | `conversations` | one `main` chat per user (partial unique index) | UserService | orchestrator, compaction |
 | `messages` | all chat messages; `is_compacted` excludes rows from context | orchestrator | ContextBuilder, compaction, `/api/messages` |
 | `conversation_summaries` | compacted history versions | CompactionService | ContextBuilder |
@@ -91,4 +91,4 @@ make migrate                      # alembic upgrade head
 make revision m="add_something"   # autogenerate a new migration
 ```
 
-Seed data (`make seed`): user from `ALLOWED_TELEGRAM_USER_IDS`, main conversation, 3 news topics, and 4 automations. Automations are disabled until enabled in the Mini App.
+Seed data (`make seed`): user from `ALLOWED_TELEGRAM_USER_IDS` and main conversation. News topics and automations are user-created in the Mini App.

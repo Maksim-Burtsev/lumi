@@ -170,7 +170,7 @@ describe('Mini App English UI smoke', () => {
     expect(screen.queryByText('Синхронизировать')).not.toBeInTheDocument();
   });
 
-  it('localizes Calendar empty schedule marker in Russian', async () => {
+  it('keeps Calendar static UI in English even when stored user locale is Russian', async () => {
     vi.spyOn(api, 'listCalendarEvents').mockResolvedValue({
       items: [],
       sync: { connected: false, last_sync_at: null, stale: false, refresh_queued: false },
@@ -178,10 +178,11 @@ describe('Mini App English UI smoke', () => {
 
     renderWithProviders(<CalendarPage />, 'ru');
 
-    await waitFor(() => expect(screen.getByText('Синхронизировать')).toBeInTheDocument());
-    expect(screen.getByText('Нет запланированных встреч')).toBeInTheDocument();
-    expect(screen.getByText('08:00')).toBeInTheDocument();
-    expect(screen.queryByText('No meetings scheduled')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Sync')).toBeInTheDocument());
+    expect(await screen.findByText('No meetings scheduled')).toBeInTheDocument();
+    expect(await screen.findByText('08:00')).toBeInTheDocument();
+    expect(screen.queryByText('Синхронизировать')).not.toBeInTheDocument();
+    expect(screen.queryByText('Нет запланированных встреч')).not.toBeInTheDocument();
   });
 
   it('opens English automation sheet', async () => {

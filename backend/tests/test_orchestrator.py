@@ -361,6 +361,8 @@ class PlanningAndRenderProvider:
             self.renderer_prompts.append(prompt)
             if self.renderer_error:
                 raise LLMError("renderer down")
+            if not self.rendered:
+                return _test_rendered_action_reply(prompt)
             return self.rendered.pop(0)
         raise AssertionError(f"unexpected JSON request_kind: {request_kind}")
 
@@ -1092,7 +1094,7 @@ async def test_visual_read_only_without_planner_answer_uses_focused_vision_not_f
     )
 
 
-async def test_text_followup_uses_llm_selected_recent_media_without_keyword_heuristics():
+async def test_text_followup_uses_media_path_for_explicit_recent_media_reference():
     image_metadata = {
         "file_id": "recent-file",
         "file_unique_id": "telegram-unique",
@@ -1111,7 +1113,30 @@ async def test_text_followup_uses_llm_selected_recent_media_without_keyword_heur
             "final_answer": "LXRJ00C058135065891601",
             "should_answer_normally": False,
         },
+        media_reference={
+            "references_media": True,
+            "media_id": "recent:telegram-unique",
+            "visual_intent": "read_only",
+            "question": "read the text marked in red",
+            "reason": "The user asks for the marked visual detail from the recent image.",
+            "confidence": 0.86,
+        },
+        focused={
+            "answer": "LXRJ00C058135065891601",
+            "facts": ["serial: LXRJ00C058135065891601"],
+            "visible_text": ["S/N:LXRJ00C058135065891601"],
+            "confidence": 0.95,
+            "limitations": [],
+        },
     )
+
+    async def image_loader(metadata: dict) -> ImageInput:
+        return _test_image(
+            file_id=metadata["file_id"],
+            file_unique_id=metadata["file_unique_id"],
+            source="latest",
+        )
+
     async with session_scope() as session:
         users = UserService(session)
         user = await users.ensure_user(TEST_TELEGRAM_ID)
@@ -1133,6 +1158,7 @@ async def test_text_followup_uses_llm_selected_recent_media_without_keyword_heur
             telegram_chat_id=TEST_TELEGRAM_ID,
             telegram_message_id=37,
             text="envía solo lo marcado en rojo",
+            image_loader=image_loader,
         )
 
         tasks = (await session.execute(select(Task))).scalars().all()
@@ -1222,6 +1248,117 @@ async def test_text_followup_accepts_router_media_id_with_different_source_prefi
     assert provider.final_chat_calls == 0
     assert result.reply_text == "LXRJ00C058135065891601"
     assert inbound.content_json["referenced_images"][0]["file_id"] == "recent-file"
+
+
+async def test_text_with_recent_media_skips_media_reference_when_not_about_media():
+    image_metadata = {
+        "file_id": "recent-file",
+        "file_unique_id": "telegram-unique",
+        "mime_type": "image/png",
+        "file_size": 100,
+        "source": "attached",
+        "telegram_message_id": 30,
+    }
+    provider = MediaFlowProvider(
+        media=SERIAL_MEDIA,
+        plan={
+            "mode": "final_answer",
+            "visual_intent": "none",
+            "tool_calls": [],
+            "final_answer": "На вторник встреч нет.",
+            "should_answer_normally": False,
+            "language": "ru",
+        },
+    )
+
+    async with session_scope() as session:
+        users = UserService(session)
+        user = await users.ensure_user(TEST_TELEGRAM_ID)
+        conversation = await users.ensure_main_conversation(user)
+        session.add(Message(
+            conversation_id=conversation.id,
+            user_id=user.id,
+            role=MessageRole.USER,
+            content="[image] serial sticker",
+            char_count=22,
+            metadata_={"images": [image_metadata], "media_context": SERIAL_MEDIA},
+            content_json={"text": "", "images": [image_metadata], "media_context": SERIAL_MEDIA},
+        ))
+        await session.flush()
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=39,
+            text="а на следующий вторник?",
+        )
+
+    assert provider.calls == ["agent_planner"]
+    assert result.reply_text == "На вторник встреч нет."
+
+
+async def test_text_followup_ask_user_plan_uses_focused_vision_for_explicit_recent_media():
+    image_metadata = {
+        "file_id": "recent-file",
+        "file_unique_id": "telegram-unique",
+        "mime_type": "image/png",
+        "file_size": 100,
+        "source": "attached",
+        "telegram_message_id": 30,
+    }
+    provider = MediaFlowProvider(
+        media=SERIAL_MEDIA,
+        plan={
+            "mode": "ask_user",
+            "referenced_media_id": "recent:telegram-unique",
+            "visual_intent": "action_evidence",
+            "tool_calls": [],
+            "final_answer": "I can see the serial number highlighted in red. How should I send it?",
+            "should_answer_normally": True,
+        },
+        focused={
+            "answer": "LXRJ00C058135065891601",
+            "facts": ["serial: LXRJ00C058135065891601"],
+            "visible_text": ["S/N:LXRJ00C058135065891601"],
+            "confidence": 0.95,
+            "limitations": [],
+        },
+    )
+
+    async def image_loader(metadata: dict) -> ImageInput:
+        return _test_image(
+            file_id=metadata["file_id"],
+            file_unique_id=metadata["file_unique_id"],
+            source="latest",
+        )
+
+    async with session_scope() as session:
+        users = UserService(session)
+        user = await users.ensure_user(TEST_TELEGRAM_ID)
+        conversation = await users.ensure_main_conversation(user)
+        session.add(Message(
+            conversation_id=conversation.id,
+            user_id=user.id,
+            role=MessageRole.USER,
+            content="[image] serial sticker",
+            char_count=22,
+            metadata_={"images": [image_metadata], "media_context": SERIAL_MEDIA},
+            content_json={"text": "", "images": [image_metadata], "media_context": SERIAL_MEDIA},
+        ))
+        await session.flush()
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=40,
+            text="send only what is marked in red",
+            image_loader=image_loader,
+        )
+
+    assert provider.calls == ["agent_planner", "focused_vision"]
+    assert result.reply_text == "LXRJ00C058135065891601"
 
 
 async def test_text_followup_uses_media_router_when_planner_does_not_select_recent_media():
@@ -1822,7 +1959,7 @@ async def test_action_reply_renderer_resolves_same_project_followup_in_italian()
     )
 
 
-async def test_fixed_reply_language_uses_saved_language_over_latest_message():
+async def test_saved_reply_language_settings_are_ignored_for_latest_message_language():
     provider = PlanningAndRenderProvider(
         {
             "mode": "tool_calls",
@@ -1841,14 +1978,7 @@ async def test_fixed_reply_language_uses_saved_language_over_latest_message():
                 }
             ],
             "should_answer_normally": False,
-        },
-        rendered={
-            "message": "Ho creato la task «проверить биллинг» nel progetto Lumi.",
-            "button_labels": {
-                "task_done": "✓ Fatto",
-                "task_snooze": "⏰ Rimanda",
-            },
-        },
+        }
     )
     async with session_scope() as session:
         user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
@@ -1868,9 +1998,9 @@ async def test_fixed_reply_language_uses_saved_language_over_latest_message():
 
     assert provider.final_chat_calls == 0
     assert provider.renderer_calls == 1
-    assert result.reply_text == "Ho creato la task «проверить биллинг» nel progetto Lumi."
-    assert "reply_language_mode: fixed" in provider.renderer_prompts[0]
-    assert "target_language: it" in provider.renderer_prompts[0]
+    assert result.reply_text == "Создана задача: «проверить биллинг» в проекте Lumi"
+    assert "reply_language_mode: auto" in provider.renderer_prompts[0]
+    assert "target_language: ru" in provider.renderer_prompts[0]
 
 
 async def test_renderer_failure_keeps_completed_action_and_uses_english_fallback():
@@ -1914,11 +2044,11 @@ async def test_renderer_failure_keeps_completed_action_and_uses_english_fallback
     assert result.buttons[0][1].text == "⏰ Snooze"
 
 
-async def test_set_language_tool_accepts_fixed_reply_language_and_renders_reply():
+async def test_set_language_tool_is_ignored_and_does_not_mutate_language_settings():
     provider = PlanningAndRenderProvider(
         {
             "mode": "tool_calls",
-            "language": "en",
+            "language": "it",
             "tool_calls": [
                 {
                     "name": "set_language",
@@ -1931,11 +2061,7 @@ async def test_set_language_tool_accepts_fixed_reply_language_and_renders_reply(
                 }
             ],
             "should_answer_normally": False,
-        },
-        rendered={
-            "message": "Fatto. D'ora in poi rispondero in italiano.",
-            "button_labels": {},
-        },
+        }
     )
     async with session_scope() as session:
         await UserService(session).ensure_user(TEST_TELEGRAM_ID, language_code="en-US")
@@ -1953,10 +2079,11 @@ async def test_set_language_tool_accepts_fixed_reply_language_and_renders_reply(
 
     assert provider.final_chat_calls == 0
     assert provider.renderer_calls == 1
-    assert updated.settings["reply_language_mode"] == "fixed"
-    assert updated.settings["reply_language"] == "it"
-    assert result.reply_text == "Fatto. D'ora in poi rispondero in italiano."
-    assert "reply_language_mode: fixed" in provider.renderer_prompts[0]
+    assert updated.locale == "en"
+    assert updated.settings["reply_language_mode"] == "auto"
+    assert updated.settings["reply_language"] == "en"
+    assert result.reply_text == "Reply language settings are not configurable. Replies match each message."
+    assert "reply_language_mode: auto" in provider.renderer_prompts[0]
     assert "target_language: it" in provider.renderer_prompts[0]
 
 
@@ -2539,7 +2666,7 @@ async def test_agent_planner_keeps_english_calendar_tool_read_user_visible(monke
     assert result.open_app_button is True
 
 
-async def test_agent_schedule_guard_respects_app_locale_reply_language(monkeypatch):
+async def test_agent_schedule_guard_ignores_saved_app_locale_reply_language(monkeypatch):
     async def fake_sync_all_calendars(
         self,
         user,
@@ -2588,9 +2715,8 @@ async def test_agent_schedule_guard_respects_app_locale_reply_language(monkeypat
         )
 
     assert result.reply_text.startswith("📅")
-    assert tomorrow.strftime("%b") not in result.reply_text
-    assert "13:00  Lumi weekly planning · 30м" in result.reply_text
-    assert "30m" not in result.reply_text
+    assert "13:00  Lumi weekly planning · 30m" in result.reply_text
+    assert "30м" not in result.reply_text
     assert result.reply_rich_html is not None
 
 
@@ -3042,24 +3168,25 @@ async def test_agent_loop_status_falls_back_when_model_status_is_unsafe():
             telegram_message_id=45,
             text="Create a task: Check unsafe status fallback",
             on_progress=progress_updates.append,
-        )
+    )
 
     assert "Done, I created it: https://bad.example" not in progress_updates
-    assert "⏳" in progress_updates
+    assert "Working on it..." in progress_updates
 
 
-async def test_agent_loop_uses_model_status_language_for_ru_en_it():
+async def test_agent_loop_progress_uses_english_for_ru_it_es_model_statuses():
     progress_updates: list[str] = []
     statuses = [
-        ("ru", "Смотрю календарь...", "Созвониться с Иваном"),
-        ("en", "Checking your calendar...", "Call Ivan"),
-        ("it", "Controllo il calendario...", "Chiamare Ivan"),
+        ("ru", "Смотрю календарь...", "reading_calendar", "Checking your calendar...", "Созвониться с Иваном"),
+        ("it", "Controllo il calendario...", "resolving", "Working on it...", "Chiamare Ivan"),
+        ("es", "Revisando tareas...", "writing", "Making changes...", "Llamar a Ivan"),
     ]
     provider = AgentPlannerProvider([
         {
             "mode": "tool_calls",
             "language": language,
             "user_visible_status": status,
+            "progress_kind": progress_kind,
             "tool_calls": [
                 {
                     "name": "create_task",
@@ -3075,12 +3202,12 @@ async def test_agent_loop_uses_model_status_language_for_ru_en_it():
             ],
             "should_answer_normally": False,
         }
-        for language, status, title in statuses
+        for language, status, progress_kind, _expected, title in statuses
     ])
 
     async with session_scope() as session:
         orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
-        for language, _, title in statuses:
+        for language, _, _progress_kind, _expected, title in statuses:
             await orchestrator.handle_user_message(
                 telegram_user_id=TEST_TELEGRAM_ID,
                 telegram_chat_id=TEST_TELEGRAM_ID,
@@ -3089,9 +3216,53 @@ async def test_agent_loop_uses_model_status_language_for_ru_en_it():
                 on_progress=progress_updates.append,
             )
 
-    for _, status, _ in statuses:
-        assert status in progress_updates
-    assert "Reading message" not in "\n".join(progress_updates)
+    for _, status, _progress_kind, expected, _ in statuses:
+        assert status not in progress_updates
+        assert expected in progress_updates
+    assert "Смотрю календарь..." not in "\n".join(progress_updates)
+    assert "Controllo il calendario..." not in "\n".join(progress_updates)
+    assert "Revisando tareas..." not in "\n".join(progress_updates)
+
+
+async def test_initial_progress_respects_fixed_reply_language_before_planner():
+    progress_updates: list[str] = []
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "language": "en",
+        "user_visible_status": "Checking task details...",
+        "tool_calls": [
+            {
+                "name": "create_task",
+                "args": {
+                    "title": "Проверить latency progress",
+                    "priority": "medium",
+                    "confidence": 0.95,
+                    "requires_confirmation": False,
+                },
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID, language_code="en")
+        user.settings = {
+            **user.settings,
+            "reply_language_mode": "fixed",
+            "reply_language": "ru",
+        }
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=51,
+            text="Create a task: Проверить latency progress",
+            on_progress=progress_updates.append,
+        )
+
+    assert progress_updates[0] == "Reading message..."
 
 
 async def test_agent_loop_status_falls_back_when_language_mismatches():
@@ -3127,7 +3298,7 @@ async def test_agent_loop_status_falls_back_when_language_mismatches():
         )
 
     assert "Ищу следующую встречу..." not in progress_updates
-    assert "⏳" in progress_updates
+    assert "Working on it..." in progress_updates
 
 
 async def test_agent_loop_stops_at_step_budget_without_fake_success():
@@ -3307,6 +3478,7 @@ async def test_update_task_due_time_choice_applies_to_selected_candidate():
     })
     async with session_scope() as session:
         user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        user.is_allowed = True
         first = await TaskService(session).create_task(
             user,
             title="посмотреть ответ chatGPT по X",
@@ -3335,7 +3507,7 @@ async def test_update_task_due_time_choice_applies_to_selected_candidate():
 
     callback = type("Callback", (), {})()
     callback.data = f"update_pick:{confirmations[0].id.hex[:8]}:1"
-    callback.from_user = type("User", (), {"id": TEST_TELEGRAM_ID, "language_code": "ru"})()
+    callback.from_user = type("User", (), {"id": TEST_TELEGRAM_ID, "language_code": "ru", "username": None})()
     callback.message = type(
         "Message",
         (),
@@ -4193,10 +4365,10 @@ async def test_update_task_english_missing_candidate_asks_safely():
     assert result.reply_text == "I could not find an active task “missing task”. Please clarify the title."
 
 
-async def test_set_language_tool_updates_locale_and_reply_mode_without_final_llm():
+async def test_set_language_tool_from_stale_planner_cannot_change_locale_or_reply_mode():
     provider = AgentPlannerProvider({
         "mode": "tool_calls",
-        "language": "en",
+        "language": "ru",
         "tool_calls": [
             {
                 "name": "set_language",
@@ -4223,11 +4395,68 @@ async def test_set_language_tool_updates_locale_and_reply_mode_without_final_llm
         updated = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
 
     assert provider.final_chat_calls == 0
-    assert updated.locale == "ru"
-    assert updated.settings["locale_source"] == "manual"
-    assert updated.settings["reply_language_mode"] == "app_locale"
-    assert result.reply_text == "Language updated: Russian. Replies now use the app language."
-    assert any(c.tool_name == "set_language" and c.status == "completed" for c in tool_calls)
+    assert updated.locale == "en"
+    assert updated.settings["locale_source"] == "telegram"
+    assert updated.settings["reply_language_mode"] == "auto"
+    assert result.reply_text == "Reply language settings are not configurable. Replies match each message."
+    assert any(
+        c.tool_name == "set_language"
+        and c.status == "skipped"
+        and c.result_json.get("reason") == "language_settings_not_configurable"
+        for c in tool_calls
+    )
+
+
+async def test_update_settings_tool_from_stale_planner_cannot_change_language_settings():
+    provider = AgentPlannerProvider({
+        "mode": "tool_calls",
+        "language": "ru",
+        "tool_calls": [
+            {
+                "name": "update_settings",
+                "args": {
+                    "locale": "ru",
+                    "reply_language_mode": "fixed",
+                    "reply_language": "it",
+                },
+                "confidence": 0.98,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": False,
+    })
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        user.locale = "en"
+        user.settings = {
+            "locale_source": "telegram",
+            "reply_language_mode": "auto",
+            "reply_language": "en",
+        }
+
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=155,
+            text="Сделай интерфейс русским и всегда отвечай по-итальянски",
+        )
+        tool_calls = (await session.execute(select(ToolCall))).scalars().all()
+
+    async with session_scope() as session:
+        updated = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+
+    assert updated.locale == "en"
+    assert updated.settings["locale_source"] == "telegram"
+    assert updated.settings["reply_language_mode"] == "auto"
+    assert updated.settings["reply_language"] == "en"
+    assert "not configurable" in result.reply_text
+    assert any(
+        c.tool_name == "update_settings"
+        and c.status == "skipped"
+        and c.result_json.get("reason") == "language_settings_not_configurable"
+        for c in tool_calls
+    )
 
 
 async def test_update_task_ambiguous_query_returns_choice_buttons_without_fake_success():

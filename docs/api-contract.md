@@ -21,7 +21,7 @@ GET /api/me → {"user": User}
 User = {
   "id": uuid, "telegram_user_id": int, "username": str|null,
   "first_name": str|null, "last_name": str|null,
-  "timezone": str, "locale": str, "settings": object,
+  "timezone": str, "locale": "en", "settings": object,
   "created_at": ts, "last_seen_at": ts|null
 }
 
@@ -36,12 +36,12 @@ GET /api/settings → {
 
 PATCH /api/settings  body: {
   "timezone"?: str,
-  "locale"?: str,
-  "reply_language_mode"?: "auto"|"app_locale",
   "time_format"?: "auto"|"12h"|"24h",
   "theme_mode"?: "telegram"|"light"|"dark",
   "settings"?: object
 } → {"user": User}
+
+Mini App UI language is English-only. Assistant replies automatically match the latest user message language.
 ```
 
 ## Today

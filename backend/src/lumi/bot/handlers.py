@@ -22,7 +22,7 @@ from lumi.bot.schedule_messages import render_today_schedule
 from lumi.config import get_settings
 from lumi.db.models import CalendarEventStatus, ConfirmationStatus, Message, MessageRole
 from lumi.db.session import session_scope
-from lumi.i18n import ensure_language_settings, normalize_reply_language
+from lumi.i18n import normalize_reply_language
 from lumi.logging import get_logger, telegram_update_id_var
 from lumi.services.confirmation_executor import ConfirmationExecutor
 from lumi.services.confirmations import ConfirmationService
@@ -179,12 +179,6 @@ def _text_for_language(language: str | None, *, en: str, ru: str, it: str | None
 
 
 def _reply_language_for_message(user, language_code: str | None = None) -> str:
-    settings = ensure_language_settings(user.settings)
-    mode = settings.get("reply_language_mode")
-    if mode == "fixed":
-        return normalize_reply_language(str(settings.get("reply_language") or "en"))
-    if mode == "app_locale":
-        return normalize_reply_language(user.locale)
     return normalize_reply_language(language_code or user.language_code or user.locale)
 
 

@@ -18,9 +18,9 @@ def test_default_time_format_is_automatic():
     assert DEFAULT_TIME_FORMAT == "auto"
 
 
-def test_normalize_app_locale_supports_only_english_and_russian():
+def test_normalize_app_locale_always_uses_english_for_interface():
     assert normalize_app_locale("en-US") == "en"
-    assert normalize_app_locale("ru-RU") == "ru"
+    assert normalize_app_locale("ru-RU") == DEFAULT_APP_LOCALE
     assert normalize_app_locale("es") == DEFAULT_APP_LOCALE
     assert normalize_app_locale(None) == DEFAULT_APP_LOCALE
 
@@ -37,6 +37,7 @@ async def test_new_user_locale_comes_from_telegram_or_defaults_to_english(db_ses
 
     english = await service.ensure_user(777001, language_code="en-US")
     russian = await service.ensure_user(777002, language_code="ru")
+    italian = await service.ensure_user(777005, language_code="it")
     unsupported = await service.ensure_user(777003, language_code="es")
     missing = await service.ensure_user(777004)
 
@@ -46,46 +47,54 @@ async def test_new_user_locale_comes_from_telegram_or_defaults_to_english(db_ses
     assert english.settings["reply_language_mode"] == DEFAULT_REPLY_LANGUAGE_MODE
     assert english.settings["reply_language"] == DEFAULT_APP_LOCALE
     assert english.settings["time_format"] == DEFAULT_TIME_FORMAT
-    assert russian.locale == "ru"
+    assert russian.language_code == "ru"
+    assert russian.locale == "en"
+    assert italian.language_code == "it"
+    assert italian.locale == "en"
     assert unsupported.locale == "en"
     assert missing.locale == "en"
 
 
-async def test_telegram_language_refreshes_locale_until_manual_override(db_session):
+async def test_telegram_language_refresh_keeps_interface_locale_english(db_session):
     service = UserService(db_session)
     user = await service.ensure_user(TEST_TELEGRAM_ID, language_code="ru")
-    assert user.locale == "ru"
+    assert user.locale == "en"
 
-    user = await service.ensure_user(TEST_TELEGRAM_ID, language_code="en-US")
-    assert user.language_code == "en-US"
+    user = await service.ensure_user(TEST_TELEGRAM_ID, language_code="it")
+    assert user.language_code == "it"
     assert user.locale == "en"
 
     user.locale = "ru"
     user.settings = {**user.settings, "locale_source": "manual"}
     await db_session.flush()
 
-    user = await service.ensure_user(TEST_TELEGRAM_ID, language_code="en-US")
-    assert user.language_code == "en-US"
-    assert user.locale == "ru"
-    assert user.settings["locale_source"] == "manual"
+    user = await service.ensure_user(TEST_TELEGRAM_ID, language_code="es")
+    assert user.language_code == "es"
+    assert user.locale == "en"
+    assert user.settings["locale_source"] == "telegram"
 
 
-async def test_patch_settings_validates_locale_and_reply_mode(db_session):
+async def test_patch_settings_rejects_interface_and_reply_language_fields(db_session):
     user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID, language_code="en-US")
 
-    response = await patch_settings(
-        SettingsPatch(locale="ru", reply_language_mode="fixed", reply_language="it-IT"),
-        user=user,
-        session=db_session,
-    )
+    user.locale = "ru"
+    user.settings = {
+        **user.settings,
+        "locale_source": "manual",
+        "reply_language_mode": "fixed",
+        "reply_language": "it",
+    }
+    await db_session.flush()
 
-    assert response["user"]["locale"] == "ru"
-    assert response["user"]["settings"]["locale_source"] == "manual"
-    assert response["user"]["settings"]["reply_language_mode"] == "fixed"
-    assert response["user"]["settings"]["reply_language"] == "it"
+    response = await patch_settings(SettingsPatch(time_format="24h"), user=user, session=db_session)
+
+    assert response["user"]["locale"] == "en"
+    assert response["user"]["settings"]["locale_source"] == "telegram"
+    assert response["user"]["settings"]["reply_language_mode"] == "auto"
+    assert response["user"]["settings"]["reply_language"] == "en"
 
     with pytest.raises(ValidationError):
-        SettingsPatch(locale="es")
+        SettingsPatch(locale="ru")
 
     with pytest.raises(ValidationError):
-        SettingsPatch(reply_language_mode="always")
+        SettingsPatch(reply_language_mode="fixed")

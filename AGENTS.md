@@ -2,6 +2,11 @@
 
 For non-trivial Lumi changes, read `docs/agent-qa.md` and include automated checks plus real Telegram Web/Mini App evidence before claiming done.
 
+For any code change, run `make qa-required` first. Execute the commands it prints
+before the final report, unless a command is impossible in the local environment;
+then report the exact skip reason. Do not run assistant regression suites for
+frontend-only or docs-only diffs unless `make qa-required` asks for them.
+
 ## Fast local startup
 
 When asked to run Lumi locally from `main` or a feature worktree, do not rediscover
@@ -21,3 +26,12 @@ For real Telegram Mini App checks:
 4. If Telegram shows a blank page or robot icon, first suspect a stale Mini App window or stale/dead tunnel. Close the Telegram Mini App window with `X`, reopen from the bot menu, then check `APP_PUBLIC_URL`, `curl "$APP_PUBLIC_URL/health"`, and `docker compose logs api bot --tail=200`.
 
 For risky branch QA, read `docs/agent-qa.md` before claiming done.
+
+## Agent Docker cleanup
+
+When a branch task starts Docker, set a branch-specific `COMPOSE_PROJECT_NAME`
+(`lumi_<task_slug>`) before `docker compose`/`make up-detached`. After the task
+finishes or the PR is confirmed merged, run
+`COMPOSE_PROJECT_NAME=lumi_<task_slug> make agent-clean` and report the cleanup
+proof. Use `make agent-clean-full` only for disposable QA runtimes where deleting
+DB/Redis volumes is acceptable.

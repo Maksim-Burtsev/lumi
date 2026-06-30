@@ -659,12 +659,11 @@ class ContextBuilder:
         sections.append(
             "Current datetime: " + now_local.strftime("%Y-%m-%d %H:%M") + "\n"
             f"Timezone: {user.timezone}\n"
-            f"App locale: {user.locale}\n"
+            "App locale: en (English-only UI)\n"
             f"Reply language mode: {language_settings['reply_language_mode']}\n"
-            f"Fixed reply language: {language_settings.get('reply_language') or 'en'}\n"
-            "Reply policy: if mode=auto, answer in the latest user message language; "
-            "if mode=fixed, answer in fixed reply language; "
-            "if mode=app_locale, answer in the app locale.\n"
+            "Reply policy: answer in the latest user message language. "
+            "Reply language is not configurable.\n"
+            "Progress language: English.\n"
             "Channel: telegram_private_chat"
         )
 
