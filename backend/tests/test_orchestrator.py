@@ -44,9 +44,9 @@ from lumi.utils.time import local_now, local_to_utc, utc_to_local
 from .conftest import TEST_TELEGRAM_ID
 
 
-def _future_local_datetime(timezone: str, hour: int, minute: int = 0) -> datetime:
-    day = (local_now(timezone) + timedelta(days=1)).date()
-    return datetime(day.year, day.month, day.day, hour, minute)
+def _future_local_at(user, hour: int, minute: int = 0, *, days: int = 2) -> datetime:
+    target = (local_now(user.timezone) + timedelta(days=days)).date()
+    return datetime(target.year, target.month, target.day, hour, minute)
 
 
 class PendingTaskProvider:
@@ -552,8 +552,8 @@ async def test_agent_updates_internal_calendar_block_by_query(user):
         event = await calendar.create_internal_block(
             db_user,
             title="Dalma",
-            start_at=local_to_utc(_future_local_datetime(db_user.timezone, 17), db_user.timezone),
-            end_at=local_to_utc(_future_local_datetime(db_user.timezone, 18), db_user.timezone),
+            start_at=local_to_utc(_future_local_at(db_user, 17), db_user.timezone),
+            end_at=local_to_utc(_future_local_at(db_user, 18), db_user.timezone),
             created_by="agent",
         )
         provider = AgentPlannerProvider({
@@ -595,15 +595,15 @@ async def test_resolve_entity_asks_when_task_and_block_match(user):
         await TaskService(session).create_task(
             db_user,
             title="Dalma",
-            due_at=local_to_utc(_future_local_datetime(db_user.timezone, 15), db_user.timezone),
+            due_at=local_to_utc(_future_local_at(db_user, 15), db_user.timezone),
             actor="user",
         )
         calendar = CalendarService(session)
         event = await calendar.create_internal_block(
             db_user,
             title="Dalma",
-            start_at=local_to_utc(_future_local_datetime(db_user.timezone, 17), db_user.timezone),
-            end_at=local_to_utc(_future_local_datetime(db_user.timezone, 18), db_user.timezone),
+            start_at=local_to_utc(_future_local_at(db_user, 17), db_user.timezone),
+            end_at=local_to_utc(_future_local_at(db_user, 18), db_user.timezone),
             created_by="agent",
         )
         provider = AgentPlannerProvider({
@@ -645,8 +645,8 @@ async def test_agent_cancels_internal_calendar_block_by_query(user):
         event = await calendar.create_internal_block(
             db_user,
             title="Dalma",
-            start_at=local_to_utc(_future_local_datetime(db_user.timezone, 17), db_user.timezone),
-            end_at=local_to_utc(_future_local_datetime(db_user.timezone, 18), db_user.timezone),
+            start_at=local_to_utc(_future_local_at(db_user, 17), db_user.timezone),
+            end_at=local_to_utc(_future_local_at(db_user, 18), db_user.timezone),
             created_by="agent",
         )
         provider = AgentPlannerProvider({
@@ -687,8 +687,8 @@ async def test_agent_refuses_external_calendar_update(user):
             external_calendar_id="primary",
             external_event_id="ext-1",
             title="External Dalma",
-            start_at=local_to_utc(_future_local_datetime(db_user.timezone, 17), db_user.timezone),
-            end_at=local_to_utc(_future_local_datetime(db_user.timezone, 18), db_user.timezone),
+            start_at=local_to_utc(_future_local_at(db_user, 17), db_user.timezone),
+            end_at=local_to_utc(_future_local_at(db_user, 18), db_user.timezone),
             timezone=db_user.timezone,
             status=CalendarEventStatus.CONFIRMED,
             created_by="external_sync",
@@ -3484,6 +3484,7 @@ async def test_update_task_due_time_choice_applies_to_selected_candidate():
     })
     async with session_scope() as session:
         user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        user.is_allowed = True
         first = await TaskService(session).create_task(
             user,
             title="посмотреть ответ chatGPT по X",
@@ -3512,7 +3513,7 @@ async def test_update_task_due_time_choice_applies_to_selected_candidate():
 
     callback = type("Callback", (), {})()
     callback.data = f"update_pick:{confirmations[0].id.hex[:8]}:1"
-    callback.from_user = type("User", (), {"id": TEST_TELEGRAM_ID, "language_code": "ru"})()
+    callback.from_user = type("User", (), {"id": TEST_TELEGRAM_ID, "language_code": "ru", "username": None})()
     callback.message = type(
         "Message",
         (),

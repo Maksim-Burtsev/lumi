@@ -1,4 +1,6 @@
-.PHONY: setup up up-detached down logs migrate revision seed test lint smoke \
+.PHONY: setup up up-detached down logs migrate revision seed test lint typecheck smoke \
+	assistant-core assistant-core-task assistant-core-calendar assistant-core-memory \
+	assistant-eval-coverage minimax-planner-smoke qa-required \
 	frontend-install frontend-build frontend-dev miniapp-local-up dev-auth-up dev-auth-down tunnel \
 	google-auth-local reset-local-db agent-clean agent-clean-full help
 
@@ -19,7 +21,12 @@ help:
 	@echo "  make migrate           apply DB migrations"
 	@echo "  make seed              create user/conversation/topics/automations"
 	@echo "  make smoke             end-to-end smoke test with mock LLM"
+	@echo "  make assistant-core    backend assistant regression flows with scripted LLM"
+	@echo "  make minimax-planner-smoke real MiniMax planner routing smoke"
+	@echo "  make qa-required       print checks required by changed paths"
 	@echo "  make test              run backend pytest inside docker"
+	@echo "  make lint              run backend ruff and mypy inside docker"
+	@echo "  make typecheck         run backend mypy inside docker"
 	@echo "  make logs              tail logs of all services"
 	@echo "  make google-auth-local local Google OAuth flow (browser)"
 	@echo "  make down              stop everything"
@@ -61,10 +68,34 @@ test:
 	docker compose run --rm -e LLM_PROVIDER=mock api pytest -q
 
 lint:
-	docker compose run --rm api ruff check .
+	docker compose run --rm api sh -c 'ruff check . && mypy src/lumi'
+
+typecheck:
+	docker compose run --rm api mypy src/lumi
 
 smoke:
 	docker compose run --rm -e LLM_PROVIDER=mock api python -m lumi.scripts.smoke
+
+assistant-core:
+	docker compose run --rm -e LLM_PROVIDER=mock api pytest -q tests/test_assistant_core_flows.py tests/test_assistant_eval_coverage.py
+
+assistant-core-task:
+	docker compose run --rm -e LLM_PROVIDER=mock -e ASSISTANT_CORE_AREA=task api pytest -q tests/test_assistant_core_flows.py
+
+assistant-core-calendar:
+	docker compose run --rm -e LLM_PROVIDER=mock -e ASSISTANT_CORE_AREA=calendar api pytest -q tests/test_assistant_core_flows.py
+
+assistant-core-memory:
+	docker compose run --rm -e LLM_PROVIDER=mock -e ASSISTANT_CORE_AREA=memory,chat api pytest -q tests/test_assistant_core_flows.py
+
+assistant-eval-coverage:
+	docker compose run --rm -e LLM_PROVIDER=mock api pytest -q tests/test_assistant_eval_coverage.py
+
+minimax-planner-smoke:
+	docker compose run --rm -e LLM_PROVIDER=minimax api python -m lumi.evals.minimax_planner_smoke
+
+qa-required:
+	python3 scripts/qa_required.py
 
 frontend-install:
 	cd frontend && npm install
@@ -96,6 +127,7 @@ dev-auth-up:
 		-e DEV_AUTH_ENABLED=true \
 		-e DEV_AUTH_TELEGRAM_USER_ID=$$telegram_id \
 		-p 127.0.0.1:$(LUMI_DEV_AUTH_PORT):8000 \
+		-p '[::1]:$(LUMI_DEV_AUTH_PORT):8000' \
 		-v "$(CURDIR)/data/files:/app/data/files" \
 		-v "$(CURDIR)/data/secrets:/app/data/secrets" \
 		-v "$(CURDIR)/frontend/dist:/app/static/app:ro" \

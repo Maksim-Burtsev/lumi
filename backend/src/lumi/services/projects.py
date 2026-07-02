@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lumi.db.models import Priority, Project, ProjectStatus, Task, TaskStatus, User
@@ -180,7 +180,7 @@ class ProjectService:
             if project is None:
                 continue
             await self.session.execute(
-                Task.__table__.update()
+                update(Task)
                 .where(
                     Task.user_id == user.id,
                     Task.project_id.is_(None),
@@ -193,7 +193,7 @@ class ProjectService:
     async def _backfill_backlog_tasks(self, user: User) -> None:
         backlog = await self.ensure_backlog_project(user)
         await self.session.execute(
-            Task.__table__.update()
+            update(Task)
             .where(
                 Task.user_id == user.id,
                 Task.project_id.is_(None),
@@ -251,6 +251,8 @@ class ProjectService:
             Priority.LOW: 1,
         }
         for task in result.scalars():
+            if task.project_id is None:
+                continue
             current = next_by_project.get(task.project_id)
             if current is None or priority_rank[task.priority] > priority_rank[current.priority]:
                 next_by_project[task.project_id] = task

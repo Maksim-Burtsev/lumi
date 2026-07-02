@@ -28,6 +28,7 @@ dependencies = [
     # test/lint tools ship in the image on purpose: `make test`/`make lint` run in docker
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "mypy>=2.1",
     "ruff>=0.8",
 ]
 
@@ -51,3 +52,10 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
 ignore = ["E501", "B008"]  # B008: FastAPI Depends in defaults is idiomatic
+
+[tool.mypy]
+python_version = "3.12"
+check_untyped_defs = true
+ignore_missing_imports = true
+show_error_codes = true
+files = ["src/lumi"]

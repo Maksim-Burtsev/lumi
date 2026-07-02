@@ -1571,8 +1571,8 @@ class AssistantOrchestrator:
         planner_text = _planner_text_with_message_context(text, clean_message_context)
         language_text = trusted_text or text
 
-        content_json = None
-        metadata: dict = {}
+        content_json: dict[str, Any] | None = None
+        metadata: dict[str, Any] = {}
         if image_metadata or ignored_attachment_metadata or clean_message_context:
             content_json = {"text": text}
             content_json.update(clean_message_context)
@@ -2640,24 +2640,24 @@ class AssistantOrchestrator:
                     results=results,
                 )
             elif call.name == "update_task":
-                patch = TaskPatchRequest.model_validate(_args_with_call_defaults(call))
+                task_patch = TaskPatchRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_update_task_tool(
                     user=user,
                     run=run,
                     call=call,
-                    patch=patch,
+                    patch=task_patch,
                     planner_context=planner_context,
                     language=plan.language,
                     results=results,
                     buttons=buttons,
                 )
             elif call.name == "bulk_update_tasks":
-                patch = BulkTaskPatchRequest.model_validate(_args_with_call_defaults(call))
+                bulk_patch = BulkTaskPatchRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_bulk_update_tasks_tool(
                     user=user,
                     run=run,
                     call=call,
-                    patch=patch,
+                    patch=bulk_patch,
                     language=plan.language,
                     results=results,
                     buttons=buttons,
@@ -2676,18 +2676,20 @@ class AssistantOrchestrator:
                     buttons=buttons,
                 )
             elif call.name == "complete_task":
-                await self._apply_complete_task_tool(user=user, run=run, call=call, results=results)
+                await self._apply_complete_task_tool(
+                    user=user, run=run, call=call, results=results, buttons=buttons
+                )
             elif call.name == "snooze_task":
                 await self._apply_snooze_task_tool(
                     user=user, run=run, call=call, results=results, buttons=buttons
                 )
             elif call.name == "resolve_entity":
-                request = EntityResolveRequest.model_validate(_args_with_call_defaults(call))
+                entity_request = EntityResolveRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_resolve_entity_tool(
                     user=user,
                     run=run,
                     call=call,
-                    request=request,
+                    request=entity_request,
                     language=plan.language,
                     results=results,
                     buttons=buttons,
@@ -2699,19 +2701,19 @@ class AssistantOrchestrator:
                                                     source_message_id=source_message_id,
                                                     results=results)
             elif call.name == "read_memories":
-                request = MemoryReadRequest.model_validate(_args_with_call_defaults(call))
+                memory_read_request = MemoryReadRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_read_memories_tool(
-                    user=user, run=run, call=call, request=request, results=results
+                    user=user, run=run, call=call, request=memory_read_request, results=results
                 )
             elif call.name == "update_memory":
-                request = MemoryUpdateRequest.model_validate(_args_with_call_defaults(call))
+                memory_update_request = MemoryUpdateRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_update_memory_tool(
-                    user=user, run=run, call=call, request=request, results=results
+                    user=user, run=run, call=call, request=memory_update_request, results=results
                 )
             elif call.name == "delete_memory":
-                request = MemoryDeleteRequest.model_validate(_args_with_call_defaults(call))
+                memory_delete_request = MemoryDeleteRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_delete_memory_tool(
-                    user=user, run=run, call=call, request=request, results=results
+                    user=user, run=run, call=call, request=memory_delete_request, results=results
                 )
             elif call.name in {
                 "plan_day",
@@ -2719,18 +2721,18 @@ class AssistantOrchestrator:
                 "create_internal_calendar_block",
                 "create_external_calendar_event",
             }:
-                request = _calendar_request_from_tool_call(call)
+                calendar_request = _calendar_request_from_tool_call(call)
                 await self._apply_calendar_request(
-                    user=user, run=run, call=call, request=request, results=results,
+                    user=user, run=run, call=call, request=calendar_request, results=results,
                     buttons=buttons, outcomes=outcomes, language=plan.language, text=text
                 )
             elif call.name == "read_calendar_events":
-                request = CalendarEventsRequest.model_validate(_args_with_call_defaults(call))
+                calendar_events_request = CalendarEventsRequest.model_validate(_args_with_call_defaults(call))
                 calendar_read = await self._apply_read_calendar_events_tool(
                     user=user,
                     run=run,
                     call=call,
-                    request=request,
+                    request=calendar_events_request,
                     results=results,
                     language=plan.language,
                     user_visible=not read_only_context,
@@ -2742,46 +2744,54 @@ class AssistantOrchestrator:
                 if calendar_read.open_app_button:
                     use_action_reply_renderer = False
             elif call.name == "update_calendar_event":
-                request = CalendarEventUpdateRequest.model_validate(_args_with_call_defaults(call))
+                calendar_update_request = CalendarEventUpdateRequest.model_validate(
+                    _args_with_call_defaults(call)
+                )
                 await self._apply_update_calendar_event_tool(
                     user=user,
                     run=run,
                     call=call,
-                    request=request,
+                    request=calendar_update_request,
                     planner_context=planner_context,
                     language=plan.language,
                     results=results,
                     buttons=buttons,
                 )
             elif call.name == "cancel_calendar_event":
-                request = CalendarEventCancelRequest.model_validate(_args_with_call_defaults(call))
+                calendar_cancel_request = CalendarEventCancelRequest.model_validate(
+                    _args_with_call_defaults(call)
+                )
                 await self._apply_cancel_calendar_event_tool(
                     user=user,
                     run=run,
                     call=call,
-                    request=request,
+                    request=calendar_cancel_request,
                     planner_context=planner_context,
                     language=plan.language,
                     results=results,
                     buttons=buttons,
                 )
             elif call.name == "update_calendar_private_note":
-                request = CalendarPrivateNoteRequest.model_validate(_args_with_call_defaults(call))
+                calendar_private_note_request = CalendarPrivateNoteRequest.model_validate(
+                    _args_with_call_defaults(call)
+                )
                 await self._apply_update_calendar_private_note_tool(
                     user=user,
                     run=run,
                     call=call,
-                    request=request,
+                    request=calendar_private_note_request,
                     results=results,
                     language=plan.language,
                 )
             elif call.name == "delete_calendar_private_note":
-                request = CalendarPrivateNoteRequest.model_validate(_args_with_call_defaults(call))
+                calendar_private_note_delete_request = CalendarPrivateNoteRequest.model_validate(
+                    _args_with_call_defaults(call)
+                )
                 await self._apply_delete_calendar_private_note_tool(
                     user=user,
                     run=run,
                     call=call,
-                    request=request,
+                    request=calendar_private_note_delete_request,
                     results=results,
                     language=plan.language,
                 )
@@ -2792,46 +2802,46 @@ class AssistantOrchestrator:
                                                          automation=automation,
                                                          results=results, buttons=buttons)
             elif call.name == "read_automations":
-                request = AutomationReadRequest.model_validate(_args_with_call_defaults(call))
+                automation_read_request = AutomationReadRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_read_automations_tool(
-                    user=user, run=run, call=call, request=request, results=results
+                    user=user, run=run, call=call, request=automation_read_request, results=results
                 )
             elif call.name == "update_automation":
-                request = AutomationUpdateRequest.model_validate(_args_with_call_defaults(call))
+                automation_update_request = AutomationUpdateRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_update_automation_tool(
-                    user=user, run=run, call=call, request=request, results=results
+                    user=user, run=run, call=call, request=automation_update_request, results=results
                 )
             elif call.name == "run_automation":
-                request = AutomationRunRequest.model_validate(_args_with_call_defaults(call))
+                automation_run_request = AutomationRunRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_run_automation_tool(
-                    user=user, run=run, call=call, request=request, results=results
+                    user=user, run=run, call=call, request=automation_run_request, results=results
                 )
             elif call.name == "email_triage":
-                request = EmailRequest.model_validate({"kind": "triage", **call.args})
-                if request.confidence >= 0.0:
+                email_request = EmailRequest.model_validate({"kind": "triage", **call.args})
+                if email_request.confidence >= 0.0:
                     buttons.append([Button(text="📬 Triage email", callback_data="run:email_triage")])
             elif call.name == "read_inbox":
-                request = InboxReadRequest.model_validate(_args_with_call_defaults(call))
+                inbox_request = InboxReadRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_read_inbox_tool(
-                    user=user, run=run, call=call, request=request, results=results
+                    user=user, run=run, call=call, request=inbox_request, results=results
                 )
             elif call.name == "read_email_thread":
-                request = EmailThreadReadRequest.model_validate(_args_with_call_defaults(call))
+                email_thread_request = EmailThreadReadRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_read_email_thread_tool(
-                    user=user, run=run, call=call, request=request, results=results
+                    user=user, run=run, call=call, request=email_thread_request, results=results
                 )
             elif call.name == "create_task_from_email":
-                request = EmailTaskCreateRequest.model_validate(_args_with_call_defaults(call))
+                email_task_request = EmailTaskCreateRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_create_task_from_email_tool(
                     user=user,
                     run=run,
                     call=call,
-                    request=request,
+                    request=email_task_request,
                     source_message_id=source_message_id,
                     results=results,
                 )
             elif call.name == "news_digest":
-                request = NewsRequest.model_validate({
+                news_request = NewsRequest.model_validate({
                     "kind": "digest",
                     **call.args,
                     "confidence": call.confidence,
@@ -2839,43 +2849,43 @@ class AssistantOrchestrator:
                 await self._apply_news_digest_tool(
                     user=user,
                     run=run,
-                    request=request,
+                    request=news_request,
                     results=results,
                 )
             elif call.name == "read_news_topics":
-                request = NewsTopicReadRequest.model_validate(_args_with_call_defaults(call))
+                news_topics_request = NewsTopicReadRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_read_news_topics_tool(
-                    user=user, run=run, call=call, request=request, results=results
+                    user=user, run=run, call=call, request=news_topics_request, results=results
                 )
             elif call.name == "create_news_topic":
-                request = NewsTopicCreateRequest.model_validate(_args_with_call_defaults(call))
+                news_topic_create_request = NewsTopicCreateRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_create_news_topic_tool(
-                    user=user, run=run, call=call, request=request, results=results
+                    user=user, run=run, call=call, request=news_topic_create_request, results=results
                 )
             elif call.name == "update_news_topic":
-                request = NewsTopicUpdateRequest.model_validate(_args_with_call_defaults(call))
+                news_topic_update_request = NewsTopicUpdateRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_update_news_topic_tool(
-                    user=user, run=run, call=call, request=request, results=results
+                    user=user, run=run, call=call, request=news_topic_update_request, results=results
                 )
             elif call.name == "run_news_digest":
-                request = NewsDigestRunRequest.model_validate(_args_with_call_defaults(call))
+                news_digest_run_request = NewsDigestRunRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_run_news_digest_tool(
-                    user=user, run=run, call=call, request=request, results=results
+                    user=user, run=run, call=call, request=news_digest_run_request, results=results
                 )
             elif call.name == "read_settings":
-                request = SettingsReadRequest.model_validate(_args_with_call_defaults(call))
+                settings_read_request = SettingsReadRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_read_settings_tool(
-                    user=user, run=run, call=call, request=request, results=results
+                    user=user, run=run, call=call, request=settings_read_request, results=results
                 )
             elif call.name == "update_settings":
-                request = SettingsUpdateRequest.model_validate(_args_with_call_defaults(call))
+                settings_update_request = SettingsUpdateRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_update_settings_tool(
-                    user=user, run=run, call=call, request=request, results=results
+                    user=user, run=run, call=call, request=settings_update_request, results=results
                 )
             elif call.name == "read_connectors":
-                request = ConnectorsReadRequest.model_validate(_args_with_call_defaults(call))
+                connectors_request = ConnectorsReadRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_read_connectors_tool(
-                    user=user, run=run, call=call, request=request, results=results
+                    user=user, run=run, call=call, request=connectors_request, results=results
                 )
             elif call.name == "set_language":
                 await self._apply_set_language_tool(
@@ -3516,7 +3526,7 @@ class AssistantOrchestrator:
             memory.kind = MemoryKind(request.kind)
             updates["kind"] = request.kind
         if request.importance is not None:
-            memory.importance = max(0.0, min(1.0, float(request.importance)))
+            memory.importance = request.importance
             updates["importance"] = memory.importance
         if not updates:
             await self.runs.log_tool_call(

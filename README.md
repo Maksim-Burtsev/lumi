@@ -152,7 +152,7 @@ External Google Calendar event creation is available only after explicit confirm
 ```bash
 make logs            # tail logs for all services
 make test            # pytest in the container
-make lint            # ruff
+make lint            # ruff + mypy
 make smoke           # end-to-end mock LLM check
 make down            # stop everything
 make reset-local-db  # remove volumes and start over

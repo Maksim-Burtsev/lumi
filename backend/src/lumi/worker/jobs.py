@@ -185,16 +185,23 @@ async def send_turn_reply(
                     )
                     return True
                 if rich_html:
-                    edit_kwargs = {
-                        "chat_id": chat_id,
-                        "message_id": turn.status_message_id,
-                        "text": chunks[0] if rich_html_requires_rich_message(rich_html) else rich_html,
-                        "link_preview_options": link_preview_options,
-                        "reply_markup": markup,
-                    }
-                    if not rich_html_requires_rich_message(rich_html):
-                        edit_kwargs["parse_mode"] = "HTML"
-                    await bot.edit_message_text(**edit_kwargs)
+                    if rich_html_requires_rich_message(rich_html):
+                        await bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=turn.status_message_id,
+                            text=chunks[0],
+                            link_preview_options=link_preview_options,
+                            reply_markup=markup,
+                        )
+                    else:
+                        await bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=turn.status_message_id,
+                            text=rich_html,
+                            link_preview_options=link_preview_options,
+                            reply_markup=markup,
+                            parse_mode="HTML",
+                        )
                     return True
                 else:
                     await bot.edit_message_text(
@@ -229,15 +236,21 @@ async def send_turn_reply(
                     return True
                 except Exception:  # noqa: BLE001 — rich messages are new; plain fallback must work
                     log.exception("telegram rich turn reply failed; falling back to send_message")
-            message_kwargs = {
-                "chat_id": chat_id,
-                "text": chunks[0] if rich_html_requires_rich_message(rich_html) else rich_html,
-                "link_preview_options": link_preview_options,
-                "reply_markup": markup,
-            }
-            if not rich_html_requires_rich_message(rich_html):
-                message_kwargs["parse_mode"] = "HTML"
-            await bot.send_message(**message_kwargs)
+            if rich_html_requires_rich_message(rich_html):
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=chunks[0],
+                    link_preview_options=link_preview_options,
+                    reply_markup=markup,
+                )
+            else:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=rich_html,
+                    link_preview_options=link_preview_options,
+                    reply_markup=markup,
+                    parse_mode="HTML",
+                )
             if turn.status_message_id:
                 try:
                     await bot.delete_message(chat_id=chat_id, message_id=turn.status_message_id)
@@ -708,19 +721,23 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
                 stream_stats["edit_failed"] = stream_edit_failed
                 run.metadata_ = {**metadata, "latency_ms": latency_ms, "telegram_streaming": stream_stats}
 
-    reply_kwargs = {
-        "user": user,
-        "turn": turn,
-        "reply_text": result.reply_text,
-        "buttons": result.buttons,
-    }
-    if result.reply_rich_html:
-        reply_kwargs["reply_rich_html"] = result.reply_rich_html
-    if result.open_app_button:
-        reply_kwargs["open_app_button"] = result.open_app_button
-    if result.open_app_button_label:
-        reply_kwargs["open_app_button_label"] = result.open_app_button_label
-    delivered = await send_turn_reply(**reply_kwargs)
+    if result.reply_rich_html or result.open_app_button or result.open_app_button_label:
+        delivered = await send_turn_reply(
+            user=user,
+            turn=turn,
+            reply_text=result.reply_text,
+            buttons=result.buttons,
+            reply_rich_html=result.reply_rich_html,
+            open_app_button=result.open_app_button,
+            open_app_button_label=result.open_app_button_label,
+        )
+    else:
+        delivered = await send_turn_reply(
+            user=user,
+            turn=turn,
+            reply_text=result.reply_text,
+            buttons=result.buttons,
+        )
     if not delivered:
         next_turn = None
         retry_turn = None
@@ -1084,7 +1101,7 @@ async def run_custom_prompt(*, session, user: User, run: AgentRun, notify: bool,
             prompt = (scheduled.config or {}).get("prompt", "") if scheduled else ""
     if not prompt:
         return "empty prompt"
-    config = {}
+    config: dict[str, Any] = {}
     if run.scheduled_task_id:
         result = await session.execute(
             select(ScheduledTask).where(ScheduledTask.id == run.scheduled_task_id)

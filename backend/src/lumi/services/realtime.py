@@ -118,7 +118,8 @@ class RealtimeEventService:
 
     async def delete_older_than(self, cutoff) -> int:
         result = await self.session.execute(delete(UiEvent).where(UiEvent.created_at < cutoff))
-        return int(result.rowcount or 0)
+        rowcount = getattr(result, "rowcount", 0)
+        return int(rowcount or 0)
 
 
 class RealtimeHub:
