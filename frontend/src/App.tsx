@@ -64,7 +64,8 @@ function AppRoutes() {
       <Routes>
         <Route path="/" element={<TodayPage />} />
         <Route path="/tasks" element={<TasksPage />} />
-        <Route path="/focus" element={<FocusPage />} />
+        <Route path="/sessions" element={<FocusPage />} />
+        <Route path="/focus" element={<Navigate to="/sessions" replace />} />
         <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/inbox" element={<InboxPage />} />
         <Route path="/news" element={<NewsPage />} />

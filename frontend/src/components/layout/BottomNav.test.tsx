@@ -14,7 +14,7 @@ describe('BottomNav sessions tab', () => {
 
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/focus']}>
+        <MemoryRouter initialEntries={['/sessions']}>
           <BottomNav />
         </MemoryRouter>
       </QueryClientProvider>,

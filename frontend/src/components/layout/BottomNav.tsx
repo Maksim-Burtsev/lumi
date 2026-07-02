@@ -15,7 +15,7 @@ interface NavItem {
 const ITEMS: NavItem[] = [
   { to: '/', label: { en: 'Today', ru: 'Сегодня' }, icon: Sunrise },
   { to: '/tasks', label: { en: 'Tasks', ru: 'Задачи' }, icon: ListChecks },
-  { to: '/focus', label: { en: 'Sessions', ru: 'Сессии' }, icon: Timer },
+  { to: '/sessions', label: { en: 'Sessions', ru: 'Сессии' }, icon: Timer, also: ['/focus'] },
   { to: '/calendar', label: { en: 'Calendar', ru: 'Календарь' }, icon: CalendarDays },
   { to: '/more', label: { en: 'More', ru: 'Ещё' }, icon: LayoutGrid, also: ['/inbox', '/news', '/automations', '/settings', '/runs'] },
 ];

@@ -31,6 +31,7 @@ import {
   useTasks,
   useUpdateFocusSession,
 } from '../api/hooks';
+import type { FocusPeriod } from '../api/client';
 import type { FocusDailyActivity, FocusSession, FocusSummaryResponse, Task } from '../api/types';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
@@ -48,6 +49,7 @@ import { haptic } from '../telegram/webapp';
 
 const DURATIONS = [25, 45, 60];
 const DEFAULT_DURATION = 45;
+type MainPeriod = Exclude<FocusPeriod, 'custom'>;
 
 const COPY = {
   en: {
@@ -1955,18 +1957,22 @@ export default function FocusPage() {
   const [detailsSession, setDetailsSession] = useState<FocusSession | null>(null);
   const [detailsFromHistory, setDetailsFromHistory] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
-  const [period, setPeriod] = useState<'week' | 'month' | 'custom'>('week');
-  const [customRange, setCustomRange] = useState(() => rangeDefaults());
+  const [mainPeriod, setMainPeriod] = useState<MainPeriod>('week');
+  const [historyPeriod, setHistoryPeriod] = useState<FocusPeriod>('week');
+  const [historyCustomRange, setHistoryCustomRange] = useState(() => rangeDefaults());
   const state = useFocusState();
-  const summary = useFocusSummary(period, period === 'custom' ? customRange : undefined);
-  const sessionsQuery = useFocusSessions(period, period === 'custom' ? customRange : undefined);
+  const summary = useFocusSummary(mainPeriod);
+  const sessionsQuery = useFocusSessions(mainPeriod);
+  const historySummary = useFocusSummary(historyPeriod, historyPeriod === 'custom' ? historyCustomRange : undefined);
+  const historySessionsQuery = useFocusSessions(historyPeriod, historyPeriod === 'custom' ? historyCustomRange : undefined);
   const active = state.data?.active_session ?? null;
   const today = state.data?.today;
   const sessions = sessionsQuery.data?.items ?? state.data?.recent_sessions ?? [];
+  const historySessions = historySessionsQuery.data?.items ?? [];
   const daily = summary.data?.daily_activity ?? [];
   const summaryProjects = useMemo(() => summary.data?.project_breakdown.map((item) => item.project) ?? [], [summary.data]);
   const historyPreview = sessions.slice(0, 5);
-  const scopedSessionsLabel = period === 'month' ? copy.sessionsThisMonth : period === 'custom' ? copy.countSessions : copy.sessionsThisWeek;
+  const scopedSessionsLabel = mainPeriod === 'month' ? copy.sessionsThisMonth : copy.sessionsThisWeek;
   const mainScopedSessions = selectedDate ? sessions.filter((item) => sessionDateKey(item) === selectedDate) : sessions;
   const mainProjectBreakdown = selectedDate ? projectBreakdownFromSessions(mainScopedSessions, copy) : (summary.data?.project_breakdown ?? []);
   const mainMaxProjectSeconds = Math.max(1, ...(mainProjectBreakdown.map((item) => item.focus_seconds)));
@@ -1984,6 +1990,11 @@ export default function FocusPage() {
   };
   const toggleMainDate = (date: string) => {
     setSelectedDate((current) => (current === date ? null : date));
+  };
+  const openHistory = () => {
+    setHistoryPeriod(mainPeriod);
+    setHistoryCustomRange(rangeDefaults());
+    setHistoryOpen(true);
   };
 
   return (
@@ -2025,7 +2036,7 @@ export default function FocusPage() {
         <Rise>
           <button
             type="button"
-            onClick={() => setHistoryOpen(true)}
+            onClick={openHistory}
             className="mt-4 flex w-full items-center justify-between rounded-2xl border border-hairline bg-[var(--surface-strong)] px-4 py-4 text-left shadow-card"
           >
             <span className="flex min-w-0 items-center gap-3">
@@ -2047,8 +2058,8 @@ export default function FocusPage() {
           title={copy.analytics}
           action={
             <div className="flex gap-1.5">
-              <Chip label={copy.week} active={period === 'week'} onClick={() => setPeriod('week')} />
-              <Chip label={copy.month} active={period === 'month'} onClick={() => setPeriod('month')} />
+              <Chip label={copy.week} active={mainPeriod === 'week'} onClick={() => setMainPeriod('week')} />
+              <Chip label={copy.month} active={mainPeriod === 'month'} onClick={() => setMainPeriod('month')} />
             </div>
           }
         />
@@ -2056,7 +2067,7 @@ export default function FocusPage() {
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="tnum text-[25px] font-semibold text-ink">{secondsLabel(summary.data?.total_focus_seconds ?? 0, locale)}</p>
-              <p className="text-[12.5px] text-hint">{period === 'week' ? copy.forWeek : copy.forMonth}</p>
+              <p className="text-[12.5px] text-hint">{mainPeriod === 'week' ? copy.forWeek : copy.forMonth}</p>
             </div>
             <div className="text-right text-[12.5px] text-hint">
               <p>{summary.data?.total_sessions ?? 0} {scopedSessionsLabel}</p>
@@ -2103,7 +2114,7 @@ export default function FocusPage() {
           action={
             <button
               type="button"
-              onClick={() => setHistoryOpen(true)}
+              onClick={openHistory}
               className="inline-flex items-center gap-1.5 rounded-full border border-hairline px-3 py-1.5 text-[12.5px] font-medium text-ink"
             >
               <BarChart3 size={14} className="text-hint" />
@@ -2132,7 +2143,7 @@ export default function FocusPage() {
             {sessions.length > historyPreview.length && (
               <button
                 type="button"
-                onClick={() => setHistoryOpen(true)}
+                onClick={openHistory}
                 className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-[14px] font-medium text-accent-text"
               >
                 <span>{copy.viewAllHistory}</span>
@@ -2163,12 +2174,12 @@ export default function FocusPage() {
         open={historyOpen}
         onClose={() => setHistoryOpen(false)}
         locale={locale}
-        period={period}
-        onPeriodChange={setPeriod}
-        customRange={customRange}
-        onCustomRangeChange={setCustomRange}
-        summary={summary.data}
-        sessions={sessions}
+        period={historyPeriod}
+        onPeriodChange={setHistoryPeriod}
+        customRange={historyCustomRange}
+        onCustomRangeChange={setHistoryCustomRange}
+        summary={historySummary.data}
+        sessions={historySessions}
         onSelectSession={openHistoryDetails}
       />
     </Stagger>
