@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import BeforeValidator, Field, field_validator
+from pydantic import BeforeValidator, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -64,14 +64,14 @@ class Settings(BaseSettings):
     telegram_max_queue_per_user: int = 25
     telegram_use_rich_messages: bool = False
     telegram_stream_final_replies: bool = True
-    telegram_stream_edit_interval_seconds: float = 0.75
+    telegram_stream_edit_interval_seconds: float = Field(default=0.75, gt=0, allow_inf_nan=False)
     telegram_stream_min_chars: int = 24
-    telegram_stream_max_chars: int = 3900
+    telegram_stream_max_chars: int = Field(default=3900, ge=256, le=4000)
     telegram_progress_heartbeat_enabled: bool = True
-    telegram_progress_heartbeat_interval_seconds: float = 3.0
-    telegram_chat_action_interval_seconds: float = 4.0
-    telegram_progress_stale_after_seconds: float = 12.0
-    telegram_progress_long_after_seconds: float = 30.0
+    telegram_progress_heartbeat_interval_seconds: float = Field(default=3.0, gt=0, allow_inf_nan=False)
+    telegram_chat_action_interval_seconds: float = Field(default=4.0, gt=0, allow_inf_nan=False)
+    telegram_progress_stale_after_seconds: float = Field(default=12.0, gt=0, allow_inf_nan=False)
+    telegram_progress_long_after_seconds: float = Field(default=30.0, gt=0, allow_inf_nan=False)
 
     # --- Worker ---
     worker_max_jobs: int = 10
@@ -136,6 +136,15 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @model_validator(mode="after")
+    def _validate_telegram_progress_thresholds(self) -> Self:
+        if self.telegram_progress_long_after_seconds < self.telegram_progress_stale_after_seconds:
+            raise ValueError(
+                "telegram_progress_long_after_seconds must be greater than or equal to "
+                "telegram_progress_stale_after_seconds"
+            )
+        return self
 
     @property
     def is_local(self) -> bool:

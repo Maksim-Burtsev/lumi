@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from contextlib import suppress
 from datetime import datetime, timedelta
 from html import escape
 from time import monotonic
@@ -125,6 +124,13 @@ def _progress_heartbeat_text(settings, *, elapsed_seconds: float, tick: int, las
         base = (last_progress_text or "Thinking").strip().rstrip(".") or "Thinking"
     dots = "." * ((tick % 3) + 1)
     return f"{base}{dots}"
+
+
+def _user_visible_progress_text(status_text: str) -> str:
+    raw_text = str(status_text or "").strip()
+    if raw_text == "__thinking__":
+        return "Thinking..."
+    return telegram_plain_text(raw_text).strip()
 
 
 def _plain_text_rich_html(text: str) -> str:
@@ -610,7 +616,7 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
 
     async def on_progress(status_text: str) -> None:
         nonlocal last_progress_at, last_progress_text
-        status_text = telegram_plain_text(status_text).strip()
+        status_text = _user_visible_progress_text(status_text)
         if not status_text:
             return
         now = monotonic()
@@ -632,18 +638,18 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
         max_chars = max(256, min(4000, settings.telegram_stream_max_chars))
         status_text = status_text[:max_chars]
         now = monotonic()
-        if first_stream_delta_at is None:
-            first_stream_delta_at = now
         if last_stream_text is not None:
             grew_by = len(status_text) - len(last_stream_text)
             interval = max(0.5, settings.telegram_stream_edit_interval_seconds)
             min_chars = max(1, settings.telegram_stream_min_chars)
-            if now - last_stream_at < interval and grew_by < min_chars:
+            if now - last_stream_at < interval or grew_by < min_chars:
                 return
         ok = await edit_turn_status_message(user=user, turn=turn, status_text=status_text)
         if not ok:
             stream_edit_failed = True
             return
+        if first_stream_delta_at is None:
+            first_stream_delta_at = now
         last_stream_text = status_text
         last_stream_at = now
         stream_edit_count += 1
@@ -666,6 +672,19 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
             )
         )
 
+    async def stop_heartbeat() -> None:
+        if heartbeat_task is None:
+            return
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001 — heartbeat is best-effort observability/UI
+            log.exception("telegram progress heartbeat failed during shutdown")
+
+    result = None
+    assistant_error: Exception | None = None
     try:
         async with session_scope() as session:
             result = await AssistantOrchestrator(session).handle_user_message(
@@ -686,9 +705,14 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
             )
     except Exception as exc:  # noqa: BLE001
         log.exception("assistant turn failed", fields={"turn_id": turn_id})
+        assistant_error = exc
+    finally:
+        await stop_heartbeat()
+
+    if assistant_error is not None:
         next_turn = None
         async with session_scope() as session:
-            next_turn = await TurnService(session).fail_turn(parsed_turn_id, str(exc))
+            next_turn = await TurnService(session).fail_turn(parsed_turn_id, str(assistant_error))
         await send_turn_reply(
             user=user,
             turn=turn,
@@ -697,12 +721,9 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
         )
         if next_turn is not None:
             await _enqueue_turn(next_turn)
-        return f"turn failed: {exc}"
-    finally:
-        if heartbeat_task is not None:
-            heartbeat_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await heartbeat_task
+        return f"turn failed: {assistant_error}"
+
+    assert result is not None
 
     if result.agent_run_id is not None and queue_wait_ms is not None:
         async with session_scope() as session:

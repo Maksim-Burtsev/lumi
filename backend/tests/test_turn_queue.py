@@ -841,6 +841,49 @@ async def test_process_assistant_turn_edits_progress_status(monkeypatch):
     assert edits == [(9101, "Checking your calendar...")]
 
 
+async def test_process_assistant_turn_maps_internal_thinking_status(monkeypatch):
+    started = utc_now() - timedelta(seconds=10)
+    edits: list[tuple[int, str]] = []
+
+    async with session_scope() as session:
+        result = await TelegramIntakeService(session, now=lambda: started).ingest_chat_message(
+            update_id=14511,
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=9111,
+            text="answer after thinking",
+            status_message_id=91011,
+        )
+        turn_id = result.turn.id
+
+    class FakeOrchestrator:
+        def __init__(self, session) -> None:
+            self.session = session
+
+        async def handle_user_message(self, **kwargs):
+            await kwargs["on_progress"]("__thinking__")
+            return AssistantResult(reply_text="done", buttons=[], needs_compaction=False)
+
+    async def fake_edit_turn_status_message(*, user, turn, status_text):
+        edits.append((turn.status_message_id, status_text))
+        return True
+
+    async def fake_send_turn_reply(*, user, turn, reply_text, buttons):
+        return True
+
+    settings_data = jobs.get_settings().model_dump()
+    settings_data["telegram_progress_heartbeat_enabled"] = False
+    monkeypatch.setattr(jobs, "get_settings", lambda: SimpleNamespace(**settings_data))
+    monkeypatch.setattr(jobs, "AssistantOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(jobs, "edit_turn_status_message", fake_edit_turn_status_message)
+    monkeypatch.setattr(jobs, "send_turn_reply", fake_send_turn_reply)
+
+    summary = await jobs.process_assistant_turn({}, str(turn_id))
+
+    assert summary == "turn completed"
+    assert edits == [(91011, "Thinking...")]
+
+
 async def test_process_assistant_turn_streams_final_reply_deltas(monkeypatch):
     started = utc_now() - timedelta(seconds=10)
     edits: list[tuple[int, str]] = []
@@ -856,12 +899,22 @@ async def test_process_assistant_turn_streams_final_reply_deltas(monkeypatch):
         )
         turn_id = result.turn.id
 
+    class FakeClock:
+        def __init__(self) -> None:
+            self.now = 0.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    clock = FakeClock()
+
     class FakeOrchestrator:
         def __init__(self, session) -> None:
             self.session = session
 
         async def handle_user_message(self, **kwargs):
             await kwargs["on_reply_delta"]("Today")
+            clock.now = 1.0
             await kwargs["on_reply_delta"](
                 "Today you have 3 events and one open focus window after lunch."
             )
@@ -878,6 +931,7 @@ async def test_process_assistant_turn_streams_final_reply_deltas(monkeypatch):
     async def fake_send_turn_reply(*, user, turn, reply_text, buttons):
         return True
 
+    monkeypatch.setattr(jobs, "monotonic", clock)
     monkeypatch.setattr(jobs, "AssistantOrchestrator", FakeOrchestrator)
     monkeypatch.setattr(jobs, "edit_turn_status_message", fake_edit_turn_status_message)
     monkeypatch.setattr(jobs, "send_turn_reply", fake_send_turn_reply)
@@ -936,6 +990,13 @@ async def test_process_assistant_turn_throttles_streaming_deltas(monkeypatch):
     async def fake_send_turn_reply(*, user, turn, reply_text, buttons):
         return True
 
+    settings_data = jobs.get_settings().model_dump()
+    settings_data.update({
+        "telegram_progress_heartbeat_enabled": False,
+        "telegram_stream_edit_interval_seconds": 0.75,
+        "telegram_stream_min_chars": 1,
+    })
+    monkeypatch.setattr(jobs, "get_settings", lambda: SimpleNamespace(**settings_data))
     monkeypatch.setattr(jobs, "monotonic", clock)
     monkeypatch.setattr(jobs, "AssistantOrchestrator", FakeOrchestrator)
     monkeypatch.setattr(jobs, "edit_turn_status_message", fake_edit_turn_status_message)
@@ -947,7 +1008,7 @@ async def test_process_assistant_turn_throttles_streaming_deltas(monkeypatch):
     assert edits == ["a", "abcd"]
 
 
-async def test_process_assistant_turn_allows_smaller_streaming_growth(monkeypatch):
+async def test_process_assistant_turn_enforces_stream_interval_and_accumulates_growth(monkeypatch):
     started = utc_now() - timedelta(seconds=10)
     edits: list[str] = []
 
@@ -981,7 +1042,9 @@ async def test_process_assistant_turn_allows_smaller_streaming_growth(monkeypatc
             await kwargs["on_reply_delta"]("a" * 55)
             clock.now = 0.4
             await kwargs["on_reply_delta"]("a" * 60)
-            return AssistantResult(reply_text="a" * 60, buttons=[], needs_compaction=False)
+            clock.now = 0.8
+            await kwargs["on_reply_delta"]("a" * 61)
+            return AssistantResult(reply_text="a" * 61, buttons=[], needs_compaction=False)
 
     async def fake_edit_turn_status_message(*, user, turn, status_text):
         edits.append(status_text)
@@ -990,6 +1053,13 @@ async def test_process_assistant_turn_allows_smaller_streaming_growth(monkeypatc
     async def fake_send_turn_reply(*, user, turn, reply_text, buttons):
         return True
 
+    settings_data = jobs.get_settings().model_dump()
+    settings_data.update({
+        "telegram_progress_heartbeat_enabled": False,
+        "telegram_stream_edit_interval_seconds": 0.75,
+        "telegram_stream_min_chars": 24,
+    })
+    monkeypatch.setattr(jobs, "get_settings", lambda: SimpleNamespace(**settings_data))
     monkeypatch.setattr(jobs, "monotonic", clock)
     monkeypatch.setattr(jobs, "AssistantOrchestrator", FakeOrchestrator)
     monkeypatch.setattr(jobs, "edit_turn_status_message", fake_edit_turn_status_message)
@@ -998,7 +1068,7 @@ async def test_process_assistant_turn_allows_smaller_streaming_growth(monkeypatc
     summary = await jobs.process_assistant_turn({}, str(turn_id))
 
     assert summary == "turn completed"
-    assert edits == ["a" * 30, "a" * 55]
+    assert edits == ["a" * 30, "a" * 61]
 
 
 async def test_process_assistant_turn_animates_progress_heartbeat_and_typing(monkeypatch):
@@ -1061,6 +1131,52 @@ async def test_process_assistant_turn_animates_progress_heartbeat_and_typing(mon
     assert "typing" in chat_actions
     assert any(text.startswith("Thinking") and text != "Thinking..." for text in edits)
     assert any(text.startswith("Still thinking") for text in edits)
+
+
+async def test_process_assistant_turn_stops_heartbeat_before_terminal_error(monkeypatch):
+    started = utc_now() - timedelta(seconds=10)
+    events: list[str] = []
+    heartbeat_started = asyncio.Event()
+
+    async with session_scope() as session:
+        result = await TelegramIntakeService(session, now=lambda: started).ingest_chat_message(
+            update_id=145321,
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=91321,
+            text="fail after heartbeat starts",
+            status_message_id=910321,
+        )
+        turn_id = result.turn.id
+
+    async def fake_heartbeat(**_kwargs):
+        events.append("started")
+        heartbeat_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            events.append("stopped")
+
+    class FakeOrchestrator:
+        def __init__(self, session) -> None:
+            self.session = session
+
+        async def handle_user_message(self, **kwargs):
+            await heartbeat_started.wait()
+            raise RuntimeError("boom")
+
+    async def fake_send_turn_reply(*, user, turn, reply_text, buttons):
+        events.append("terminal_error")
+        return True
+
+    monkeypatch.setattr(jobs, "_run_turn_progress_heartbeat", fake_heartbeat)
+    monkeypatch.setattr(jobs, "AssistantOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(jobs, "send_turn_reply", fake_send_turn_reply)
+
+    summary = await jobs.process_assistant_turn({}, str(turn_id))
+
+    assert summary == "turn failed: boom"
+    assert events == ["started", "stopped", "terminal_error"]
 
 
 async def test_process_assistant_turn_stops_heartbeat_after_streaming_starts(monkeypatch):
