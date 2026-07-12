@@ -18,7 +18,7 @@ from lumi.services.projects import ProjectService
 from lumi.services.realtime import RealtimeEventService
 from lumi.utils.time import get_zone, local_day_bounds, utc_now
 
-MAX_EDIT_DURATION = timedelta(hours=24)
+MAX_EDIT_DURATION = timedelta(minutes=240)
 FUTURE_TOLERANCE = timedelta(minutes=5)
 UNSET = object()
 
@@ -597,7 +597,7 @@ class FocusService:
         )
         days = {dt.astimezone(zone).date() for dt in result.scalars()}
         streak = 0
-        cursor = local_today
+        cursor = local_today if local_today in days else local_today - timedelta(days=1)
         while cursor in days:
             streak += 1
             cursor -= timedelta(days=1)

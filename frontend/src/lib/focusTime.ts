@@ -75,7 +75,7 @@ export function localRangeToIso(
   return {
     started_at: validDates ? start.toISOString() : '',
     ended_at: validDates ? end.toISOString() : '',
-    valid: validDates && Number.isFinite(durationMinutes) && durationMinutes > 0 && durationMinutes <= 24 * 60,
+    valid: validDates && Number.isFinite(durationMinutes) && durationMinutes > 0 && durationMinutes <= 240,
     duration_minutes: durationMinutes,
   };
 }

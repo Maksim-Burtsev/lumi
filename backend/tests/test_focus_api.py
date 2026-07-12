@@ -181,6 +181,31 @@ async def test_focus_manual_log_creates_completed_session_without_active_timer(c
     assert body["recent_sessions"][0]["id"] == session["id"]
 
 
+async def test_focus_manual_log_accepts_240_minutes_and_rejects_241(client):
+    accepted = await client.post(
+        "/api/focus/sessions/log",
+        json={
+            "intention": "Four hour block",
+            "logged_at": datetime(2026, 6, 16, 8, 0, tzinfo=UTC).isoformat(),
+            "duration_minutes": 240,
+        },
+    )
+    assert accepted.status_code == 201
+    assert accepted.json()["session"]["planned_minutes"] == 240
+    assert accepted.json()["session"]["duration_seconds"] == 240 * 60
+
+    rejected = await client.post(
+        "/api/focus/sessions/log",
+        json={
+            "intention": "Too long block",
+            "logged_at": datetime(2026, 6, 16, 8, 0, tzinfo=UTC).isoformat(),
+            "duration_minutes": 241,
+        },
+    )
+    assert rejected.status_code == 422
+    assert rejected.json()["error"] == "validation_error"
+
+
 async def test_focus_summary_includes_weekly_kpis_daypart_and_baseline_delta(client, db_session, monkeypatch):
     fixed_now = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
     monkeypatch.setattr("lumi.services.focus.utc_now", lambda: fixed_now)
@@ -340,7 +365,7 @@ async def test_focus_custom_range_filters_daily_activity_sessions_and_paginates(
     assert second_body["next_offset"] is None
 
 
-async def test_focus_patch_completed_session_time_updates_duration_and_rejects_invalid_or_active(client):
+async def test_focus_patch_completed_session_time_enforces_duration_and_rejects_invalid_or_active(client):
     logged = await client.post(
         "/api/focus/sessions/log",
         json={
@@ -365,6 +390,27 @@ async def test_focus_patch_completed_session_time_updates_duration_and_rejects_i
     assert parse_iso(body["started_at"]) == datetime(2026, 6, 16, 12, 0, tzinfo=UTC)
     assert parse_iso(body["ended_at"]) == datetime(2026, 6, 16, 13, 15, tzinfo=UTC)
     assert body["duration_seconds"] == 75 * 60
+
+    boundary = await client.patch(
+        f"/api/focus/sessions/{session_id}",
+        json={
+            "started_at": datetime(2026, 6, 16, 12, 0, tzinfo=UTC).isoformat(),
+            "ended_at": datetime(2026, 6, 16, 16, 0, tzinfo=UTC).isoformat(),
+        },
+    )
+    assert boundary.status_code == 200
+    assert boundary.json()["session"]["planned_minutes"] == 240
+    assert boundary.json()["session"]["duration_seconds"] == 240 * 60
+
+    too_long = await client.patch(
+        f"/api/focus/sessions/{session_id}",
+        json={
+            "started_at": datetime(2026, 6, 16, 12, 0, tzinfo=UTC).isoformat(),
+            "ended_at": datetime(2026, 6, 16, 16, 1, tzinfo=UTC).isoformat(),
+        },
+    )
+    assert too_long.status_code == 422
+    assert too_long.json() == {"error": "focus_session_duration_too_long"}
 
     invalid = await client.patch(
         f"/api/focus/sessions/{session_id}",
@@ -963,6 +1009,42 @@ async def test_focus_period_bounds_are_dst_safe_and_local_date_is_server_owned(
     )
     assert response.status_code == 201
     assert response.json()["session"]["local_date"] == "2026-03-29"
+
+
+async def test_focus_streak_uses_local_days_and_preserves_yesterday_before_first_session(
+    db_session,
+    monkeypatch,
+):
+    fixed_now = datetime(2026, 7, 12, 21, 0, tzinfo=UTC)
+    monkeypatch.setattr("lumi.services.focus.utc_now", lambda: fixed_now)
+    user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID)
+    user.timezone = "Asia/Yerevan"
+
+    def completed(started_at: datetime) -> FocusSession:
+        return FocusSession(
+            user_id=user.id,
+            intention="Streak session",
+            planned_minutes=20,
+            status=FocusSessionStatus.COMPLETED,
+            started_at=started_at,
+            target_end_at=started_at + timedelta(minutes=20),
+            ended_at=started_at + timedelta(minutes=20),
+            duration_seconds=20 * 60,
+        )
+
+    db_session.add_all(
+        [
+            completed(datetime(2026, 7, 11, 19, 30, tzinfo=UTC)),
+            completed(datetime(2026, 7, 11, 20, 30, tzinfo=UTC)),
+        ]
+    )
+    await db_session.flush()
+    service = FocusService(db_session)
+    assert await service.streak_days(user) == 2
+
+    db_session.add(completed(datetime(2026, 7, 12, 20, 30, tzinfo=UTC)))
+    await db_session.flush()
+    assert await service.streak_days(user) == 3
 
 
 async def test_focus_month_to_date_uses_elapsed_days_and_matching_prior_months(
