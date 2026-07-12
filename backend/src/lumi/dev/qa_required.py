@@ -52,7 +52,78 @@ def required_checks_for_paths(paths: list[str]) -> list[RequiredCheck]:
         add("make lint", "backend files changed", "backend style/import gate")
 
     if frontend_paths:
-        add("make frontend-build", "frontend files changed", "Mini App build gate")
+        add("make frontend-check", "frontend files changed", "frontend lint, test, and build gate")
+
+    shared_product_contract = any(
+        path in {
+            "backend/src/lumi/api/serializers.py",
+            "backend/src/lumi/db/models.py",
+        }
+        or path.startswith("backend/alembic/versions/")
+        for path in normalized
+    )
+
+    def touches_backend(*markers: str, exact: set[str] | None = None) -> bool:
+        exact = exact or set()
+        return any(
+            path in exact
+            or (
+                path.startswith(("backend/src/lumi/", "backend/tests/", "backend/alembic/versions/"))
+                and any(marker in path.lower() for marker in markers)
+            )
+            for path in normalized
+        )
+
+    auth_paths = {
+        "backend/src/lumi/api/deps.py",
+        "backend/src/lumi/api/router.py",
+        "backend/src/lumi/api/routes/me.py",
+        "backend/src/lumi/api/routes/realtime.py",
+        "backend/src/lumi/config.py",
+        "backend/src/lumi/main.py",
+        "backend/tests/test_realtime.py",
+        "backend/tests/test_telegram_auth.py",
+    }
+
+    if shared_product_contract or touches_backend("focus", "/sessions"):
+        add("make focus-check", "Focus code or tests changed", "Focus API and service contracts can regress")
+    if shared_product_contract or touches_backend(
+        "/tasks.py",
+        "/task_",
+        "/projects.py",
+        "/assistant_suggestions.py",
+        "test_task",
+        "test_projects_suggestions",
+        "test_opportunity_engine",
+    ):
+        add("make tasks-check", "Tasks code or tests changed", "task domain and API contracts can regress")
+    if shared_product_contract or touches_backend(
+        "planning",
+        "/today",
+        "work_block",
+        "workblock",
+        "/calendar.py",
+        "test_calendar",
+        "test_opportunity_engine",
+        "test_projects_suggestions_api",
+        "schedule_delivery",
+        "schedule_messages",
+    ):
+        add("make planning-check", "planning or Today code changed", "planning and Today contracts can regress")
+    if (
+        shared_product_contract
+        or any(path.startswith("backend/src/lumi/security/") for path in normalized)
+        or touches_backend("/auth.py", "_auth", "web_session", "csrf", exact=auth_paths)
+    ):
+        add("make auth-check", "standalone auth code or tests changed", "web authentication can regress")
+    if shared_product_contract or touches_backend(
+        "analytics", "analysis", "analyses", "reflection", "insight"
+    ):
+        add(
+            "make analytics-check",
+            "reflection or analytics code changed",
+            "session reflection and analytics can regress",
+        )
 
     assistant_common = (
         "backend/src/lumi/assistant/orchestrator.py",

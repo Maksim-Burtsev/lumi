@@ -1,6 +1,7 @@
 .PHONY: setup up up-detached down logs migrate revision seed seed-focus-demo test lint typecheck smoke \
 	assistant-core assistant-core-task assistant-core-calendar assistant-core-memory \
-	assistant-eval-coverage minimax-planner-smoke qa-required \
+	assistant-eval-coverage minimax-planner-smoke qa-required frontend-check focus-check tasks-check \
+	planning-check auth-check analytics-check \
 	frontend-install frontend-build frontend-dev miniapp-local-up dev-auth-up dev-auth-down tunnel \
 	google-auth-local reset-local-db agent-clean agent-clean-full help
 
@@ -25,6 +26,12 @@ help:
 	@echo "  make assistant-core    backend assistant regression flows with scripted LLM"
 	@echo "  make minimax-planner-smoke real MiniMax planner routing smoke"
 	@echo "  make qa-required       print checks required by changed paths"
+	@echo "  make frontend-check    frontend lint, tests, and production build"
+	@echo "  make focus-check       Focus API and service tests"
+	@echo "  make tasks-check       Tasks service and API tests"
+	@echo "  make planning-check    planning, slots, and Today tests"
+	@echo "  make auth-check        Telegram and API auth tests"
+	@echo "  make analytics-check   Focus reflection and analytics tests"
 	@echo "  make test              run backend pytest inside docker"
 	@echo "  make lint              run backend ruff and mypy inside docker"
 	@echo "  make typecheck         run backend mypy inside docker"
@@ -103,6 +110,40 @@ qa-required:
 
 frontend-install:
 	cd frontend && npm install
+
+frontend-check: frontend-install
+	cd frontend && npm run lint && npm run test:run && npm run build
+
+focus-check:
+	docker compose run --rm --build -e LLM_PROVIDER=mock api pytest -q tests/test_focus_api.py
+
+tasks-check:
+	docker compose run --rm --build -e LLM_PROVIDER=mock api pytest -q \
+		tests/test_task_service.py \
+		tests/test_projects_suggestions_api.py \
+		tests/test_opportunity_engine.py \
+		tests/test_api.py::test_tasks_crud
+
+planning-check:
+	docker compose run --rm --build -e LLM_PROVIDER=mock api pytest -q \
+		tests/test_calendar_slots.py \
+		tests/test_calendar_sync.py \
+		tests/test_planning_settings.py \
+		tests/test_opportunity_engine.py \
+		tests/test_projects_suggestions_api.py \
+		tests/test_schedule_delivery.py \
+		tests/test_schedule_messages.py \
+		tests/test_api.py::test_today_shape \
+		tests/test_api.py::test_today_timeline_includes_personal_note_fields \
+		tests/test_api.py::test_today_hides_auto_memory_confirmations
+
+auth-check:
+	docker compose run --rm --build -e LLM_PROVIDER=mock api pytest -q \
+		tests/test_telegram_auth.py \
+		tests/test_api.py::test_api_requires_auth \
+		tests/test_realtime.py::test_realtime_endpoint_requires_auth
+
+analytics-check: focus-check
 
 frontend-build:
 	cd frontend && npm install && npm run build
