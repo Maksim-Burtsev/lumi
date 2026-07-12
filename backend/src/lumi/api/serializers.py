@@ -9,6 +9,7 @@ from lumi.db.models import (
     AssistantSuggestion,
     CalendarEvent,
     EmailThread,
+    FocusSession,
     LLMCall,
     Memory,
     Message,
@@ -24,6 +25,7 @@ from lumi.db.models import (
 from lumi.i18n import ensure_language_settings, normalize_app_locale
 from lumi.services.action_policy import policy_for_action, policy_to_dict
 from lumi.services.planning_settings import normalize_planning_settings
+from lumi.utils.time import get_zone
 
 
 def _iso(dt) -> str | None:
@@ -117,6 +119,38 @@ def assistant_suggestion_to_dict(suggestion: AssistantSuggestion) -> dict[str, A
         "expires_at": _iso(suggestion.expires_at),
         "decided_at": _iso(suggestion.decided_at),
         "created_at": _iso(suggestion.created_at),
+    }
+
+
+def focus_session_to_dict(
+    focus_session: FocusSession,
+    task: Task | None = None,
+    project: Project | None = None,
+    *,
+    timezone: str = "UTC",
+) -> dict[str, Any]:
+    project_name = project.name if project is not None else focus_session.project_snapshot
+    return {
+        "id": str(focus_session.id),
+        "status": focus_session.status.value,
+        "task": task_to_dict(task) if task else None,
+        "project_id": str(focus_session.project_id) if focus_session.project_id else None,
+        "project_name": project_name,
+        # Transitional alias for older Mini App builds. New code uses project_name.
+        "project": project_name,
+        "intention": focus_session.intention,
+        "planned_minutes": focus_session.planned_minutes,
+        "started_at": _iso(focus_session.started_at),
+        "target_end_at": _iso(focus_session.target_end_at),
+        "ended_at": _iso(focus_session.ended_at),
+        "duration_seconds": focus_session.duration_seconds,
+        "local_date": focus_session.started_at.astimezone(get_zone(timezone)).date().isoformat(),
+        "reflection": {
+            "accomplished_text": focus_session.accomplished_text,
+            "distraction_text": focus_session.distraction_text,
+            "next_step_text": focus_session.next_step_text,
+            "focus_score": focus_session.focus_score,
+        },
     }
 
 

@@ -11,6 +11,7 @@ import { normalizeThemeMode } from './lib/theme';
 import { setThemeMode } from './telegram/webapp';
 import TodayPage from './routes/TodayPage';
 import TasksPage from './routes/TasksPage';
+import FocusPage from './routes/FocusPage';
 import CalendarPage from './routes/CalendarPage';
 import InboxPage from './routes/InboxPage';
 import NewsPage from './routes/NewsPage';
@@ -60,9 +61,12 @@ function AppRoutes() {
 
   return (
     <AppShell>
+      <TimezoneMismatchPrompt />
       <Routes>
         <Route path="/" element={<TodayPage />} />
         <Route path="/tasks" element={<TasksPage />} />
+        <Route path="/sessions" element={<FocusPage />} />
+        <Route path="/focus" element={<Navigate to="/sessions" replace />} />
         <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/inbox" element={<InboxPage />} />
         <Route path="/news" element={<NewsPage />} />
@@ -73,7 +77,6 @@ function AppRoutes() {
         <Route path="/more" element={<MorePage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
-      <TimezoneMismatchPrompt />
     </AppShell>
   );
 }

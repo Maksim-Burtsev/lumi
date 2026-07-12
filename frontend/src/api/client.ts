@@ -13,12 +13,18 @@ import type {
   CreateEventInput,
   CreateNewsTopicInput,
   CreateTaskInput,
+  FinishFocusSessionInput,
+  FocusSessionsResponse,
+  FocusSessionResponse,
+  FocusStateResponse,
+  FocusSummaryResponse,
   FreeSlotsResponse,
   GoogleStatus,
   YandexConnectInput,
   YandexStatus,
   HealthResponse,
   InboxSummaryResponse,
+  LogFocusSessionInput,
   MeResponse,
   MemoriesResponse,
   MemoryResponse,
@@ -37,11 +43,13 @@ import type {
   RunRef,
   SettingsResponse,
   SnoozeInput,
+  StartFocusSessionInput,
   TaskFilter,
   TaskResponse,
   TasksResponse,
   TimezonesResponse,
   TodayResponse,
+  UpdateFocusSessionInput,
 } from './types';
 
 /** Errors: non-2xx responses return {"error": "<machine_code>", "detail": "<text>"} */
@@ -77,6 +85,18 @@ export function markUnauthorizedResponse(): void {
 }
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+
+export type FocusPeriod = 'week' | 'month' | 'custom';
+
+export interface FocusRangeQuery {
+  period?: FocusPeriod;
+  from_date?: string;
+  to_date?: string;
+  limit?: number;
+  offset?: number;
+  q?: string;
+  project_id?: string;
+}
 
 interface RequestOptions {
   query?: Record<string, string | number | undefined>;
@@ -126,6 +146,7 @@ async function request<T>(method: Method, path: string, options: RequestOptions 
     throw new ApiError(response.status, code, detail);
   }
 
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 
@@ -197,6 +218,49 @@ export class LumiApiClient {
 
   dismissAssistantSuggestion(id: string): Promise<AssistantSuggestionResponse> {
     return request('POST', `/api/assistant/suggestions/${id}/dismiss`);
+  }
+
+  // -------------------------------------------------- Focus
+  getFocusState(): Promise<FocusStateResponse> {
+    return request('GET', '/api/focus/state');
+  }
+
+  getFocusSummary(input: FocusPeriod | FocusRangeQuery = 'week'): Promise<FocusSummaryResponse> {
+    const query = typeof input === 'string' ? { period: input } : input;
+    return request('GET', '/api/focus/summary', { query: query as Record<string, string | number | undefined> });
+  }
+
+  listFocusSessions(input: FocusPeriod | FocusRangeQuery = 'week', limit = 100): Promise<FocusSessionsResponse> {
+    const query = typeof input === 'string' ? { period: input, limit } : { limit, ...input };
+    return request('GET', '/api/focus/sessions', { query: query as Record<string, string | number | undefined> });
+  }
+
+  getFocusSession(id: string): Promise<FocusSessionResponse> {
+    return request('GET', `/api/focus/sessions/${id}`);
+  }
+
+  startFocusSession(input: StartFocusSessionInput): Promise<FocusSessionResponse> {
+    return request('POST', '/api/focus/sessions', { body: input });
+  }
+
+  logFocusSession(input: LogFocusSessionInput): Promise<FocusSessionResponse> {
+    return request('POST', '/api/focus/sessions/log', { body: input });
+  }
+
+  finishFocusSession(id: string, input: FinishFocusSessionInput): Promise<FocusSessionResponse> {
+    return request('POST', `/api/focus/sessions/${id}/finish`, { body: input });
+  }
+
+  updateFocusSession(id: string, input: UpdateFocusSessionInput): Promise<FocusSessionResponse> {
+    return request('PATCH', `/api/focus/sessions/${id}`, { body: input });
+  }
+
+  deleteFocusSession(id: string): Promise<void> {
+    return request('DELETE', `/api/focus/sessions/${id}`);
+  }
+
+  abandonFocusSession(id: string): Promise<FocusSessionResponse> {
+    return request('POST', `/api/focus/sessions/${id}/abandon`);
   }
 
   // -------------------------------------------------- Calendar

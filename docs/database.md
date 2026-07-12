@@ -11,8 +11,13 @@ erDiagram
     conversations ||--o{ messages : contains
     conversations ||--o{ conversation_summaries : summarized_by
     users ||--o{ memories : has
+    users ||--o{ projects : has
     users ||--o{ tasks : has
+    projects ||--o{ tasks : groups
     tasks ||--o{ task_events : changes
+    users ||--o{ focus_sessions : tracks
+    projects ||--o{ focus_sessions : categorizes
+    tasks ||--o{ focus_sessions : links
     users ||--o{ scheduled_tasks : configures
     scheduled_tasks ||--o{ agent_runs : triggers
     users ||--o{ agent_runs : owns
@@ -50,8 +55,10 @@ erDiagram
 
 | Table | Key fields | Notes |
 |---|---|---|
-| `tasks` | status (inbox/active/done/cancelled), priority, due_at, reminder_at, snoozed_until, source, tags[] | `metadata.reminder_sent_at` provides reminder idempotency |
+| `projects` | name, normalized_name, status, color, metadata | first-class per-user project identity; unique `(user_id, normalized_name)` |
+| `tasks` | status (inbox/active/done/cancelled), priority, project_id, due_at, reminder_at, snoozed_until, source, tags[] | legacy `project` snapshot remains for compatibility; `metadata.reminder_sent_at` provides reminder idempotency |
 | `task_events` | event_type, before/after JSON, actor | full task change audit |
+| `focus_sessions` | status, task_id, project_id, project_snapshot, planned/duration seconds, start/target/end, reflection, score | one active row per user; snapshot preserves history across project rename/delete; demo rows use `seed_batch_id` |
 | `memories` | kind, importance 1-5, confidence, tags[], normalized_text | dedupe by keyword-overlap >= 0.75; conflict marked as `potential_conflict` |
 | `calendar_events` | source (internal/google), status (confirmed/tentative/cancelled/proposed), busy | unique (user, source, ext_calendar, ext_event) where ext_event is not null |
 | `email_threads` | category (8 types), importance, triage_status, summary | `metadata.task_candidate` is the task suggestion from triage |
@@ -77,6 +84,10 @@ erDiagram
 ```text
 uq_conversations_main_per_user   unique(user_id) WHERE kind='main'
 ix_tasks_user_reminder           (user_id, reminder_at) WHERE reminder_at IS NOT NULL
+ix_tasks_user_project_status     (user_id, project_id, status)
+ix_focus_sessions_user_started   (user_id, started_at)
+ix_focus_sessions_user_project   (user_id, project_id)
+uq_focus_sessions_one_active     unique(user_id) WHERE status='active'
 ix_scheduled_tasks_next_run      (next_run_at) WHERE enabled = true
 ix_ui_events_user_id             (user_id, id)
 uq_calendar_events_external      unique(user,source,ext_cal,ext_event) WHERE ext_event IS NOT NULL
@@ -91,4 +102,7 @@ make migrate                      # alembic upgrade head
 make revision m="add_something"   # autogenerate a new migration
 ```
 
-Seed data (`make seed`): user from `ALLOWED_TELEGRAM_USER_IDS` and main conversation. News topics and automations are user-created in the Mini App.
+Safe bootstrap data (`make seed`): user from `ALLOWED_TELEGRAM_USER_IDS` and main
+conversation only. `make seed-focus-demo` is an explicit local-only Focus dataset;
+it replaces only rows marked with its stable batch id. News topics and automations
+are user-created in the Mini App.
