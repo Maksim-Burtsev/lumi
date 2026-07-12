@@ -358,6 +358,7 @@ async def _run_turn_progress_heartbeat(
     started_at: float,
     stream_started,
     current_progress_text,
+    edit_progress_status,
 ) -> None:
     status_interval = max(0.01, _float_setting(settings, "telegram_progress_heartbeat_interval_seconds", 3.0))
     chat_action_interval = max(0.01, _float_setting(settings, "telegram_chat_action_interval_seconds", 4.0))
@@ -376,7 +377,7 @@ async def _run_turn_progress_heartbeat(
                 tick=tick,
                 last_progress_text=current_progress_text(),
             )
-            await edit_turn_status_message(user=user, turn=turn, status_text=status_text)
+            await edit_progress_status(status_text)
             tick += 1
             next_status_at = now + status_interval
         await asyncio.sleep(min(0.5, status_interval, chat_action_interval))
@@ -613,6 +614,14 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
     first_stream_delta_at: float | None = None
     stream_edit_count = 0
     stream_edit_failed = False
+    stream_phase_started = False
+    status_edit_lock = asyncio.Lock()
+
+    async def edit_progress_status(status_text: str) -> bool:
+        async with status_edit_lock:
+            if stream_phase_started:
+                return False
+            return await edit_turn_status_message(user=user, turn=turn, status_text=status_text)
 
     async def on_progress(status_text: str) -> None:
         nonlocal last_progress_at, last_progress_text
@@ -626,10 +635,11 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
             return
         last_progress_text = status_text
         last_progress_at = now
-        await edit_turn_status_message(user=user, turn=turn, status_text=status_text)
+        await edit_progress_status(status_text)
 
     async def on_reply_delta(visible_text: str) -> None:
-        nonlocal first_stream_delta_at, last_stream_at, last_stream_text, stream_edit_count, stream_edit_failed
+        nonlocal first_stream_delta_at, last_stream_at, last_stream_text
+        nonlocal stream_edit_count, stream_edit_failed, stream_phase_started
         if stream_edit_failed or not settings.telegram_stream_final_replies or not turn_snapshot["status_message_id"]:
             return
         status_text = telegram_plain_text(visible_text).strip()
@@ -644,7 +654,9 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
             min_chars = max(1, settings.telegram_stream_min_chars)
             if now - last_stream_at < interval or grew_by < min_chars:
                 return
-        ok = await edit_turn_status_message(user=user, turn=turn, status_text=status_text)
+        stream_phase_started = True
+        async with status_edit_lock:
+            ok = await edit_turn_status_message(user=user, turn=turn, status_text=status_text)
         if not ok:
             stream_edit_failed = True
             return
@@ -667,8 +679,9 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
                 user=user,
                 turn=turn,
                 started_at=turn_work_started_at,
-                stream_started=lambda: first_stream_delta_at is not None,
+                stream_started=lambda: stream_phase_started,
                 current_progress_text=lambda: last_progress_text,
+                edit_progress_status=edit_progress_status,
             )
         )
 

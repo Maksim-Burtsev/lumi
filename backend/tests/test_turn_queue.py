@@ -1236,6 +1236,68 @@ async def test_process_assistant_turn_stops_heartbeat_after_streaming_starts(mon
     assert not any(text.startswith(("Thinking", "Still")) for text in edits[stream_index + 1:])
 
 
+async def test_process_assistant_turn_serializes_heartbeat_before_first_stream_edit(monkeypatch):
+    started = utc_now() - timedelta(seconds=10)
+    completed_edits: list[str] = []
+    heartbeat_edit_started = asyncio.Event()
+    release_heartbeat_edit = asyncio.Event()
+
+    async with session_scope() as session:
+        result = await TelegramIntakeService(session, now=lambda: started).ingest_chat_message(
+            update_id=14534,
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=9134,
+            text="stream after a delayed heartbeat edit",
+            status_message_id=91034,
+        )
+        turn_id = result.turn.id
+
+    class FakeOrchestrator:
+        def __init__(self, session) -> None:
+            self.session = session
+
+        async def handle_user_message(self, **kwargs):
+            await heartbeat_edit_started.wait()
+            stream_edit = asyncio.create_task(kwargs["on_reply_delta"]("streamed answer"))
+            await asyncio.sleep(0)
+            release_heartbeat_edit.set()
+            await stream_edit
+            return AssistantResult(reply_text="streamed answer", buttons=[], needs_compaction=False)
+
+    async def fake_edit_turn_status_message(*, user, turn, status_text):
+        if status_text.startswith(("Thinking", "Still")):
+            heartbeat_edit_started.set()
+            await release_heartbeat_edit.wait()
+        completed_edits.append(status_text)
+        return True
+
+    async def fake_send_turn_chat_action(*, user, turn, action):
+        return True
+
+    async def fake_send_turn_reply(*, user, turn, reply_text, buttons):
+        return True
+
+    settings_data = jobs.get_settings().model_dump()
+    settings_data.update({
+        "telegram_progress_heartbeat_enabled": True,
+        "telegram_progress_heartbeat_interval_seconds": 0.01,
+        "telegram_chat_action_interval_seconds": 0.01,
+    })
+    monkeypatch.setattr(jobs, "get_settings", lambda: SimpleNamespace(**settings_data))
+    monkeypatch.setattr(jobs, "AssistantOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(jobs, "edit_turn_status_message", fake_edit_turn_status_message)
+    monkeypatch.setattr(jobs, "send_turn_chat_action", fake_send_turn_chat_action)
+    monkeypatch.setattr(jobs, "send_turn_reply", fake_send_turn_reply)
+
+    summary = await jobs.process_assistant_turn({}, str(turn_id))
+
+    assert summary == "turn completed"
+    assert completed_edits[-1] == "streamed answer"
+    stream_index = completed_edits.index("streamed answer")
+    assert not any(text.startswith(("Thinking", "Still")) for text in completed_edits[stream_index + 1:])
+
+
 async def test_process_assistant_turn_disables_streaming_after_edit_failure(monkeypatch):
     started = utc_now() - timedelta(seconds=10)
     edits: list[str] = []
