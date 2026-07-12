@@ -299,6 +299,14 @@ describe('FocusPage', () => {
     expect(fold.duration_minutes).toBe(120);
   });
 
+  it('accepts manual ranges up to 240 minutes and rejects 241 minutes', () => {
+    const accepted = localRangeToIso('2026-06-24', '10:00', '2026-06-24', '14:00', 'Asia/Yerevan');
+    expect(accepted).toMatchObject({ valid: true, duration_minutes: 240 });
+
+    const rejected = localRangeToIso('2026-06-24', '10:00', '2026-06-24', '14:01', 'Asia/Yerevan');
+    expect(rejected).toMatchObject({ valid: false, duration_minutes: 241 });
+  });
+
   it('shows an explicit retry state instead of treating a failed state request as no active timer', async () => {
     const user = userEvent.setup();
     const state = vi.spyOn(api, 'getFocusState')
