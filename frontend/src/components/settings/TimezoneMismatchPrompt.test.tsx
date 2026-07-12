@@ -56,6 +56,7 @@ function renderPrompt() {
       </ToastProvider>
     </QueryClientProvider>,
   );
+  return queryClient;
 }
 
 beforeEach(() => {
@@ -74,9 +75,11 @@ describe('TimezoneMismatchPrompt', () => {
 
     renderPrompt();
 
-    expect(await screen.findByText(/Detected time zone/i)).toBeInTheDocument();
+    const prompt = (await screen.findByText(/Detected time zone/i)).closest('[role="status"]');
+    expect(prompt).toBeInTheDocument();
+    expect(prompt).not.toHaveClass('fixed');
     expect(screen.getByText(/Pacific\/Chatham/i)).toBeInTheDocument();
-    expect(document.documentElement.style.getPropertyValue('--timezone-prompt-reserve')).toBe('148px');
+    expect(document.documentElement.style.getPropertyValue('--timezone-prompt-reserve')).toBe('');
     expect(patchSpy).not.toHaveBeenCalled();
   });
 
@@ -87,13 +90,22 @@ describe('TimezoneMismatchPrompt', () => {
       user: makeUser({ timezone: input.timezone ?? 'Asia/Yerevan' }),
     }));
 
-    renderPrompt();
+    const queryClient = renderPrompt();
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
 
     await user.click(await screen.findByRole('button', { name: /use detected/i }));
 
     await waitFor(() => {
       expect(patchSpy).toHaveBeenCalledWith({ timezone: 'Pacific/Chatham' });
     });
+    for (const queryKey of [
+      ['focus'],
+      ['focus-summary'],
+      ['focus-sessions'],
+      ['focus-session'],
+    ]) {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey });
+    }
   });
 
   it('suppresses the same mismatch after the user keeps current timezone', async () => {

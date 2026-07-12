@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { QueryKey } from '@tanstack/react-query';
 import { api, ApiError } from './client';
+import type { FocusPeriod, FocusRangeQuery } from './client';
 import { consumeRealtimeEvents, getRealtimeInvalidationKeys } from './realtime';
 import type {
   AgentRun,
@@ -10,6 +11,9 @@ import type {
   CreateEventInput,
   CreateNewsTopicInput,
   CreateTaskInput,
+  FinishFocusSessionInput,
+  FocusStateResponse,
+  LogFocusSessionInput,
   PatchAutomationInput,
   PatchNewsTopicInput,
   PatchSettingsInput,
@@ -17,11 +21,13 @@ import type {
   PrivateNoteInput,
   RunRef,
   SnoozeInput,
+  StartFocusSessionInput,
   Task,
   TaskFilter,
   TasksResponse,
   TimezonesResponse,
   TodayResponse,
+  UpdateFocusSessionInput,
 } from './types';
 import { haptic } from '../telegram/webapp';
 import { useToast } from '../components/ui/Toast';
@@ -38,6 +44,11 @@ export const qk = {
   projectTasks: (projectId: string) => ['tasks', 'project', projectId] as const,
   projects: ['projects'] as const,
   assistantSuggestions: ['assistant-suggestions'] as const,
+  focus: ['focus'] as const,
+  focusTasks: ['tasks', 'focus'] as const,
+  focusSession: (id: string) => ['focus-session', id] as const,
+  focusSummary: (query: FocusRangeQuery) => ['focus-summary', query] as const,
+  focusSessions: (query: FocusRangeQuery) => ['focus-sessions', query] as const,
   eventsAll: ['calendar-events'] as const,
   events: (start: string, end: string) => ['calendar-events', start, end] as const,
   freeSlotsAll: ['free-slots'] as const,
@@ -172,7 +183,11 @@ export function useToday() {
 }
 
 export function useTasks(filter: TaskFilter) {
-  return useQuery({ queryKey: qk.tasks(filter), queryFn: () => api.listTasks(filter) });
+  return useQuery({ queryKey: qk.tasks(filter), queryFn: () => api.listTasks(filter, 100) });
+}
+
+export function useFocusTasks() {
+  return useQuery({ queryKey: qk.focusTasks, queryFn: () => api.listTasks('all', 300) });
 }
 
 export function useProjectTasks(projectId: string | null) {
@@ -191,6 +206,72 @@ export function useAssistantSuggestions(kind?: string) {
   return useQuery({
     queryKey: kind ? [...qk.assistantSuggestions, kind] : qk.assistantSuggestions,
     queryFn: () => api.listAssistantSuggestions(kind),
+  });
+}
+
+export function useFocusState() {
+  return useQuery({
+    queryKey: qk.focus,
+    queryFn: () => api.getFocusState(),
+    refetchOnReconnect: true,
+  });
+}
+
+export function useFocusSummary(
+  period: FocusPeriod,
+  options: {
+    from_date?: string;
+    to_date?: string;
+    q?: string;
+    project_id?: string;
+    enabled?: boolean;
+  } = {},
+) {
+  const query = {
+    period,
+    from_date: options.from_date,
+    to_date: options.to_date,
+    q: options.q?.trim() || undefined,
+    project_id: options.project_id || undefined,
+  };
+  return useQuery({
+    queryKey: qk.focusSummary(query),
+    queryFn: () => api.getFocusSummary(query),
+    enabled: options.enabled ?? true,
+  });
+}
+
+export function useFocusSessions(period: FocusPeriod, range?: { from_date?: string; to_date?: string }) {
+  const query = { period, from_date: range?.from_date, to_date: range?.to_date, limit: 100, offset: 0 };
+  return useQuery({ queryKey: qk.focusSessions(query), queryFn: () => api.listFocusSessions(query) });
+}
+
+export function useInfiniteFocusSessions(
+  period: FocusPeriod,
+  options: { from_date?: string; to_date?: string; q?: string; project_id?: string; enabled?: boolean } = {},
+) {
+  const query = {
+    period,
+    from_date: options.from_date,
+    to_date: options.to_date,
+    q: options.q?.trim() || undefined,
+    project_id: options.project_id || undefined,
+    limit: 50,
+  };
+  return useInfiniteQuery({
+    queryKey: qk.focusSessions(query),
+    queryFn: ({ pageParam }) => api.listFocusSessions({ ...query, offset: pageParam }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => lastPage.has_more ? (lastPage.next_offset ?? undefined) : undefined,
+    enabled: options.enabled ?? true,
+  });
+}
+
+export function useFocusSession(id: string | null) {
+  return useQuery({
+    queryKey: id ? qk.focusSession(id) : qk.focusSession('none'),
+    queryFn: () => api.getFocusSession(id as string),
+    enabled: id !== null,
   });
 }
 
@@ -380,6 +461,95 @@ export function useDecideAssistantSuggestion() {
       if (context?.previous) queryClient.setQueryData(qk.assistantSuggestions, context.previous);
     },
     onSettled: () => invalidateTaskSurfaces(queryClient),
+  });
+}
+
+// ------------------------------------------------------------------ focus mutations
+
+function invalidateFocusQueries(queryClient: ReturnType<typeof useQueryClient>) {
+  void queryClient.invalidateQueries({ queryKey: qk.focus });
+  invalidateFocusDerivedQueries(queryClient);
+}
+
+function invalidateFocusDerivedQueries(queryClient: ReturnType<typeof useQueryClient>) {
+  void queryClient.invalidateQueries({ queryKey: ['focus-summary'] });
+  void queryClient.invalidateQueries({ queryKey: ['focus-sessions'] });
+  void queryClient.invalidateQueries({ queryKey: ['focus-session'] });
+}
+
+export function useStartFocusSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: StartFocusSessionInput) => api.startFocusSession(input),
+    onSuccess: (response) => {
+      const previous = queryClient.getQueryData(qk.focus) as
+        | { today?: unknown; recent_sessions?: unknown[] }
+        | undefined;
+      queryClient.setQueryData(qk.focus, {
+        active_session: response.session,
+        today: previous?.today ?? { focus_seconds: 0, completed_sessions: 0, streak_days: 0 },
+        recent_sessions: previous?.recent_sessions ?? [],
+      });
+      invalidateFocusDerivedQueries(queryClient);
+    },
+  });
+}
+
+export function useLogFocusSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: LogFocusSessionInput) => api.logFocusSession(input),
+    onSuccess: () => {
+      invalidateFocusQueries(queryClient);
+    },
+  });
+}
+
+export function useFinishFocusSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: FinishFocusSessionInput }) => api.finishFocusSession(id, input),
+    onSuccess: () => {
+      queryClient.setQueryData<FocusStateResponse>(qk.focus, (current) => (
+        current ? { ...current, active_session: null } : current
+      ));
+      invalidateFocusDerivedQueries(queryClient);
+    },
+    onSettled: () => invalidateFocusQueries(queryClient),
+  });
+}
+
+export function useUpdateFocusSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: UpdateFocusSessionInput }) => api.updateFocusSession(id, input),
+    onSuccess: () => {
+      invalidateFocusQueries(queryClient);
+    },
+  });
+}
+
+export function useDeleteFocusSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteFocusSession(id),
+    onSuccess: () => {
+      invalidateFocusQueries(queryClient);
+    },
+  });
+}
+
+export function useAbandonFocusSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.abandonFocusSession(id),
+    onSuccess: () => {
+      queryClient.setQueryData<FocusStateResponse>(qk.focus, (current) => (
+        current ? { ...current, active_session: null } : current
+      ));
+      invalidateFocusDerivedQueries(queryClient);
+    },
+    onSettled: () => invalidateFocusQueries(queryClient),
   });
 }
 
@@ -603,6 +773,9 @@ export function usePatchSettings() {
         void queryClient.invalidateQueries({ queryKey: qk.settings });
         void queryClient.invalidateQueries({ queryKey: qk.assistantSuggestions });
         void queryClient.invalidateQueries({ queryKey: qk.today });
+      }
+      if (input.timezone !== undefined) {
+        invalidateFocusQueries(queryClient);
       }
     },
   });

@@ -1,6 +1,9 @@
-"""Seed: user, main conversation, default news topics, default automations.
+"""Safe bootstrap seed: allowed user and main conversation only.
 
 Run: python -m lumi.scripts.seed_local
+
+Deliberately does not create or delete user-authored tasks or focus sessions. Use
+``python -m lumi.scripts.seed_focus_demo`` for explicit local demo data.
 """
 
 from __future__ import annotations
@@ -11,8 +14,6 @@ from lumi.config import get_settings
 from lumi.db.session import dispose_engine, session_scope
 from lumi.services.users import UserService
 
-# Automations and news topics are user-created in the Mini App — no defaults on purpose.
-
 
 async def seed() -> None:
     settings = get_settings()
@@ -21,18 +22,14 @@ async def seed() -> None:
         return
 
     telegram_user_id = settings.allowed_telegram_user_ids[0]
-    created: list[str] = []
-
     async with session_scope() as session:
         users = UserService(session)
         user = await users.ensure_user(telegram_user_id)
         await users.ensure_main_conversation(user)
-        created.append(f"user telegram_id={telegram_user_id}")
-        created.append("main conversation")
 
     print("Seed готов. Создано/проверено:")
-    for line in created:
-        print(f"  • {line}")
+    print(f"  • user telegram_id={telegram_user_id}")
+    print("  • main conversation")
     await dispose_engine()
 
 

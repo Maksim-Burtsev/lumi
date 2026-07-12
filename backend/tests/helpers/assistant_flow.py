@@ -218,7 +218,7 @@ async def seed_case(session: AsyncSession, user: User, seed: str | None) -> None
             created_by="user",
         )
     elif seed == "calendar_gym_block":
-        start = local_to_utc(future_local_at(17, days=2), user.timezone)
+        start = local_to_utc(future_local_at(17, days=1), user.timezone)
         await calendar.create_internal_block(
             user,
             title="gym block",

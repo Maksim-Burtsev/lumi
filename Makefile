@@ -1,4 +1,4 @@
-.PHONY: setup up up-detached down logs migrate revision seed test lint typecheck smoke \
+.PHONY: setup up up-detached down logs migrate revision seed seed-focus-demo test lint typecheck smoke \
 	assistant-core assistant-core-task assistant-core-calendar assistant-core-memory \
 	assistant-eval-coverage minimax-planner-smoke qa-required \
 	frontend-install frontend-build frontend-dev miniapp-local-up dev-auth-up dev-auth-down tunnel \
@@ -19,7 +19,8 @@ help:
 	@echo "  make up                docker compose up --build (foreground)"
 	@echo "  make up-detached       docker compose up --build -d"
 	@echo "  make migrate           apply DB migrations"
-	@echo "  make seed              create user/conversation/topics/automations"
+	@echo "  make seed              create/check allowed user and main conversation"
+	@echo "  make seed-focus-demo   replace marked Focus demo data (local only)"
 	@echo "  make smoke             end-to-end smoke test with mock LLM"
 	@echo "  make assistant-core    backend assistant regression flows with scripted LLM"
 	@echo "  make minimax-planner-smoke real MiniMax planner routing smoke"
@@ -63,6 +64,9 @@ revision:
 
 seed:
 	docker compose run --rm api python -m lumi.scripts.seed_local
+
+seed-focus-demo:
+	docker compose run --rm api python -m lumi.scripts.seed_focus_demo
 
 test:
 	docker compose run --rm -e LLM_PROVIDER=mock api pytest -q

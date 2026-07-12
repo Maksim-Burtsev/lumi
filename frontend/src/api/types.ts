@@ -353,6 +353,126 @@ export interface AssistantSuggestionResponse {
   suggestion: AssistantSuggestion;
 }
 
+// ---------------------------------------------------------------- Focus
+
+export type FocusSessionStatus = 'active' | 'completed' | 'abandoned';
+
+export interface FocusReflection {
+  accomplished_text: string | null;
+  distraction_text: string | null;
+  next_step_text: string | null;
+  focus_score: number | null;
+}
+
+export interface FocusSession {
+  id: string;
+  status: FocusSessionStatus;
+  task: Task | null;
+  project_id: string | null;
+  project_name: string | null;
+  local_date: string;
+  intention: string;
+  planned_minutes: number;
+  started_at: string;
+  target_end_at: string;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  reflection: FocusReflection;
+}
+
+export interface FocusTodaySummary {
+  focus_seconds: number;
+  completed_sessions: number;
+  streak_days: number;
+}
+
+export interface FocusStateResponse {
+  active_session: FocusSession | null;
+  today: FocusTodaySummary;
+  recent_sessions: FocusSession[];
+}
+
+export interface StartFocusSessionInput {
+  task_id?: string | null;
+  project_id?: string | null;
+  project_name?: string | null;
+  intention: string;
+  planned_minutes: number;
+}
+
+export interface FinishFocusSessionInput {
+  accomplished_text?: string | null;
+  distraction_text?: string | null;
+  next_step_text?: string | null;
+  focus_score?: number | null;
+}
+
+export interface UpdateFocusSessionInput {
+  task_id?: string | null;
+  project_id?: string | null;
+  project_name?: string | null;
+  intention?: string;
+  started_at?: string;
+  ended_at?: string;
+  accomplished_text?: string | null;
+  distraction_text?: string | null;
+  next_step_text?: string | null;
+  focus_score?: number | null;
+}
+
+export interface LogFocusSessionInput {
+  task_id?: string | null;
+  project_id?: string | null;
+  project_name?: string | null;
+  intention: string;
+  logged_at: string;
+  duration_minutes: number;
+  accomplished_text?: string | null;
+  distraction_text?: string | null;
+  next_step_text?: string | null;
+  focus_score?: number | null;
+}
+
+export interface FocusSessionResponse {
+  session: FocusSession;
+}
+
+export interface FocusSessionsResponse {
+  items: FocusSession[];
+  has_more?: boolean;
+  next_offset?: number | null;
+}
+
+export interface FocusDailyActivity {
+  date: string;
+  focus_seconds: number;
+  session_count: number;
+  average_focus_score?: number | null;
+}
+
+export interface FocusProjectBreakdown {
+  project_id: string | null;
+  project_name: string | null;
+  focus_seconds: number;
+  session_count: number;
+}
+
+export interface FocusSummaryResponse {
+  period: 'week' | 'month' | 'custom';
+  total_focus_seconds: number;
+  total_sessions: number;
+  streak_days: number;
+  average_focus_score: number | null;
+  average_daily_focus_seconds: number;
+  average_daily_focus_delta_percent: number | null;
+  total_focus_delta_percent: number | null;
+  most_focused_daypart: 'morning' | 'afternoon' | 'evening' | 'night' | null;
+  daypart_breakdown: Array<{ daypart: 'morning' | 'afternoon' | 'evening' | 'night'; focus_seconds: number }>;
+  daily_activity: FocusDailyActivity[];
+  project_breakdown: FocusProjectBreakdown[];
+  next_steps: string[];
+}
+
 // ---------------------------------------------------------------- Calendar
 
 export interface CalendarEvent {
