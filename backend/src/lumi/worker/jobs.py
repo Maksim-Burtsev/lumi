@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import datetime, timedelta
@@ -101,6 +102,37 @@ def _without_none(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if value is not None}
 
 
+def _telegram_message_not_modified(exc: Exception) -> bool:
+    return "message is not modified" in str(exc).lower()
+
+
+def _float_setting(settings, name: str, default: float) -> float:
+    try:
+        return float(getattr(settings, name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _progress_heartbeat_text(settings, *, elapsed_seconds: float, tick: int, last_progress_text: str | None) -> str:
+    stale_after = _float_setting(settings, "telegram_progress_stale_after_seconds", 12.0)
+    long_after = _float_setting(settings, "telegram_progress_long_after_seconds", 30.0)
+    if elapsed_seconds >= long_after:
+        base = "Still working, this is taking longer than usual"
+    elif elapsed_seconds >= stale_after:
+        base = "Still thinking"
+    else:
+        base = (last_progress_text or "Thinking").strip().rstrip(".") or "Thinking"
+    dots = "." * ((tick % 3) + 1)
+    return f"{base}{dots}"
+
+
+def _user_visible_progress_text(status_text: str) -> str:
+    raw_text = str(status_text or "").strip()
+    if raw_text == "__thinking__":
+        return "Thinking..."
+    return telegram_plain_text(raw_text).strip()
+
+
 def _plain_text_rich_html(text: str) -> str:
     return "".join(f"<p>{escape(line)}</p>" for line in text.splitlines() if line.strip())
 
@@ -186,7 +218,9 @@ async def send_turn_reply(
                         reply_markup=markup,
                     )
                     return True
-            except Exception:  # noqa: BLE001 — status edit can fail after restarts/deletes
+            except Exception as exc:  # noqa: BLE001 — status edit can fail after restarts/deletes
+                if _telegram_message_not_modified(exc):
+                    return True
                 log.exception("telegram status edit failed; falling back to send_message")
         if rich_html:
             if use_bot_api_rich:
@@ -229,7 +263,27 @@ async def send_turn_reply(
                 except Exception:  # noqa: BLE001
                     log.info("telegram status delete skipped after html fallback")
             return True
-        for i, chunk in enumerate(chunks):
+        start_index = 0
+        if turn.status_message_id and chunks:
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=turn.status_message_id,
+                    text=chunks[0],
+                    link_preview_options=link_preview_options,
+                    reply_markup=markup if len(chunks) == 1 else None,
+                )
+                start_index = 1
+                if len(chunks) == 1:
+                    return True
+            except Exception as exc:  # noqa: BLE001 — final delivery must still fall back to fresh messages
+                if _telegram_message_not_modified(exc):
+                    start_index = 1
+                    if len(chunks) == 1:
+                        return True
+                else:
+                    log.exception("telegram status edit failed; falling back to send_message")
+        for i, chunk in enumerate(chunks[start_index:], start=start_index):
             await bot.send_message(
                 chat_id=chat_id,
                 text=chunk,
@@ -271,6 +325,62 @@ async def edit_turn_status_message(
         return False
     finally:
         await bot.session.close()
+
+
+async def send_turn_chat_action(
+    *,
+    user: User,
+    turn: AssistantTurn,
+    action: str = "typing",
+) -> bool:
+    settings = get_settings()
+    if not settings.telegram_bot_token:
+        return False
+    from aiogram import Bot
+
+    bot = Bot(token=settings.telegram_bot_token)
+    chat_id = turn.telegram_chat_id or user.telegram_chat_id or user.telegram_user_id
+    try:
+        await bot.send_chat_action(chat_id=chat_id, action=action)
+        return True
+    except Exception:  # noqa: BLE001 — chat actions are best-effort
+        log.info("telegram chat action skipped")
+        return False
+    finally:
+        await bot.session.close()
+
+
+async def _run_turn_progress_heartbeat(
+    *,
+    settings,
+    user: User,
+    turn: AssistantTurn,
+    started_at: float,
+    stream_started,
+    current_progress_text,
+    edit_progress_status,
+) -> None:
+    status_interval = max(0.01, _float_setting(settings, "telegram_progress_heartbeat_interval_seconds", 3.0))
+    chat_action_interval = max(0.01, _float_setting(settings, "telegram_chat_action_interval_seconds", 4.0))
+    next_status_at = monotonic() + status_interval
+    next_chat_action_at = monotonic()
+    tick = 0
+    while True:
+        now = monotonic()
+        if now >= next_chat_action_at:
+            await send_turn_chat_action(user=user, turn=turn, action="typing")
+            next_chat_action_at = now + chat_action_interval
+        if turn.status_message_id and not stream_started() and now >= next_status_at:
+            status_text = _progress_heartbeat_text(
+                settings,
+                elapsed_seconds=now - started_at,
+                tick=tick,
+                last_progress_text=current_progress_text(),
+            )
+            await edit_progress_status(status_text)
+            tick += 1
+            next_status_at = now + status_interval
+        await asyncio.sleep(min(0.5, status_interval, chat_action_interval))
 
 
 async def _enqueue_turn(turn: AssistantTurn, *, delay_seconds: float | None = None) -> None:
@@ -470,6 +580,7 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
         "assistant turn acquired",
         fields={"turn_id": turn_id, "queue_wait_ms": queue_wait_ms, "retry_count": turn_snapshot["retry_count"]},
     )
+    turn_work_started_at = monotonic()
 
     payload = turn_snapshot["payload"]
     image = None
@@ -498,10 +609,23 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
 
     last_progress_text: str | None = None
     last_progress_at = 0.0
+    last_stream_text: str | None = None
+    last_stream_at = 0.0
+    first_stream_delta_at: float | None = None
+    stream_edit_count = 0
+    stream_edit_failed = False
+    stream_phase_started = False
+    status_edit_lock = asyncio.Lock()
+
+    async def edit_progress_status(status_text: str) -> bool:
+        async with status_edit_lock:
+            if stream_phase_started:
+                return False
+            return await edit_turn_status_message(user=user, turn=turn, status_text=status_text)
 
     async def on_progress(status_text: str) -> None:
         nonlocal last_progress_at, last_progress_text
-        status_text = telegram_plain_text(status_text).strip()
+        status_text = _user_visible_progress_text(status_text)
         if not status_text:
             return
         now = monotonic()
@@ -511,8 +635,69 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
             return
         last_progress_text = status_text
         last_progress_at = now
-        await edit_turn_status_message(user=user, turn=turn, status_text=status_text)
+        await edit_progress_status(status_text)
 
+    async def on_reply_delta(visible_text: str) -> None:
+        nonlocal first_stream_delta_at, last_stream_at, last_stream_text
+        nonlocal stream_edit_count, stream_edit_failed, stream_phase_started
+        if stream_edit_failed or not settings.telegram_stream_final_replies or not turn_snapshot["status_message_id"]:
+            return
+        status_text = telegram_plain_text(visible_text).strip()
+        if not status_text or status_text == last_stream_text:
+            return
+        max_chars = max(256, min(4000, settings.telegram_stream_max_chars))
+        status_text = status_text[:max_chars]
+        now = monotonic()
+        if last_stream_text is not None:
+            grew_by = len(status_text) - len(last_stream_text)
+            interval = max(0.5, settings.telegram_stream_edit_interval_seconds)
+            min_chars = max(1, settings.telegram_stream_min_chars)
+            if now - last_stream_at < interval or grew_by < min_chars:
+                return
+        stream_phase_started = True
+        async with status_edit_lock:
+            ok = await edit_turn_status_message(user=user, turn=turn, status_text=status_text)
+        if not ok:
+            stream_edit_failed = True
+            return
+        if first_stream_delta_at is None:
+            first_stream_delta_at = now
+        last_stream_text = status_text
+        last_stream_at = now
+        stream_edit_count += 1
+
+    reply_delta_callback = (
+        on_reply_delta
+        if settings.telegram_stream_final_replies and turn_snapshot["status_message_id"]
+        else None
+    )
+    heartbeat_task = None
+    if getattr(settings, "telegram_progress_heartbeat_enabled", True):
+        heartbeat_task = asyncio.create_task(
+            _run_turn_progress_heartbeat(
+                settings=settings,
+                user=user,
+                turn=turn,
+                started_at=turn_work_started_at,
+                stream_started=lambda: stream_phase_started,
+                current_progress_text=lambda: last_progress_text,
+                edit_progress_status=edit_progress_status,
+            )
+        )
+
+    async def stop_heartbeat() -> None:
+        if heartbeat_task is None:
+            return
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001 — heartbeat is best-effort observability/UI
+            log.exception("telegram progress heartbeat failed during shutdown")
+
+    result = None
+    assistant_error: Exception | None = None
     try:
         async with session_scope() as session:
             result = await AssistantOrchestrator(session).handle_user_message(
@@ -528,13 +713,19 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
                 message_context=payload,
                 image_loader=image_loader,
                 on_progress=on_progress,
+                on_reply_delta=reply_delta_callback,
                 touch_last_seen=False,
             )
     except Exception as exc:  # noqa: BLE001
         log.exception("assistant turn failed", fields={"turn_id": turn_id})
+        assistant_error = exc
+    finally:
+        await stop_heartbeat()
+
+    if assistant_error is not None:
         next_turn = None
         async with session_scope() as session:
-            next_turn = await TurnService(session).fail_turn(parsed_turn_id, str(exc))
+            next_turn = await TurnService(session).fail_turn(parsed_turn_id, str(assistant_error))
         await send_turn_reply(
             user=user,
             turn=turn,
@@ -543,7 +734,9 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
         )
         if next_turn is not None:
             await _enqueue_turn(next_turn)
-        return f"turn failed: {exc}"
+        return f"turn failed: {assistant_error}"
+
+    assert result is not None
 
     if result.agent_run_id is not None and queue_wait_ms is not None:
         async with session_scope() as session:
@@ -552,7 +745,15 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
                 metadata = run.metadata_ or {}
                 latency_ms = dict(metadata.get("latency_ms") or {})
                 latency_ms["queue_wait_ms"] = queue_wait_ms
-                run.metadata_ = {**metadata, "latency_ms": latency_ms}
+                stream_stats = dict(metadata.get("telegram_streaming") or {})
+                if first_stream_delta_at is not None:
+                    stream_stats["first_reply_delta_ms"] = max(
+                        0,
+                        int((first_stream_delta_at - turn_work_started_at) * 1000),
+                    )
+                stream_stats["edit_count"] = stream_edit_count
+                stream_stats["edit_failed"] = stream_edit_failed
+                run.metadata_ = {**metadata, "latency_ms": latency_ms, "telegram_streaming": stream_stats}
 
     if result.reply_rich_html or result.open_app_button or result.open_app_button_label:
         delivered = await send_turn_reply(

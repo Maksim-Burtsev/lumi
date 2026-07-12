@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import Final
 
-from .helpers.assistant_flow import AssistantCase, ReplyExpectation, TaskExpectation, ToolExpectation
+from .helpers.assistant_flow import (
+    AssistantCase,
+    ReplyExpectation,
+    TaskExpectation,
+    ToolExpectation,
+    future_local_at,
+)
 
 
 def tool_plan(name: str, args: dict, *, confidence: float = 0.95) -> dict:
@@ -88,8 +94,8 @@ ASSISTANT_CORE_CASES: Final[tuple[AssistantCase, ...]] = (
             tool_plan(
                 "read_calendar_events",
                 {
-                    "start_at_local": "2026-06-30T00:00:00",
-                    "end_at_local": "2026-07-01T00:00:00",
+                    "start_at_local": future_local_at(0, days=1).isoformat(),
+                    "end_at_local": future_local_at(0, days=2).isoformat(),
                     "include_details": True,
                     "sync_if_needed": False,
                 },
@@ -116,8 +122,8 @@ ASSISTANT_CORE_CASES: Final[tuple[AssistantCase, ...]] = (
                 "create_external_calendar_event",
                 {
                     "title": "vendor kickoff",
-                    "start_at_local": "2026-06-30T10:00:00",
-                    "end_at_local": "2026-06-30T11:00:00",
+                    "start_at_local": future_local_at(10).isoformat(),
+                    "end_at_local": future_local_at(11).isoformat(),
                 },
             ),
         ),

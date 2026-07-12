@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -13,8 +14,11 @@ from lumi.db.session import session_scope
 from lumi.llm.base import LLMResponse, content_to_text
 from lumi.llm.gateway import LLMGateway
 from lumi.services.users import UserService
+from lumi.utils.time import local_now
 
 from ..conftest import TEST_TELEGRAM_ID
+
+ASSISTANT_CASE_TIMEZONE = "America/New_York"
 
 
 @dataclass(frozen=True)
@@ -116,6 +120,11 @@ def _last_message_is_ru(messages: list[Any]) -> bool:
     return sum(1 for char in text if "\u0400" <= char <= "\u04ff") >= 2
 
 
+def future_local_at(hour: int, minute: int = 0, *, days: int = 1) -> datetime:
+    target = (local_now(ASSISTANT_CASE_TIMEZONE) + timedelta(days=days)).date()
+    return datetime(target.year, target.month, target.day, hour, minute)
+
+
 def _renderer_payload(prompt: str) -> dict[str, Any]:
     marker = "payload_json:"
     if marker not in prompt:
@@ -156,7 +165,7 @@ async def run_assistant_case(case: AssistantCase) -> AssistantCaseResult:
     async with session_scope() as session:
         users = UserService(session)
         user = await users.ensure_user(TEST_TELEGRAM_ID, first_name="Alex", username="alex_planner")
-        user.timezone = "America/New_York"
+        user.timezone = ASSISTANT_CASE_TIMEZONE
         user.locale = "en"
         user.language_code = "en"
         await users.ensure_main_conversation(user)
@@ -186,13 +195,11 @@ async def run_assistant_case(case: AssistantCase) -> AssistantCaseResult:
 
 
 async def seed_case(session: AsyncSession, user: User, seed: str | None) -> None:
-    from datetime import datetime, timedelta
-
     from lumi.assistant.memory_service import MemoryService
     from lumi.db.models import CalendarEventStatus, CalendarSource, MemoryKind, TaskStatus
     from lumi.services.calendar import CalendarService
     from lumi.services.tasks import TaskService
-    from lumi.utils.time import local_to_utc, utc_now, utc_to_local
+    from lumi.utils.time import local_to_utc
 
     tasks = TaskService(session)
     calendar = CalendarService(session)
@@ -202,7 +209,7 @@ async def seed_case(session: AsyncSession, user: User, seed: str | None) -> None
     elif seed == "task_project":
         await tasks.create_task(user, title="Q3 budget review", project="Work", actor="user")
     elif seed == "calendar_busy":
-        start = local_to_utc(datetime(2026, 6, 30, 14, 0), user.timezone)
+        start = local_to_utc(future_local_at(14, days=1), user.timezone)
         await calendar.create_internal_block(
             user,
             title="Client check-in",
@@ -211,11 +218,7 @@ async def seed_case(session: AsyncSession, user: User, seed: str | None) -> None
             created_by="user",
         )
     elif seed == "calendar_gym_block":
-        local_tomorrow = utc_to_local(utc_now(), user.timezone) + timedelta(days=1)
-        start = local_to_utc(
-            local_tomorrow.replace(hour=17, minute=0, second=0, microsecond=0, tzinfo=None),
-            user.timezone,
-        )
+        start = local_to_utc(future_local_at(17, days=1), user.timezone)
         await calendar.create_internal_block(
             user,
             title="gym block",
@@ -240,8 +243,8 @@ async def seed_case(session: AsyncSession, user: User, seed: str | None) -> None
         event = await calendar.create_internal_block(
             user,
             title="Google sync",
-            start_at=local_to_utc(datetime(2026, 6, 30, 11, 0), user.timezone),
-            end_at=local_to_utc(datetime(2026, 6, 30, 12, 0), user.timezone),
+            start_at=local_to_utc(future_local_at(11, days=2), user.timezone),
+            end_at=local_to_utc(future_local_at(12, days=2), user.timezone),
             created_by="sync",
         )
         event.source = CalendarSource.GOOGLE

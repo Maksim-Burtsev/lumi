@@ -337,6 +337,7 @@ class ToolLoopResult:
     reply_rich_html: str | None
     open_app_button: bool
     use_action_reply_renderer: bool
+    has_mutating_tool_calls: bool
     stop_reason: str
     observations: list[dict[str, Any]]
 
@@ -790,7 +791,7 @@ def _safe_no_answer_reply(language: str | None) -> str:
 
 def _progress_status_for_kind(progress_kind: str | None) -> str:
     return {
-        "understanding": "Reading message...",
+        "understanding": "Thinking...",
         "reading_calendar": "Checking your calendar...",
         "resolving": "Working on it...",
         "writing": "Making changes...",
@@ -819,11 +820,21 @@ def _safe_user_visible_status(
         return fallback
     if any(ord(char) > 127 for char in text):
         return fallback
-    done_claims = (
+    completion_claims = (
         "done",
         "created",
         "added",
         "completed",
+        "updated",
+        "renamed",
+        "deleted",
+        "removed",
+        "cancelled",
+        "canceled",
+        "scheduled",
+        "saved",
+        "moved",
+        "changed",
         "готов",
         "создал",
         "создала",
@@ -835,13 +846,13 @@ def _safe_user_visible_status(
         "fatto",
         "completato",
     )
-    if any(marker in lower for marker in done_claims):
+    if any(marker in lower for marker in completion_claims):
         return fallback
     return text
 
 
 def _initial_progress_status(user: User) -> str:
-    return "Reading message..."
+    return "Thinking..."
 
 
 def _looks_like_multi_step_request(text: str) -> bool:
@@ -1472,6 +1483,7 @@ class AssistantOrchestrator:
         progress_timeline: list[dict[str, Any]] = []
         latency_ms: dict[str, int] = {}
         run = None
+        model_thinking_reported = False
 
         def store_latency_metadata() -> None:
             if run is None:
@@ -1506,6 +1518,14 @@ class AssistantOrchestrator:
                 await on_progress(stage)
             except Exception:  # noqa: BLE001 — progress UI must never break the pipeline
                 pass
+
+        async def report_model_thinking() -> None:
+            nonlocal model_thinking_reported
+            if model_thinking_reported:
+                return
+            model_thinking_reported = True
+            await progress("Thinking...")
+
         # 1. User / conversation
         user = await self.users.ensure_user(
             telegram_user_id,
@@ -2156,10 +2176,7 @@ class AssistantOrchestrator:
             )
 
         # 6-7. Final reply
-        await progress(
-            "Writing reply..." if not action_results
-            else "Action done. Writing reply..."
-        )
+        await progress("Preparing reply...")
         final_started_at = perf_counter()
         try:
             context = await self.context_builder.build(
@@ -2169,7 +2186,12 @@ class AssistantOrchestrator:
                 media_context=media_context,
                 action_results=action_results,
             )
-            if on_reply_delta is not None:
+            stream_callback = (
+                on_reply_delta
+                if on_reply_delta is not None and not loop_result.has_mutating_tool_calls
+                else None
+            )
+            if stream_callback is not None:
                 response = await self.llm.complete_stream(
                     messages=context.messages,
                     system=context.system_prompt,
@@ -2179,8 +2201,8 @@ class AssistantOrchestrator:
                     user_id=user.id,
                     agent_run_id=run.id,
                     session=self.session,
-                    on_delta=on_reply_delta,
-                    on_thinking=(lambda: progress("__thinking__")),
+                    on_delta=stream_callback,
+                    on_thinking=report_model_thinking,
                 )
             else:
                 response = await self.llm.complete(
@@ -2403,6 +2425,7 @@ class AssistantOrchestrator:
         reply_rich_html: str | None = None
         open_app_button = False
         use_action_reply_renderer = True
+        has_mutating_tool_calls = False
         tool_call_count = 0
         stop_reason = "no_tool_calls"
 
@@ -2415,8 +2438,12 @@ class AssistantOrchestrator:
                 stop_reason = "tool_call_limit_reached"
                 break
 
+            step_has_mutating_tool_calls = any(
+                call.name not in READ_ONLY_LOOP_TOOLS for call in plan.tool_calls
+            )
+            has_mutating_tool_calls = has_mutating_tool_calls or step_has_mutating_tool_calls
             await progress(_safe_user_visible_status(
-                plan.user_visible_status,
+                None if step_has_mutating_tool_calls else plan.user_visible_status,
                 language=plan.language,
                 progress_kind=plan.progress_kind,
             ))
@@ -2532,6 +2559,7 @@ class AssistantOrchestrator:
             reply_rich_html=reply_rich_html,
             open_app_button=open_app_button,
             use_action_reply_renderer=use_action_reply_renderer,
+            has_mutating_tool_calls=has_mutating_tool_calls,
             stop_reason=stop_reason,
             observations=observations,
         )

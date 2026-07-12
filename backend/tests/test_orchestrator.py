@@ -1,6 +1,8 @@
+import asyncio
 import json
 from datetime import datetime, timedelta
 
+import pytest
 from sqlalchemy import select
 
 from lumi.assistant.media import ImageInput
@@ -197,6 +199,33 @@ class AgentPlannerProvider:
             provider=self.name,
             model=self.model,
             latency_ms=1,
+            input_chars=1,
+            output_chars=len(self.final_text),
+        )
+
+
+class StreamingAgentPlannerProvider(AgentPlannerProvider):
+    def __init__(self, plan: dict | list[dict], *, final_text: str = "streamed final answer") -> None:
+        super().__init__(plan, final_text=final_text)
+        self.stream_chat_calls = 0
+
+    async def complete_stream(self, **kwargs) -> LLMResponse:
+        self.final_chat_calls += 1
+        self.stream_chat_calls += 1
+        on_thinking = kwargs.get("on_thinking")
+        on_delta = kwargs.get("on_delta")
+        if on_thinking is not None:
+            await on_thinking()
+            await on_thinking()
+        midpoint = max(1, len(self.final_text) // 2)
+        if on_delta is not None:
+            await on_delta(self.final_text[:midpoint])
+            await on_delta(self.final_text)
+        return LLMResponse(
+            text=self.final_text,
+            provider=self.name,
+            model=self.model,
+            latency_ms=2,
             input_chars=1,
             output_chars=len(self.final_text),
         )
@@ -2860,6 +2889,7 @@ async def test_agent_loop_reads_calendar_then_creates_block_with_localized_progr
         {
             "mode": "tool_calls",
             "user_visible_status": "Creating the block...",
+            "progress_kind": "writing",
             "tool_calls": [
                 {
                     "name": "create_internal_calendar_block",
@@ -2918,7 +2948,8 @@ async def test_agent_loop_reads_calendar_then_creates_block_with_localized_progr
         "create_internal_calendar_block",
     ]
     assert "Checking your calendar..." in progress_updates
-    assert "Creating the block..." in progress_updates
+    assert "Creating the block..." not in progress_updates
+    assert "Making changes..." in progress_updates
     assert len(provider.planner_prompts) == 2
     assert "tool_observations:" in provider.planner_prompts[1]
     assert "Grooming" in provider.planner_prompts[1]
@@ -3144,11 +3175,12 @@ async def test_agent_loop_rejects_fixed_calendar_block_conflict_without_creating
     assert "Existing busy block" in result.reply_text
 
 
-async def test_agent_loop_status_falls_back_when_model_status_is_unsafe():
+async def test_agent_loop_ignores_model_status_for_mutating_tool():
     progress_updates: list[str] = []
     provider = AgentPlannerProvider({
         "mode": "tool_calls",
-        "user_visible_status": "Done, I created it: https://bad.example",
+        "user_visible_status": "Successfully applied the update.",
+        "progress_kind": "writing",
         "tool_calls": [
             {
                 "name": "create_task",
@@ -3175,8 +3207,8 @@ async def test_agent_loop_status_falls_back_when_model_status_is_unsafe():
             on_progress=progress_updates.append,
     )
 
-    assert "Done, I created it: https://bad.example" not in progress_updates
-    assert "Working on it..." in progress_updates
+    assert "Successfully applied the update." not in progress_updates
+    assert "Making changes..." in progress_updates
 
 
 async def test_agent_loop_progress_uses_english_for_ru_it_es_model_statuses():
@@ -3229,7 +3261,7 @@ async def test_agent_loop_progress_uses_english_for_ru_it_es_model_statuses():
     assert "Revisando tareas..." not in "\n".join(progress_updates)
 
 
-async def test_initial_progress_respects_fixed_reply_language_before_planner():
+async def test_initial_progress_uses_clear_thinking_status_before_planner():
     progress_updates: list[str] = []
     provider = AgentPlannerProvider({
         "mode": "tool_calls",
@@ -3267,7 +3299,7 @@ async def test_initial_progress_respects_fixed_reply_language_before_planner():
             on_progress=progress_updates.append,
         )
 
-    assert progress_updates[0] == "Reading message..."
+    assert progress_updates[0] == "Thinking..."
 
 
 async def test_agent_loop_status_falls_back_when_language_mismatches():
@@ -4618,13 +4650,23 @@ async def test_update_task_missing_candidate_asks_safely_without_fake_success():
     assert any(c.tool_name == "update_task" and c.status == "skipped" for c in tool_calls)
 
 
-async def test_agent_planner_final_answer_for_ordinary_question_uses_no_tool():
+async def test_agent_planner_final_answer_is_deferred_to_post_commit_delivery():
+    answer = (
+        "Я умею вести задачи, календарь и напоминания. "
+        "Могу помогать планировать день, находить свободные окна, "
+        "создавать задачи и объяснять, что уже сделано."
+    )
+    deltas: list[str] = []
     provider = AgentPlannerProvider({
         "mode": "final_answer",
         "tool_calls": [],
-        "final_answer": "Я умею вести задачи, календарь и напоминания.",
+        "final_answer": answer,
         "should_answer_normally": True,
     })
+
+    async def on_delta(text: str) -> None:
+        deltas.append(text)
+
     async with session_scope() as session:
         orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
         result = await orchestrator.handle_user_message(
@@ -4632,15 +4674,235 @@ async def test_agent_planner_final_answer_for_ordinary_question_uses_no_tool():
             telegram_chat_id=TEST_TELEGRAM_ID,
             telegram_message_id=53,
             text="что ты умеешь?",
+            on_reply_delta=on_delta,
         )
         tool_calls = (await session.execute(select(ToolCall))).scalars().all()
 
-    assert result.reply_text == "Я умею вести задачи, календарь и напоминания."
+    assert result.reply_text == answer
     assert provider.final_chat_calls == 0
     assert tool_calls == []
+    assert deltas == []
+
+
+async def test_agent_planner_long_final_answer_does_not_emit_synthetic_previews():
+    answer = " ".join(f"Пункт {index}: подробное описание шага для проверки плавного Telegram streaming." for index in range(1, 13))
+    deltas: list[str] = []
+    provider = AgentPlannerProvider({
+        "mode": "final_answer",
+        "tool_calls": [],
+        "final_answer": answer,
+        "should_answer_normally": True,
+    })
+
+    async def on_delta(text: str) -> None:
+        deltas.append(text)
+
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=54,
+            text="составь длинный ответ",
+            on_reply_delta=on_delta,
+        )
+
+    assert result.reply_text == answer
+    assert provider.final_chat_calls == 0
+    assert deltas == []
+
+
+async def test_read_only_final_chat_streams_and_coalesces_model_thinking():
+    events: list[tuple[str, str]] = []
+    provider = StreamingAgentPlannerProvider({
+        "mode": "tool_calls",
+        "tool_calls": [
+            {
+                "name": "read_tasks",
+                "args": {"filter": "all", "limit": 5},
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": True,
+    }, final_text="You have one active task.")
+
+    async def on_progress(text: str) -> None:
+        events.append(("progress", text))
+
+    async def on_delta(text: str) -> None:
+        events.append(("delta", text))
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        await TaskService(session).create_task(user, title="Review streaming safety")
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=55,
+            text="Summarize my active tasks.",
+            on_progress=on_progress,
+            on_reply_delta=on_delta,
+        )
+        run = (await session.execute(select(AgentRun).order_by(AgentRun.created_at.desc()))).scalars().first()
+
+    assert run is not None
+    progress_values = [value for kind, value in events if kind == "progress"]
+    timeline_values = [entry["status"] for entry in (run.metadata_ or {})["progress_timeline"]]
+    first_delta_index = next(index for index, event in enumerate(events) if event[0] == "delta")
+    last_thinking_index = max(
+        index for index, event in enumerate(events) if event == ("progress", "Thinking...")
+    )
+    assert result.reply_text == "You have one active task."
+    assert provider.stream_chat_calls == 1
+    assert progress_values.count("Thinking...") == 2
+    assert "__thinking__" not in progress_values
+    assert "thinking" not in progress_values
+    assert "__thinking__" not in timeline_values
+    assert "thinking" not in timeline_values
+    assert last_thinking_index < first_delta_index
+
+
+async def test_mutating_final_chat_does_not_stream_before_commit():
+    deltas: list[str] = []
+    progress_updates: list[str] = []
+    provider = StreamingAgentPlannerProvider({
+        "mode": "tool_calls",
+        "tool_calls": [
+            {
+                "name": "create_task",
+                "args": {"title": "Commit before Telegram success"},
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": True,
+    }, final_text="Created the task safely.")
+
+    async def on_delta(text: str) -> None:
+        deltas.append(text)
+
+    async def on_progress(text: str) -> None:
+        progress_updates.append(text)
+
+    async with session_scope() as session:
+        orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+        result = await orchestrator.handle_user_message(
+            telegram_user_id=TEST_TELEGRAM_ID,
+            telegram_chat_id=TEST_TELEGRAM_ID,
+            telegram_message_id=56,
+            text="Create a task called Commit before Telegram success.",
+            on_progress=on_progress,
+            on_reply_delta=on_delta,
+        )
+
+    async with session_scope() as session:
+        task = (
+            await session.execute(select(Task).where(Task.title == "Commit before Telegram success"))
+        ).scalar_one_or_none()
+
+    assert result.reply_text == "Created the task safely."
+    assert provider.final_chat_calls == 1
+    assert provider.stream_chat_calls == 0
+    assert deltas == []
+    assert "Preparing reply..." in progress_updates
+    assert all("action done" not in status.lower() for status in progress_updates)
+    assert task is not None
+
+
+async def test_mutating_final_chat_commit_failure_rolls_back_without_streaming(monkeypatch):
+    from lumi.services import realtime
+
+    deltas: list[str] = []
+    provider = StreamingAgentPlannerProvider({
+        "mode": "tool_calls",
+        "tool_calls": [
+            {
+                "name": "create_task",
+                "args": {"title": "Rolled back streaming task"},
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": True,
+    }, final_text="Created the task.")
+
+    async def on_delta(text: str) -> None:
+        deltas.append(text)
+
+    async def fail_commit(_session) -> None:
+        raise RuntimeError("forced commit failure")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(realtime, "commit_with_realtime", fail_commit)
+        with pytest.raises(RuntimeError, match="forced commit failure"):
+            async with session_scope() as session:
+                orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+                await orchestrator.handle_user_message(
+                    telegram_user_id=TEST_TELEGRAM_ID,
+                    telegram_chat_id=TEST_TELEGRAM_ID,
+                    telegram_message_id=57,
+                    text="Create a task called Rolled back streaming task.",
+                    on_reply_delta=on_delta,
+                )
+
+    async with session_scope() as session:
+        task = (
+            await session.execute(select(Task).where(Task.title == "Rolled back streaming task"))
+        ).scalar_one_or_none()
+
+    assert provider.stream_chat_calls == 0
+    assert deltas == []
+    assert task is None
+
+
+async def test_mutating_final_chat_cancellation_rolls_back_without_streaming(monkeypatch):
+    deltas: list[str] = []
+    provider = StreamingAgentPlannerProvider({
+        "mode": "tool_calls",
+        "tool_calls": [
+            {
+                "name": "create_task",
+                "args": {"title": "Cancelled streaming task"},
+                "confidence": 0.95,
+                "requires_confirmation": False,
+            }
+        ],
+        "should_answer_normally": True,
+    }, final_text="Created the task.")
+
+    async def on_delta(text: str) -> None:
+        deltas.append(text)
+
+    async def cancel_completion(**_kwargs) -> LLMResponse:
+        provider.final_chat_calls += 1
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(provider, "complete", cancel_completion)
+    with pytest.raises(asyncio.CancelledError):
+        async with session_scope() as session:
+            orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+            await orchestrator.handle_user_message(
+                telegram_user_id=TEST_TELEGRAM_ID,
+                telegram_chat_id=TEST_TELEGRAM_ID,
+                telegram_message_id=58,
+                text="Create a task called Cancelled streaming task.",
+                on_reply_delta=on_delta,
+            )
+
+    async with session_scope() as session:
+        task = (
+            await session.execute(select(Task).where(Task.title == "Cancelled streaming task"))
+        ).scalar_one_or_none()
+
+    assert provider.stream_chat_calls == 0
+    assert deltas == []
+    assert task is None
 
 
 async def test_agent_planner_rename_tool_call_updates_db_without_final_llm():
+    deltas: list[str] = []
     provider = AgentPlannerProvider({
         "mode": "tool_calls",
         "tool_calls": [
@@ -4665,6 +4927,10 @@ async def test_agent_planner_rename_tool_call_updates_db_without_final_llm():
         task_id = task.id
 
         orchestrator = AssistantOrchestrator(session, llm=LLMGateway(provider))
+
+        async def on_delta(text: str) -> None:
+            deltas.append(text)
+
         result = await orchestrator.handle_user_message(
             telegram_user_id=TEST_TELEGRAM_ID,
             telegram_chat_id=TEST_TELEGRAM_ID,
@@ -4673,6 +4939,7 @@ async def test_agent_planner_rename_tool_call_updates_db_without_final_llm():
                 "Rename the task about accept/reject scenario to "
                 "«Свой аналог session в Lumi интегрировать»"
             ),
+            on_reply_delta=on_delta,
         )
 
     async with session_scope() as session:
@@ -4682,6 +4949,7 @@ async def test_agent_planner_rename_tool_call_updates_db_without_final_llm():
     assert provider.final_chat_calls == 0
     assert updated.title == "Свой аналог session в Lumi интегрировать"
     assert result.reply_text.startswith("Renamed task")
+    assert deltas == []
 
 
 async def test_low_confidence_explicit_rename_uses_backend_result_not_final_llm():
