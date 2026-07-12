@@ -490,6 +490,80 @@ describe('TodayPage locale', () => {
   });
 });
 
+describe('TodayPage product scope', () => {
+  it('filters legacy email and news payloads before calculating the all-clear state', async () => {
+    vi.spyOn(api, 'getToday').mockResolvedValue(
+      makeTodayResponse({
+        summary: {
+          meetings_today: 0,
+          tasks_active: 0,
+          tasks_due_today: 0,
+          tasks_overdue: 0,
+          emails_need_reply: 3,
+        },
+        needs_attention: [
+          {
+            id: 'email-thread-1',
+            kind: 'email',
+            title: 'Reply to launch email',
+            subtitle: 'Waiting for you',
+            ref_id: 'thread-1',
+          },
+        ],
+        suggestions: [
+          {
+            id: 'email-triage',
+            kind: 'email_triage',
+            title: 'Triage the inbox',
+            description: null,
+            action: { type: 'run_triage', payload: {} },
+          },
+          {
+            id: 'news-digest',
+            kind: 'news_digest',
+            title: 'Build a news digest',
+            description: null,
+            action: { type: 'run_digest', payload: {} },
+          },
+        ],
+      }),
+    );
+
+    renderTodayPage('en');
+
+    expect(await screen.findByText('Quiet day — focus on important work')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Triage inbox' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Reply to launch email')).not.toBeInTheDocument();
+    expect(screen.queryByText('Triage the inbox')).not.toBeInTheDocument();
+    expect(screen.queryByText('Build a news digest')).not.toBeInTheDocument();
+    expect(screen.getByText('Nothing urgent — everything is under control')).toBeInTheDocument();
+  });
+
+  it('keeps confirmations and planning suggestions visible', async () => {
+    const confirmation = makeTodayResponse().needs_attention[0];
+    vi.spyOn(api, 'getToday').mockResolvedValue(
+      makeTodayResponse({
+        needs_attention: [confirmation],
+        suggestions: [
+          {
+            id: 'plan-tomorrow',
+            kind: 'plan_day',
+            title: 'Plan tomorrow',
+            description: 'Block out the important work.',
+            action: { type: 'plan_day', payload: { date: '2026-06-13' } },
+          },
+        ],
+      }),
+    );
+
+    renderTodayPage('en');
+
+    expect(await screen.findByRole('button', { name: /Create task "Alpha"/ })).toBeInTheDocument();
+    expect(screen.getByText('Plan tomorrow')).toBeInTheDocument();
+    expect(screen.getByText('Lumi suggests')).toBeInTheDocument();
+  });
+});
+
 describe('TodayPage confirmation decisions', () => {
   it('expands and collapses confirmation details inline without opening a sheet', async () => {
     const user = userEvent.setup();

@@ -418,4 +418,30 @@ describe('SettingsPage language settings', () => {
     await user.click(screen.getByRole('button', { name: 'Active' }));
     expect(await screen.findByText('Faster refresh after calendar or task changes.')).toBeInTheDocument();
   });
+
+  it('shows only Google Calendar even when the legacy Gmail fields are present', async () => {
+    const response = makeSettingsResponse();
+    response.google = {
+      ...response.google,
+      gmail_available: true,
+      calendar_available: true,
+      scopes: [
+        'https://www.googleapis.com/auth/gmail.readonly',
+        'https://www.googleapis.com/auth/calendar.readonly',
+      ],
+    };
+    vi.spyOn(api, 'health').mockResolvedValue({ status: 'ok', app: 'Lumi', env: 'local', version: '0.1.0' });
+    vi.spyOn(api, 'getSettings').mockResolvedValue(response);
+    vi.spyOn(api, 'getTimezones').mockResolvedValue(TIMEZONES_RESPONSE);
+
+    renderSettingsPage();
+
+    expect(await screen.findByText('Google Calendar')).toBeInTheDocument();
+    expect(screen.getByText('Calendar')).toBeInTheDocument();
+    expect(screen.queryByText('Gmail')).not.toBeInTheDocument();
+    expect(screen.queryByText(/mail access/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('gmail.readonly')).not.toBeInTheDocument();
+    expect(screen.queryByText('calendar.readonly')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Connect Google Calendar' })).toBeInTheDocument();
+  });
 });

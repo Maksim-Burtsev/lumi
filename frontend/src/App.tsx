@@ -13,12 +13,7 @@ import TodayPage from './routes/TodayPage';
 import TasksPage from './routes/TasksPage';
 import FocusPage from './routes/FocusPage';
 import CalendarPage from './routes/CalendarPage';
-import InboxPage from './routes/InboxPage';
-import NewsPage from './routes/NewsPage';
-import AutomationsPage from './routes/AutomationsPage';
 import SettingsPage from './routes/SettingsPage';
-import AgentRunsPage from './routes/AgentRunsPage';
-import MorePage from './routes/MorePage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -29,6 +24,27 @@ const queryClient = new QueryClient({
     },
   },
 });
+
+export function ProductRoutes() {
+  return (
+    <Routes>
+      <Route path="/" element={<TodayPage />} />
+      <Route path="/tasks" element={<TasksPage />} />
+      <Route path="/sessions" element={<FocusPage />} />
+      <Route path="/focus" element={<Navigate to="/sessions" replace />} />
+      <Route path="/calendar" element={<CalendarPage />} />
+      <Route path="/settings" element={<SettingsPage />} />
+      <Route path="/inbox" element={<Navigate to="/tasks" replace />} />
+      <Route path="/email" element={<Navigate to="/tasks" replace />} />
+      <Route path="/news" element={<Navigate to="/" replace />} />
+      <Route path="/runs" element={<Navigate to="/" replace />} />
+      <Route path="/automations" element={<Navigate to="/settings" replace />} />
+      <Route path="/memory" element={<Navigate to="/settings" replace />} />
+      <Route path="/more" element={<Navigate to="/settings" replace />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  );
+}
 
 function AppRoutes() {
   useRealtimeInvalidation();
@@ -62,21 +78,7 @@ function AppRoutes() {
   return (
     <AppShell>
       <TimezoneMismatchPrompt />
-      <Routes>
-        <Route path="/" element={<TodayPage />} />
-        <Route path="/tasks" element={<TasksPage />} />
-        <Route path="/sessions" element={<FocusPage />} />
-        <Route path="/focus" element={<Navigate to="/sessions" replace />} />
-        <Route path="/calendar" element={<CalendarPage />} />
-        <Route path="/inbox" element={<InboxPage />} />
-        <Route path="/news" element={<NewsPage />} />
-        <Route path="/automations" element={<AutomationsPage />} />
-        <Route path="/memory" element={<Navigate to="/more" replace />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/runs" element={<AgentRunsPage />} />
-        <Route path="/more" element={<MorePage />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      <ProductRoutes />
     </AppShell>
   );
 }

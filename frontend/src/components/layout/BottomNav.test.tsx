@@ -4,8 +4,8 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { BottomNav } from './BottomNav';
 
-describe('BottomNav sessions tab', () => {
-  it('promotes Sessions to primary nav and moves Inbox out', () => {
+describe('BottomNav product navigation', () => {
+  it('renders exactly the four product areas with one active item', () => {
     const queryClient = new QueryClient({
       defaultOptions: {
         queries: { retry: false },
@@ -20,11 +20,18 @@ describe('BottomNav sessions tab', () => {
       </QueryClientProvider>,
     );
 
+    const items = screen.getAllByRole('button');
+
+    expect(items.map((item) => item.getAttribute('aria-label'))).toEqual([
+      'Today',
+      'Tasks',
+      'Sessions',
+      'Calendar',
+    ]);
+    expect(items.filter((item) => item.getAttribute('aria-current') === 'page')).toHaveLength(1);
     expect(screen.getByRole('button', { name: 'Sessions' })).toHaveAttribute('aria-current', 'page');
     expect(screen.queryByRole('button', { name: 'Inbox' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Today' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Tasks' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Calendar' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'More' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'More' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument();
   });
 });

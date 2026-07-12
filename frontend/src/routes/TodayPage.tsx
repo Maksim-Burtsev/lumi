@@ -7,7 +7,6 @@ import {
   CheckCircle2,
   Clock,
   HelpCircle,
-  Mail,
   Sparkles,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -17,7 +16,6 @@ import {
   useAgentRunAction,
   useCompleteTask,
   useConfirmBlock,
-  useCreateTaskFromThread,
   useDeleteCalendarPrivateNote,
   useDecideConfirmation,
   useSnoozeTask,
@@ -38,7 +36,7 @@ import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
 import { Timeline } from '../components/timeline/Timeline';
 import type { TimelineEntry } from '../components/timeline/Timeline';
-import { countLabel, formatDateHeading, formatDueLabel, formatSpanMinutes, formatTimeRange, plural } from '../lib/format';
+import { countLabel, formatDateHeading, formatDueLabel, formatSpanMinutes, formatTimeRange } from '../lib/format';
 import type { TimeDisplayOptions } from '../lib/format';
 import type { AppLocale } from '../lib/i18n';
 import { useAppLocale } from '../lib/useAppLocale';
@@ -49,9 +47,6 @@ const TODAY_COPY = {
   en: {
     quietDay: 'Quiet day — focus on important work',
     planReady: 'Plan ready',
-    inboxTriaged: 'Inbox triaged',
-    digestReady: 'Digest ready',
-    googleNotConnected: 'Google is not connected — open Settings',
     saveDecisionError: 'Could not save the decision',
     blockAdded: 'Block added to calendar',
     blockConfirmError: 'Could not confirm the block',
@@ -59,15 +54,12 @@ const TODAY_COPY = {
     taskCompleteError: 'Could not complete the task',
     taskSnoozed: 'Task moved to tomorrow',
     taskSnoozeError: 'Could not move the task',
-    taskCreatedPrefix: 'Task created',
-    taskCreateError: 'Could not create a task',
     loadError: 'Could not load the day plan.',
     timelineTask: 'Task',
     focus: 'Focus',
     accept: 'Accept',
     free: 'Free',
     buildPlan: 'Build plan',
-    triageInbox: 'Triage inbox',
     schedule: 'Schedule',
     emptyTitle: 'No meetings or blocks today',
     emptyHint: 'Tap “Build plan” and Lumi will review tasks and suggest focus blocks.',
@@ -79,8 +71,6 @@ const TODAY_COPY = {
     done: 'Done',
     tomorrow: 'Tomorrow',
     openTasks: 'Open tasks',
-    createTask: 'Create task',
-    openInbox: 'Open inbox',
     quickWinsReady: 'Quick wins ready',
     freeSlotReady: 'quick wins ready',
     openTaskList: 'Open task list',
@@ -88,9 +78,6 @@ const TODAY_COPY = {
   ru: {
     quietDay: 'Спокойный день — можно заняться важным',
     planReady: 'План готов',
-    inboxTriaged: 'Почта разобрана',
-    digestReady: 'Дайджест готов',
-    googleNotConnected: 'Google не подключен — загляни в Настройки',
     saveDecisionError: 'Не удалось сохранить решение',
     blockAdded: 'Блок добавлен в календарь',
     blockConfirmError: 'Не удалось подтвердить блок',
@@ -98,15 +85,12 @@ const TODAY_COPY = {
     taskCompleteError: 'Не удалось выполнить задачу',
     taskSnoozed: 'Задача перенесена на завтра',
     taskSnoozeError: 'Не удалось перенести задачу',
-    taskCreatedPrefix: 'Задача создана',
-    taskCreateError: 'Не удалось создать задачу',
     loadError: 'Не удалось загрузить план дня.',
     timelineTask: 'Задача',
     focus: 'Фокус',
     accept: 'Принять',
     free: 'Свободно',
     buildPlan: 'Собрать план',
-    triageInbox: 'Разобрать почту',
     schedule: 'Расписание',
     emptyTitle: 'Сегодня нет встреч и блоков',
     emptyHint: 'Нажми «Собрать план» — Lumi посмотрит задачи и предложит фокус-блоки.',
@@ -118,8 +102,6 @@ const TODAY_COPY = {
     done: 'Готово',
     tomorrow: 'Завтра',
     openTasks: 'Открыть задачи',
-    createTask: 'Создать задачу',
-    openInbox: 'Открыть почту',
     quickWinsReady: 'Готовые быстрые задачи',
     freeSlotReady: 'готовых быстрых задач',
     openTaskList: 'Открыть список задач',
@@ -144,19 +126,6 @@ function buildSummaryLine(summary: TodaySummary, locale: AppLocale): string {
       locale === 'en'
         ? enCount(summary.tasks_active, 'task', 'tasks')
         : countLabel(summary.tasks_active, ['задача', 'задачи', 'задач']),
-    );
-  }
-  if (summary.emails_need_reply > 0) {
-    parts.push(
-      locale === 'en'
-        ? `${summary.emails_need_reply} ${
-            summary.emails_need_reply === 1 ? 'email needs a reply' : 'emails need replies'
-          }`
-        : `${summary.emails_need_reply} ${plural(summary.emails_need_reply, [
-            'письмо ждёт ответа',
-            'письма ждут ответа',
-            'писем ждут ответа',
-          ])}`,
     );
   }
   if (parts.length === 0) return TODAY_COPY[locale].quietDay;
@@ -195,28 +164,25 @@ function overdueTasksLabel(count: number, locale: AppLocale): string {
   return countLabel(count, ['задача просрочена', 'задачи просрочены', 'задач просрочено']);
 }
 
-const ATTENTION_ICONS: Record<AttentionItem['kind'], { icon: LucideIcon; className: string }> = {
+type ProductAttentionItem = AttentionItem & { kind: Exclude<AttentionItem['kind'], 'email'> };
+
+function isProductAttentionItem(item: AttentionItem): item is ProductAttentionItem {
+  return item.kind !== 'email';
+}
+
+const ATTENTION_ICONS: Record<ProductAttentionItem['kind'], { icon: LucideIcon; className: string }> = {
   overdue_task: { icon: AlertCircle, className: 'text-danger' },
   due_task: { icon: Clock, className: 'text-accent-text' },
-  email: { icon: Mail, className: 'text-accent-text' },
   confirmation: { icon: HelpCircle, className: 'text-hint' },
 };
 
-const ATTENTION_ROUTES: Record<AttentionItem['kind'], string> = {
-  overdue_task: '/tasks',
-  due_task: '/tasks',
-  email: '/inbox',
-  confirmation: '/calendar',
-};
-
-function attentionCtaLabel(item: AttentionItem, locale: AppLocale): string {
+function attentionCtaLabel(item: ProductAttentionItem, locale: AppLocale): string {
   if (item.kind === 'confirmation') {
     if (item.ui_mode === 'review_then_confirm' || item.ui_mode === 'strong_confirm') {
       return locale === 'en' ? 'Review' : 'Проверить';
     }
     return locale === 'en' ? 'Decide' : 'Решить';
   }
-  if (item.kind === 'email') return locale === 'en' ? 'Reply' : 'Ответить';
   return locale === 'en' ? 'Sort' : 'Разобрать';
 }
 
@@ -313,7 +279,7 @@ function confirmationDetailRows(item: AttentionItem, locale: AppLocale, timeDisp
   return rows;
 }
 
-function AttentionIcon({ item }: { item: AttentionItem }) {
+function AttentionIcon({ item }: { item: ProductAttentionItem }) {
   const meta = ATTENTION_ICONS[item.kind];
   const Icon = meta.icon;
   return <Icon size={17} strokeWidth={1.9} className={`shrink-0 ${meta.className}`} />;
@@ -328,7 +294,6 @@ function TodaySkeleton() {
         <Skeleton className="mt-3.5 h-4 w-64" />
         <div className="mt-5 flex gap-2.5">
           <Skeleton className="h-11 w-36 !rounded-full" />
-          <Skeleton className="h-11 w-40 !rounded-full" />
         </div>
       </div>
       <div className="mt-7">
@@ -372,7 +337,6 @@ export default function TodayPage() {
   const decideConfirmation = useDecideConfirmation();
   const completeTask = useCompleteTask('today');
   const snoozeTask = useSnoozeTask('today');
-  const createTaskFromThread = useCreateTaskFromThread();
   const updatePrivateNote = useUpdateCalendarPrivateNote();
   const deletePrivateNote = useDeleteCalendarPrivateNote();
   const [selectedTimelineEvent, setSelectedTimelineEvent] = useState<TimelineItem | null>(null);
@@ -392,25 +356,6 @@ export default function TodayPage() {
     start: () => api.planDay(),
     invalidate: [qk.eventsAll, qk.freeSlotsAll, qk.tasksAll],
     successMessage: copy.planReady,
-  });
-
-  const triageAction = useAgentRunAction({
-    start: () => api.runEmailTriage(),
-    invalidate: [qk.inbox],
-    successMessage: copy.inboxTriaged,
-    onApiError: (error) => {
-      if (error.status === 409 && error.error === 'google_not_connected') {
-        show(copy.googleNotConnected, 'info');
-        return true;
-      }
-      return false;
-    },
-  });
-
-  const digestAction = useAgentRunAction({
-    start: () => api.runNewsDigest(),
-    invalidate: [qk.digests],
-    successMessage: copy.digestReady,
   });
 
   const handleConfirmationDecision = (item: AttentionItem, accept: boolean) => {
@@ -452,12 +397,6 @@ export default function TodayPage() {
         planAction.trigger();
         break;
       }
-      case 'run_triage':
-        triageAction.trigger();
-        break;
-      case 'run_digest':
-        digestAction.trigger();
-        break;
       case 'confirm_block': {
         const payload = suggestion.action.payload;
         const candidate = payload['block_id'] ?? payload['event_id'] ?? payload['id'];
@@ -498,18 +437,6 @@ export default function TodayPage() {
         onError: () => show(copy.taskSnoozeError, 'error'),
       },
     );
-  };
-
-  const handleAttentionEmailTask = (item: AttentionItem) => {
-    const id = item.ref_id;
-    if (!id) return;
-    createTaskFromThread.mutate(id, {
-      onSuccess: (result) => {
-        show(`${copy.taskCreatedPrefix}: ${result.task.title}`, 'success');
-        setExpandedAttentionId((current) => (current === item.id ? null : current));
-      },
-      onError: () => show(copy.taskCreateError, 'error'),
-    });
   };
 
   const patchSelectedEventNote = (event: {
@@ -600,13 +527,10 @@ export default function TodayPage() {
     switch (suggestion.action.type) {
       case 'plan_day':
         return planAction.isRunning;
-      case 'run_triage':
-        return triageAction.isRunning;
-      case 'run_digest':
-        return digestAction.isRunning;
       case 'confirm_block':
         return confirmBlock.isPending;
     }
+    return false;
   };
 
   if (todayQuery.isPending) return <TodaySkeleton />;
@@ -665,8 +589,16 @@ export default function TodayPage() {
 
   const rawEntries = [...timelineItems, ...slotEntries]
     .sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime());
-  const showSuggestions = data.suggestions.length > 0 && slotEntries.length === 0;
-  const showAllClear = data.needs_attention.length === 0 && !showSuggestions && slotEntries.length === 0;
+  const attentionItems = data.needs_attention.filter(isProductAttentionItem);
+  const suggestions = data.suggestions.filter(
+    (suggestion) =>
+      suggestion.kind !== 'email_triage' &&
+      suggestion.kind !== 'news_digest' &&
+      suggestion.action.type !== 'run_triage' &&
+      suggestion.action.type !== 'run_digest',
+  );
+  const showSuggestions = suggestions.length > 0 && slotEntries.length === 0;
+  const showAllClear = attentionItems.length === 0 && !showSuggestions && slotEntries.length === 0;
 
   // Agenda rhythm: surface real gaps between items as ghost "free" rows,
   // so back-to-back meetings and 2-hour windows look different.
@@ -720,14 +652,6 @@ export default function TodayPage() {
               >
                 {copy.buildPlan}
               </Button>
-              <Button
-                variant="secondary"
-                icon={<Mail size={16} />}
-                busy={triageAction.isRunning}
-                onClick={triageAction.trigger}
-              >
-                {copy.triageInbox}
-              </Button>
             </div>
           </div>
         </Card>
@@ -748,11 +672,11 @@ export default function TodayPage() {
       </Rise>
 
       {/* ----------------------------------------------------------- Needs attention */}
-      {data.needs_attention.length > 0 && (
+      {attentionItems.length > 0 && (
         <div>
           <SectionHeader title={copy.needsAttention} />
           <Card className="card-strong divide-y divide-[var(--hairline)] overflow-hidden !p-0">
-            {data.needs_attention.map((item) => {
+            {attentionItems.map((item) => {
               const expanded = expandedAttentionId === item.id;
               const detailRows = confirmationDetailRows(item, locale, timeDisplay);
               return (
@@ -836,23 +760,8 @@ export default function TodayPage() {
                           >
                             {copy.tomorrow}
                           </Button>
-                          <Button fullWidth variant="ghost" onClick={() => handleAttentionNavigate(ATTENTION_ROUTES[item.kind])}>
+                          <Button fullWidth variant="ghost" onClick={() => handleAttentionNavigate('/tasks')}>
                             {copy.openTasks}
-                          </Button>
-                        </div>
-                      )}
-
-                      {item.kind === 'email' && (
-                        <div className="flex flex-col gap-2.5">
-                          <Button
-                            fullWidth
-                            busy={createTaskFromThread.isPending}
-                            onClick={() => handleAttentionEmailTask(item)}
-                          >
-                            {copy.createTask}
-                          </Button>
-                          <Button fullWidth variant="ghost" onClick={() => handleAttentionNavigate(ATTENTION_ROUTES.email)}>
-                            {copy.openInbox}
                           </Button>
                         </div>
                       )}
@@ -870,7 +779,7 @@ export default function TodayPage() {
         <Rise>
           <SectionHeader title={copy.lumiSuggests} />
           <div className="flex flex-col gap-3">
-            {data.suggestions.map((suggestion) => (
+            {suggestions.map((suggestion) => (
               <div
                 key={suggestion.id}
                 className="rounded-card border border-[var(--accent-border)] bg-[var(--accent-soft)] px-4 py-3.5"
