@@ -49,6 +49,10 @@ describe('getRealtimeInvalidationKeys', () => {
       ['tasks'],
       ['projects'],
       ['assistant-suggestions'],
+      ['focus'],
+      ['focus-summary'],
+      ['focus-sessions'],
+      ['focus-session'],
       ['calendar-events'],
       ['free-slots'],
       ['inbox-summary'],
@@ -58,6 +62,41 @@ describe('getRealtimeInvalidationKeys', () => {
       ['memories'],
       ['agent-runs'],
       ['settings'],
+    ]);
+  });
+
+  it('invalidates active state, analytics, and paginated history for focus events', () => {
+    expect(
+      getRealtimeInvalidationKeys({
+        id: 8,
+        topics: ['focus'],
+        event_type: 'focus.session.finished',
+        payload: { session_id: 'focus-1' },
+      }),
+    ).toEqual([
+      ['focus'],
+      ['focus-summary'],
+      ['focus-sessions'],
+      ['focus-session'],
+      ['today'],
+    ]);
+  });
+
+  it('rebuilds every timezone-sensitive focus surface after settings changes', () => {
+    expect(
+      getRealtimeInvalidationKeys({
+        id: 9,
+        topics: ['settings'],
+        event_type: 'settings.updated',
+        payload: {},
+      }),
+    ).toEqual([
+      ['settings'],
+      ['today'],
+      ['focus'],
+      ['focus-summary'],
+      ['focus-sessions'],
+      ['focus-session'],
     ]);
   });
 });

@@ -145,16 +145,22 @@ describe('Sheet scroll lock', () => {
 
     await user.click(screen.getByRole('button', { name: 'Open details' }));
 
-    expect(screen.getByRole('dialog', { name: 'Details' })).toBeInTheDocument();
+    const details = screen.getByRole('dialog', { name: 'Details' });
+    const history = screen.getByText('History body').closest('[role="dialog"]');
+    expect(details).toHaveAttribute('aria-modal', 'true');
+    expect(history).not.toHaveAttribute('aria-modal');
+    expect(history?.parentElement).toHaveAttribute('inert');
     expect(document.body.style.position).toBe('fixed');
     expect(document.body.style.top).toBe('-320px');
 
-    await user.click(within(screen.getByRole('dialog', { name: 'Details' })).getByRole('button', { name: 'Close' }));
+    await user.click(within(details).getByRole('button', { name: 'Close' }));
 
     await waitFor(() => {
       expect(screen.queryByRole('dialog', { name: 'Details' })).not.toBeInTheDocument();
     });
-    expect(screen.getByRole('dialog', { name: 'History' })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: 'History' })).toHaveAttribute('aria-modal', 'true');
+    });
     expect(document.body.style.position).toBe('fixed');
     expect(document.body.style.top).toBe('-320px');
     expect(scrollTo).not.toHaveBeenCalled();
@@ -169,5 +175,42 @@ describe('Sheet scroll lock', () => {
       expect(scrollTo).toHaveBeenCalledTimes(1);
       expect(scrollTo).toHaveBeenCalledWith(0, 320);
     });
+  });
+
+  it('closes only the top sheet with Escape and returns focus to its opener', async () => {
+    const user = userEvent.setup();
+    renderWithSettings(<NestedSheetHarness />);
+
+    const detailsButton = screen.getByRole('button', { name: 'Open details' });
+    await user.click(detailsButton);
+    expect(screen.getByRole('dialog', { name: 'Details' })).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Details' })).not.toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: 'History' })).toHaveAttribute('aria-modal', 'true');
+    });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open details' })).toHaveFocus());
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'History' })).not.toBeInTheDocument();
+    });
+  });
+
+  it('traps keyboard focus inside the top sheet', async () => {
+    const user = userEvent.setup();
+    renderWithSettings(<SheetHarness />);
+
+    const dialog = screen.getByRole('dialog', { name: 'Decision' });
+    const close = within(dialog).getByRole('button', { name: 'Close' });
+    screen.getByRole('button', { name: 'Open' }).focus();
+    expect(close).toHaveFocus();
+
+    await user.tab({ shift: true });
+    expect(close).toHaveFocus();
   });
 });

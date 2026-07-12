@@ -94,6 +94,8 @@ export interface FocusRangeQuery {
   to_date?: string;
   limit?: number;
   offset?: number;
+  q?: string;
+  project_id?: string;
 }
 
 interface RequestOptions {
@@ -231,6 +233,10 @@ export class LumiApiClient {
   listFocusSessions(input: FocusPeriod | FocusRangeQuery = 'week', limit = 100): Promise<FocusSessionsResponse> {
     const query = typeof input === 'string' ? { period: input, limit } : { limit, ...input };
     return request('GET', '/api/focus/sessions', { query: query as Record<string, string | number | undefined> });
+  }
+
+  getFocusSession(id: string): Promise<FocusSessionResponse> {
+    return request('GET', `/api/focus/sessions/${id}`);
   }
 
   startFocusSession(input: StartFocusSessionInput): Promise<FocusSessionResponse> {

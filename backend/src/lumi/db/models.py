@@ -19,6 +19,7 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -551,18 +552,51 @@ class FocusSession(Base):
     __table_args__ = (
         Index("ix_focus_sessions_user_started", "user_id", "started_at"),
         Index("ix_focus_sessions_user_status", "user_id", "status"),
-        Index("ix_focus_sessions_user_project", "user_id", "project_snapshot"),
+        Index("ix_focus_sessions_user_project", "user_id", "project_id"),
         Index(
             "uq_focus_sessions_one_active",
             "user_id",
             unique=True,
             postgresql_where=text("status = 'active'"),
         ),
+        CheckConstraint(
+            "planned_minutes BETWEEN 1 AND 240",
+            name="focus_session_planned_minutes",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'completed', 'abandoned')",
+            name="focus_session_status_values",
+        ),
+        CheckConstraint(
+            "(status = 'active' AND ended_at IS NULL AND duration_seconds IS NULL) OR "
+            "(status IN ('completed', 'abandoned') AND ended_at IS NOT NULL "
+            "AND duration_seconds IS NOT NULL)",
+            name="focus_session_terminal_fields",
+        ),
+        CheckConstraint(
+            "length(btrim(intention)) > 0",
+            name="focus_session_intention_not_blank",
+        ),
+        CheckConstraint(
+            "focus_score IS NULL OR focus_score BETWEEN 1 AND 5",
+            name="focus_session_focus_score",
+        ),
+        CheckConstraint(
+            "duration_seconds IS NULL OR duration_seconds >= 0",
+            name="focus_session_duration_non_negative",
+        ),
+        CheckConstraint(
+            "ended_at IS NULL OR ended_at > started_at",
+            name="focus_session_ended_after_started",
+        ),
     )
 
     id: Mapped[uuid.UUID] = uuid_pk()
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     task_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tasks.id"))
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL")
+    )
     project_snapshot: Mapped[str | None] = mapped_column(Text)
     intention: Mapped[str] = mapped_column(Text, nullable=False)
     planned_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -579,6 +613,7 @@ class FocusSession(Base):
     distraction_text: Mapped[str | None] = mapped_column(Text)
     next_step_text: Mapped[str | None] = mapped_column(Text)
     focus_score: Mapped[int | None] = mapped_column(Integer)
+    seed_batch_id: Mapped[uuid.UUID | None] = mapped_column()
     created_at: Mapped[datetime] = created_at_col()
     updated_at: Mapped[datetime] = updated_at_col()
 

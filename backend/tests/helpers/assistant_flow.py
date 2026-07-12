@@ -192,7 +192,7 @@ async def seed_case(session: AsyncSession, user: User, seed: str | None) -> None
     from lumi.db.models import CalendarEventStatus, CalendarSource, MemoryKind, TaskStatus
     from lumi.services.calendar import CalendarService
     from lumi.services.tasks import TaskService
-    from lumi.utils.time import local_to_utc
+    from lumi.utils.time import local_to_utc, utc_now, utc_to_local
 
     tasks = TaskService(session)
     calendar = CalendarService(session)
@@ -211,7 +211,11 @@ async def seed_case(session: AsyncSession, user: User, seed: str | None) -> None
             created_by="user",
         )
     elif seed == "calendar_gym_block":
-        start = local_to_utc(datetime(2026, 6, 30, 17, 0), user.timezone)
+        local_tomorrow = utc_to_local(utc_now(), user.timezone) + timedelta(days=1)
+        start = local_to_utc(
+            local_tomorrow.replace(hour=17, minute=0, second=0, microsecond=0, tzinfo=None),
+            user.timezone,
+        )
         await calendar.create_internal_block(
             user,
             title="gym block",

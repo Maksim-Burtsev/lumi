@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -33,13 +33,21 @@ const ICONS: Record<ToastType, ReactNode> = {
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const idRef = useRef(0);
+  const timeoutIdsRef = useRef(new Set<number>());
+
+  useEffect(() => () => {
+    for (const timeoutId of timeoutIdsRef.current) window.clearTimeout(timeoutId);
+    timeoutIdsRef.current.clear();
+  }, []);
 
   const show = useCallback((message: string, type: ToastType = 'info') => {
     const id = ++idRef.current;
     setToasts((prev) => [...prev.slice(-2), { id, message, type }]);
-    window.setTimeout(() => {
+    const timeoutId = window.setTimeout(() => {
+      timeoutIdsRef.current.delete(timeoutId);
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 4200);
+    timeoutIdsRef.current.add(timeoutId);
   }, []);
 
   const value = useMemo(() => ({ show }), [show]);

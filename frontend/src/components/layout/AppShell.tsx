@@ -4,6 +4,7 @@ import { useLocation } from 'react-router-dom';
 import { TopBar } from './TopBar';
 import { BottomNav } from './BottomNav';
 import { useAppLocale } from '../../lib/useAppLocale';
+import { FocusTimerCoordinator } from '../focus/FocusTimerCoordinator';
 
 const TITLES = {
   en: {
@@ -45,6 +46,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="min-h-dvh">
+      <FocusTimerCoordinator />
       <TopBar title={title} />
       <main
         className="mx-auto w-full max-w-content px-4"

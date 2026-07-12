@@ -117,17 +117,112 @@ Task = {
   "id": uuid, "title": str, "description": str|null,
   "status": "inbox"|"active"|"done"|"cancelled",
   "priority": "low"|"medium"|"high"|"urgent",
-  "project": str|null, "tags": [str],
-  "due_at": ts|null, "reminder_at": ts|null, "snoozed_until": ts|null,
+  "project": str|null, "project_id": uuid|null, "tags": [str],
+  "due_at": ts|null, "target_at": ts|null, "reminder_at": ts|null,
+  "snoozed_until": ts|null, "estimated_minutes": int|null,
+  "estimate_source": str|null, "review_skips": object,
   "source": str, "created_at": ts, "completed_at": ts|null
 }
 
-GET  /api/tasks?filter=today|upcoming|inbox|done|all&limit=100 → {"items": [Task]}
-POST /api/tasks  body: {"title": str, "description"?, "priority"?, "project"?, "tags"?, "due_at"?, "reminder_at"?} → {"task": Task}  (201)
+GET  /api/tasks?filter=today|upcoming|inbox|review|done|all&limit=100&project_id=uuid → {"items": [Task]}
+POST /api/tasks  body: {"title": str, "description"?, "priority"?, "project"?, "project_id"?, "tags"?, "due_at"?, "reminder_at"?} → {"task": Task}  (201)
 PATCH /api/tasks/{id}  body: any mutable subset → {"task": Task}
 POST /api/tasks/{id}/complete → {"task": Task}
 POST /api/tasks/{id}/snooze  body: {"preset": "1h"|"3h"|"tomorrow"|"next_week"} | {"until": ts} → {"task": Task}
 ```
+
+## Projects
+
+```
+GET /api/projects → {"items": [Project]}
+
+Project = {
+  "id": uuid, "name": str, "status": "active"|"archived",
+  "color": str|null, "system_key": str|null, "is_system": bool,
+  "active_task_count": int, "completed_task_count": int,
+  "estimated_minutes_total": int, "health_status": str,
+  "health_reason": str, "next_task": Task|null, "created_at": ts|null
+}
+```
+
+## Focus sessions
+
+Focus timestamps are stored in UTC. `local_date` is calculated by the server in
+the user's configured timezone and is the authoritative day key for the Mini App.
+`project_snapshot` is immutable internal history; the public `project_name` is the
+current owned project name, falling back to that snapshot if the project was removed.
+
+```
+FocusSession = {
+  "id": uuid, "status": "active"|"completed"|"abandoned",
+  "task": Task|null, "project_id": uuid|null, "project_name": str|null,
+  "local_date": "YYYY-MM-DD", "intention": str, "planned_minutes": int,
+  "started_at": ts, "target_end_at": ts, "ended_at": ts|null,
+  "duration_seconds": int|null,
+  "reflection": {
+    "accomplished_text": str|null, "distraction_text": str|null,
+    "next_step_text": str|null, "focus_score": 1..5|null
+  }
+}
+
+GET /api/focus/state → {
+  "active_session": FocusSession|null,
+  "today": {"focus_seconds": int, "completed_sessions": int, "streak_days": int},
+  "recent_sessions": [FocusSession]
+}
+
+GET /api/focus/summary?period=week|month|custom&from_date=YYYY-MM-DD&to_date=YYYY-MM-DD&q=&project_id=
+  → {
+    "period": str, "total_focus_seconds": int, "total_sessions": int,
+    "streak_days": int, "average_focus_score": float|null,
+    "average_daily_focus_seconds": int,
+    "average_daily_focus_delta_percent": int|null,
+    "total_focus_delta_percent": int|null,
+    "most_focused_daypart": "morning"|"afternoon"|"evening"|"night"|null,
+    "daypart_breakdown": [{"daypart": str, "focus_seconds": int}],
+    "daily_activity": [{"date": "YYYY-MM-DD", "focus_seconds": int,
+                         "session_count": int, "average_focus_score": float|null}],
+    "project_breakdown": [{"project_id": uuid|null, "project_name": str|null,
+                            "focus_seconds": int, "session_count": int}],
+    "next_steps": [str]
+  }
+
+`q` and `project_id` filter the complete summary dataset, including comparison
+baselines. Search covers intention, reflection fields, the immutable project
+snapshot, the current owned project name, and task title. A single local day uses
+`period=custom` with equal `from_date` and `to_date` values.
+
+GET /api/focus/sessions?period=week|month|custom&from_date=&to_date=&q=&project_id=&limit=100&offset=0
+  → {"items": [FocusSession], "has_more": bool, "next_offset": int|null}
+GET /api/focus/sessions/{id} → {"session": FocusSession}
+
+POST /api/focus/sessions
+  body: {"task_id"?: uuid|null, "project_id"?: uuid|null,
+         "project_name"?: str|null, "intention": str, "planned_minutes": 1..240}
+  → {"session": FocusSession} (201)
+
+POST /api/focus/sessions/log
+  body: {"task_id"?: uuid|null, "project_id"?: uuid|null,
+         "project_name"?: str|null, "intention": str, "logged_at": ts,
+         "duration_minutes": 1..240, reflection fields...}
+  → {"session": FocusSession} (201)
+
+POST /api/focus/sessions/{id}/finish body: {reflection fields...}
+  → {"session": FocusSession}
+POST /api/focus/sessions/{id}/abandon → {"session": FocusSession}
+PATCH /api/focus/sessions/{id} body: any mutable subset → {"session": FocusSession}
+DELETE /api/focus/sessions/{id} → 204
+```
+
+Normal finish uses server time. Manual/edit ranges must end after start, cannot
+extend more than 24 hours, and cannot end in the future beyond a small clock-skew
+tolerance. Mutating an already transitioned session returns stable `409`; a second
+concurrent start returns `409 active_focus_session_exists`. PATCH distinguishes an
+omitted field (preserve it) from explicit `null` (clear it).
+
+Week analytics use the rolling seven local days against the average of the four
+preceding seven-day windows. Month analytics are month-to-date and compare the same
+elapsed day count in the preceding four months. Custom ranges do not expose deltas.
 
 ## Calendar
 
@@ -273,8 +368,8 @@ data: {"topics":["*"],"event_type":"resync","payload":{"reason":"client_queue_ov
 ```
 
 Events are invalidation hints, not source-of-truth payloads. The Mini App refetches existing REST
-queries for topics such as `tasks`, `calendar`, `runs`, `inbox`, `news`, `automations`, `memories`,
-and `settings`.
+queries for topics such as `tasks`, `focus`, `calendar`, `runs`, `inbox`, `news`, `automations`,
+`memories`, and `settings`.
 
 ## Debug (local only, `APP_ENV=local`)
 

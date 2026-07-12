@@ -20,8 +20,6 @@ const COPY = {
   },
 };
 
-const PROMPT_RESERVE = '148px';
-
 function localeOf(value: string | null | undefined): 'en' | 'ru' {
   return value === 'ru' ? 'ru' : 'en';
 }
@@ -53,18 +51,6 @@ export function TimezoneMismatchPrompt() {
     dismissedInStorage
   );
 
-  useEffect(() => {
-    const root = document.documentElement;
-    if (!visible) {
-      root.style.removeProperty('--timezone-prompt-reserve');
-      return;
-    }
-    root.style.setProperty('--timezone-prompt-reserve', PROMPT_RESERVE);
-    return () => {
-      root.style.removeProperty('--timezone-prompt-reserve');
-    };
-  }, [visible]);
-
   if (!visible) {
     return null;
   }
@@ -79,8 +65,7 @@ export function TimezoneMismatchPrompt() {
 
   return (
     <div
-      className="fixed left-1/2 z-[70] w-[calc(100%-24px)] max-w-[420px] -translate-x-1/2 rounded-2xl border border-hairline bg-surface px-4 py-3 shadow-card"
-      style={{ bottom: 'calc(env(safe-area-inset-bottom) + 148px)' }}
+      className="mb-4 w-full rounded-2xl border border-hairline bg-surface px-4 py-3 shadow-card"
       role="status"
     >
       <div className="flex items-start gap-2.5">

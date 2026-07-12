@@ -17,12 +17,13 @@ Lumi:  Done.
 
 - **Chat assistant** on MiniMax M3: stateless LLM, all state stored in Lumi's own database; replies match the latest user message language, while progress/status text stays English
 - **Tasks and reminders** from natural language, with confirmations for ambiguous cases
+- **Focus sessions** with a route-safe timer, manual logging, reflection, and local-time analytics
 - **Calendar**: internal calendar, Google Calendar sync and confirmed event creation, Yandex.Calendar read-only CalDAV sync, free slots, day planning with focus blocks
 - **Email**: read-only Gmail triage for replies, important mail, and task candidates from emails
 - **News**: scheduled topic digests from Google News RSS
 - **Memory**: Lumi remembers preferences and projects as part of assistant context
 - **Automations**: user-defined cron schedules for news, email, daily planning, sync, and custom prompts; no default automations are enabled
-- **Mini App**: English-only UI with Today, Tasks, Calendar, Inbox, and More (News, Automations, Settings, Agent Runs)
+- **Mini App**: English-only UI with Today, Tasks, Sessions, Calendar, and More (Inbox, News, Automations, Settings, Agent Runs)
 - **Observability**: every agent run, LLM call, and action is logged
 
 Security by default: Telegram ID allowlist, initData validation, confirmation for Google Calendar writes and automation enabling, no email send/delete, and no LLM access to shell or files.
@@ -154,6 +155,7 @@ make logs            # tail logs for all services
 make test            # pytest in the container
 make lint            # ruff + mypy
 make smoke           # end-to-end mock LLM check
+make seed-focus-demo # local-only Focus demo data; replaces only its marked batch
 make down            # stop everything
 make reset-local-db  # remove volumes and start over
 COMPOSE_PROJECT_NAME=lumi_<task_slug> make agent-clean  # clean an agent branch runtime
@@ -167,6 +169,7 @@ COMPOSE_PROJECT_NAME=lumi_<task_slug> make agent-clean  # clean an agent branch 
 - [docs/connectors.md](docs/connectors.md) - Google, RSS, adding Outlook
 - [docs/runbook.md](docs/runbook.md) - operations, debugging, common issues
 - [docs/agent-qa.md](docs/agent-qa.md) - agent self-QA via Telegram Web, Mini App, DB, and logs
+- [docs/focus-timer-design.md](docs/focus-timer-design.md) - Sessions interaction and responsive design direction
 - [docs/security.md](docs/security.md) - threat model and controls
 - [docs/api-contract.md](docs/api-contract.md) - Mini App API contract
 

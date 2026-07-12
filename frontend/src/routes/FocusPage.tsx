@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   BarChart3,
   Check,
@@ -23,17 +23,21 @@ import {
   useAbandonFocusSession,
   useDeleteFocusSession,
   useFinishFocusSession,
+  useFocusSession,
   useFocusSessions,
   useFocusState,
   useFocusSummary,
+  useFocusTasks,
+  useInfiniteFocusSessions,
   useLogFocusSession,
+  useProjects,
   useStartFocusSession,
-  useTasks,
   useUpdateFocusSession,
 } from '../api/hooks';
 import type { FocusPeriod } from '../api/client';
-import type { FocusDailyActivity, FocusSession, FocusSummaryResponse, Task } from '../api/types';
+import type { FocusDailyActivity, FocusSession, FocusSummaryResponse, Project, Task } from '../api/types';
 import { Button } from '../components/ui/Button';
+import { prepareFocusAlarm, silenceFocusAlarm } from '../components/focus/FocusTimerCoordinator';
 import { Card } from '../components/ui/Card';
 import { Chip } from '../components/ui/Chip';
 import { FieldLabel, Input, Textarea } from '../components/ui/Field';
@@ -44,7 +48,10 @@ import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
 import type { AppLocale } from '../lib/i18n';
 import { formatTime } from '../lib/format';
+import type { TimeDisplayOptions } from '../lib/format';
+import { dateTimeInputParts, localPartsToDate, localRangeToIso } from '../lib/focusTime';
 import { useAppLocale } from '../lib/useAppLocale';
+import { useTimeDisplay } from '../lib/useTimeDisplay';
 import { haptic } from '../telegram/webapp';
 
 const DURATIONS = [25, 45, 60];
@@ -99,6 +106,11 @@ const COPY = {
     plan: 'plan',
     finish: 'Finish',
     cancel: 'Cancel',
+    cancelTitle: 'Cancel this session?',
+    cancelBody: 'The running block will be discarded and will not appear in analytics.',
+    cancelAction: 'Discard session',
+    finishError: 'Could not finish session',
+    cancelError: 'Could not cancel session',
     reflectionTitle: 'Session review',
     doneQuestion: 'What got done?',
     donePlaceholder: 'Short result',
@@ -107,6 +119,7 @@ const COPY = {
     nextStep: 'Next step',
     nextStepPlaceholder: 'What happens next?',
     score: 'Focus',
+    unscored: 'Not scored',
     saveSession: 'Save session',
     saveBlock: 'Save block',
     today: 'today',
@@ -138,7 +151,8 @@ const COPY = {
     avgDay: 'Avg/day',
     total: 'Total',
     mostFocused: 'Most focused',
-    vsAverage: 'vs 4-week avg',
+    vsWeekAverage: 'vs prior 4 weeks',
+    vsMonthAverage: 'vs prior 4 months',
     morning: 'Morning',
     afternoon: 'Afternoon',
     evening: 'Evening',
@@ -164,6 +178,8 @@ const COPY = {
     saveChanges: 'Save changes',
     startTime: 'Start time',
     endTime: 'End time',
+    startDate: 'Start date',
+    endDate: 'End date',
     avgFocusScore: 'avg focus score',
     noSessionsForDay: 'No sessions for this day.',
     startAt: 'Start',
@@ -180,6 +196,13 @@ const COPY = {
     saveError: 'Could not save session',
     logError: 'Could not save block',
     progressLabel: 'Session progress',
+    allProjects: 'All projects',
+    loadMore: 'Load more',
+    loadingMore: 'Loading…',
+    invalidRange: 'End must be after start.',
+    invalidCustomRange: 'Choose a valid range of up to 180 days.',
+    stateError: 'Could not load the active focus session. Your timer may still be running.',
+    retry: 'Try again',
   },
   ru: {
     session: 'Сессия',
@@ -228,6 +251,11 @@ const COPY = {
     plan: 'план',
     finish: 'Завершить',
     cancel: 'Отменить',
+    cancelTitle: 'Отменить сессию?',
+    cancelBody: 'Текущий блок будет удалён и не попадёт в аналитику.',
+    cancelAction: 'Удалить сессию',
+    finishError: 'Не удалось завершить сессию',
+    cancelError: 'Не удалось отменить сессию',
     reflectionTitle: 'Итог сессии',
     doneQuestion: 'Что сделал?',
     donePlaceholder: 'Коротко зафиксируй результат',
@@ -236,6 +264,7 @@ const COPY = {
     nextStep: 'Следующий шаг',
     nextStepPlaceholder: 'Что сделать дальше?',
     score: 'Фокус',
+    unscored: 'Без оценки',
     saveSession: 'Сохранить сессию',
     saveBlock: 'Сохранить блок',
     today: 'сегодня',
@@ -267,7 +296,8 @@ const COPY = {
     avgDay: 'Сред/день',
     total: 'Всего',
     mostFocused: 'Лучший слот',
-    vsAverage: 'к 4-нед. среднему',
+    vsWeekAverage: 'к предыдущим 4 неделям',
+    vsMonthAverage: 'к предыдущим 4 месяцам',
     morning: 'Утро',
     afternoon: 'День',
     evening: 'Вечер',
@@ -293,6 +323,8 @@ const COPY = {
     saveChanges: 'Сохранить изменения',
     startTime: 'Время начала',
     endTime: 'Время окончания',
+    startDate: 'Дата начала',
+    endDate: 'Дата окончания',
     avgFocusScore: 'средний фокус',
     noSessionsForDay: 'В этот день сессий нет.',
     startAt: 'Начало',
@@ -309,6 +341,13 @@ const COPY = {
     saveError: 'Не удалось сохранить сессию',
     logError: 'Не удалось сохранить блок',
     progressLabel: 'Прогресс сессии',
+    allProjects: 'Все проекты',
+    loadMore: 'Загрузить ещё',
+    loadingMore: 'Загрузка…',
+    invalidRange: 'Окончание должно быть позже начала.',
+    invalidCustomRange: 'Выберите корректный период не длиннее 180 дней.',
+    stateError: 'Не удалось загрузить активную фокус-сессию. Таймер может всё ещё идти.',
+    retry: 'Повторить',
   },
 } satisfies Record<AppLocale, Record<string, string>>;
 
@@ -365,81 +404,52 @@ function clampMinutes(value: string | number): number {
   return Math.min(240, Math.max(1, parsed));
 }
 
-function dateInputValue(date: Date): string {
-  const offsetMs = date.getTimezoneOffset() * 60_000;
-  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 10);
+function dateInputValue(date: Date, timezone?: string | null): string {
+  return dateTimeInputParts(date, timezone).date;
 }
 
-function timeInputValue(date: Date): string {
-  const offsetMs = date.getTimezoneOffset() * 60_000;
-  return new Date(date.getTime() - offsetMs).toISOString().slice(11, 16);
+function timeInputValue(date: Date, timezone?: string | null): string {
+  return dateTimeInputParts(date, timezone).time;
 }
 
-function localPartsToDate(date: string, time: string): Date {
-  const parsed = new Date(`${date}T${time || '00:00'}`);
-  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
-}
-
-function localPartsToIso(date: string, time: string): string {
-  return localPartsToDate(date, time).toISOString();
-}
-
-function dayValue(offsetDays: number): string {
-  const date = new Date();
-  date.setDate(date.getDate() + offsetDays);
-  return dateInputValue(date);
-}
-
-function previewStartEnd(date: string, time: string, duration: number): string {
-  const start = localPartsToDate(date, time);
-  const end = new Date(start.getTime() + duration * 60_000);
-  return `${formatTime(start.toISOString())} — ${formatTime(end.toISOString())}`;
-}
-
-function localRangeToIso(date: string, startTime: string, endTime: string): { started_at: string; ended_at: string; valid: boolean } {
-  const start = localPartsToDate(date, startTime);
-  const end = localPartsToDate(date, endTime);
-  return {
-    started_at: start.toISOString(),
-    ended_at: end.toISOString(),
-    valid: end.getTime() > start.getTime(),
-  };
+function dayValue(offsetDays: number, timezone?: string | null): string {
+  const today = dateInputValue(new Date(), timezone);
+  const date = new Date(`${today}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + offsetDays);
+  return date.toISOString().slice(0, 10);
 }
 
 function sessionEndIso(session: FocusSession): string {
   return session.ended_at ?? session.target_end_at;
 }
 
-function sessionTimeRangeLabel(session: FocusSession): string {
-  return `${formatTime(session.started_at)}–${formatTime(sessionEndIso(session))}`;
+function sessionTimeRangeLabel(session: FocusSession, timeDisplay: TimeDisplayOptions): string {
+  return `${formatTime(session.started_at, timeDisplay)}–${formatTime(sessionEndIso(session), timeDisplay)}`;
 }
 
-function sessionMetaLabel(session: FocusSession, copy: (typeof COPY)[AppLocale]): string {
-  const parts = [sessionTimeRangeLabel(session), session.project ?? copy.noProject];
+function sessionMetaLabel(session: FocusSession, copy: (typeof COPY)[AppLocale], timeDisplay: TimeDisplayOptions): string {
+  const parts = [sessionTimeRangeLabel(session, timeDisplay), session.project_name ?? copy.noProject];
   if (session.task?.title) parts.push(session.task.title);
   return parts.join(' · ');
 }
 
-function projectBreakdownFromSessions(sessions: FocusSession[], copy: (typeof COPY)[AppLocale]): FocusSummaryResponse['project_breakdown'] {
-  const byProject = new Map<string, { project: string; focus_seconds: number; session_count: number }>();
-  for (const session of sessions) {
-    const project = session.project?.trim() || copy.noProject;
-    const current = byProject.get(project) ?? { project, focus_seconds: 0, session_count: 0 };
-    current.focus_seconds += session.duration_seconds ?? 0;
-    current.session_count += 1;
-    byProject.set(project, current);
-  }
-  return [...byProject.values()].sort((a, b) => b.focus_seconds - a.focus_seconds || a.project.localeCompare(b.project, 'ru'));
+function rangeDefaults(timezone?: string | null): { from_date: string; to_date: string } {
+  return { from_date: dayValue(-29, timezone), to_date: dayValue(0, timezone) };
 }
 
-function averageFocusScore(sessions: FocusSession[]): number | null {
-  const scores = sessions.map((session) => session.reflection.focus_score).filter((score): score is number => score !== null);
-  if (!scores.length) return null;
-  return Math.round((scores.reduce((sum, score) => sum + score, 0) / scores.length) * 10) / 10;
+interface DateTimeRangeDraft {
+  startDate: string;
+  startTime: string;
+  endDate: string;
+  endTime: string;
 }
 
-function rangeDefaults(): { from_date: string; to_date: string } {
-  return { from_date: dayValue(-29), to_date: dayValue(0) };
+function manualRangeDefaults(durationMinutes: number, timezone?: string | null): DateTimeRangeDraft {
+  const end = new Date();
+  const start = new Date(end.getTime() - durationMinutes * 60_000);
+  const startParts = dateTimeInputParts(start, timezone);
+  const endParts = dateTimeInputParts(end, timezone);
+  return { startDate: startParts.date, startTime: startParts.time, endDate: endParts.date, endTime: endParts.time };
 }
 
 function useNow(intervalMs = 1000): number {
@@ -449,28 +459,6 @@ function useNow(intervalMs = 1000): number {
     return () => window.clearInterval(timer);
   }, [intervalMs]);
   return now;
-}
-
-function playFocusDoneSound(): void {
-  try {
-    const AudioCtx = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.value = 720;
-    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.22);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.24);
-    window.setTimeout(() => void ctx.close(), 300);
-  } catch {
-    /* best-effort webview sound */
-  }
 }
 
 export function getDialMetrics({ started, target, now }: { started: number; target: number; now: number }) {
@@ -505,15 +493,6 @@ function groupTasks(tasks: Task[], copy: (typeof COPY)[AppLocale]): Array<{ proj
     groups.set(project, [...(groups.get(project) ?? []), task]);
   }
   return [...groups.entries()].map(([project, items]) => ({ project, tasks: items }));
-}
-
-function projectOptions(tasks: Task[], summaryProjects: string[]): string[] {
-  const seen = new Set<string>();
-  for (const value of [...tasks.map((task) => task.project), ...summaryProjects]) {
-    const project = value?.trim();
-    if (project) seen.add(project);
-  }
-  return [...seen].sort((a, b) => a.localeCompare(b, 'ru'));
 }
 
 interface TaskPickerSheetProps {
@@ -602,28 +581,29 @@ function TaskPickerSheet({ open, onClose, tasks, selectedTaskId, locale, onSelec
 interface ProjectPickerSheetProps {
   open: boolean;
   onClose: () => void;
-  projects: string[];
-  selectedProject: string;
+  projects: Project[];
+  selectedProjectId: string | null;
+  selectedProjectName: string;
   locale: AppLocale;
-  onSelect: (project: string) => void;
+  onSelect: (project: { id: string | null; name: string }) => void;
 }
 
-function ProjectPickerSheet({ open, onClose, projects, selectedProject, locale, onSelect }: ProjectPickerSheetProps) {
+function ProjectPickerSheet({ open, onClose, projects, selectedProjectId, selectedProjectName, locale, onSelect }: ProjectPickerSheetProps) {
   const copy = COPY[locale];
   const [query, setQuery] = useState('');
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return projects;
-    return projects.filter((project) => project.toLowerCase().includes(q));
+    return projects.filter((project) => project.name.toLowerCase().includes(q));
   }, [projects, query]);
   const custom = query.trim();
-  const canUseCustom = custom.length > 0 && !projects.some((project) => project.toLowerCase() === custom.toLowerCase());
+  const canUseCustom = custom.length > 0 && !projects.some((project) => project.name.toLowerCase() === custom.toLowerCase());
 
   useEffect(() => {
     if (open) setQuery('');
   }, [open]);
 
-  const choose = (project: string) => {
+  const choose = (project: { id: string | null; name: string }) => {
     onSelect(project);
     onClose();
   };
@@ -646,29 +626,29 @@ function ProjectPickerSheet({ open, onClose, projects, selectedProject, locale, 
         <div className="max-h-[50dvh] overflow-y-auto rounded-2xl border border-hairline">
           <button
             type="button"
-            onClick={() => choose('')}
-            className={`flex w-full items-center justify-between px-4 py-3 text-left ${selectedProject.trim() === '' ? 'bg-[var(--accent-soft)]' : 'bg-transparent'}`}
+            onClick={() => choose({ id: null, name: '' })}
+            className={`flex w-full items-center justify-between px-4 py-3 text-left ${selectedProjectId === null && selectedProjectName.trim() === '' ? 'bg-[var(--accent-soft)]' : 'bg-transparent'}`}
           >
             <span className="text-[14.5px] font-medium text-ink">{copy.noProject}</span>
-            {selectedProject.trim() === '' && <Check size={16} className="text-accent-text" />}
+            {selectedProjectId === null && selectedProjectName.trim() === '' && <Check size={16} className="text-accent-text" />}
           </button>
           {visible.map((project) => (
             <button
-              key={project}
+              key={project.id}
               type="button"
-              onClick={() => choose(project)}
+              onClick={() => choose({ id: project.id, name: project.name })}
               className={`flex w-full items-center justify-between border-t border-hairline px-4 py-3 text-left ${
-                selectedProject === project ? 'bg-[var(--accent-soft)]' : 'bg-transparent'
+                selectedProjectId === project.id ? 'bg-[var(--accent-soft)]' : 'bg-transparent'
               }`}
             >
-              <span className="text-[14.5px] font-medium text-ink">{project}</span>
-              {selectedProject === project && <Check size={16} className="text-accent-text" />}
+              <span className="text-[14.5px] font-medium text-ink">{project.name}</span>
+              {selectedProjectId === project.id && <Check size={16} className="text-accent-text" />}
             </button>
           ))}
           {canUseCustom && (
             <button
               type="button"
-              onClick={() => choose(custom)}
+              onClick={() => choose({ id: null, name: custom })}
               className="flex w-full items-center justify-between border-t border-hairline px-4 py-3 text-left"
             >
               <span>
@@ -736,15 +716,14 @@ function StartSheet({
   open,
   onClose,
   locale,
-  summaryProjects,
 }: {
   open: boolean;
   onClose: () => void;
   locale: AppLocale;
-  summaryProjects: string[];
 }) {
   const copy = COPY[locale];
-  const tasksQuery = useTasks('all');
+  const tasksQuery = useFocusTasks();
+  const projectsQuery = useProjects();
   const start = useStartFocusSession();
   const { show } = useToast();
   const [taskPickerOpen, setTaskPickerOpen] = useState(false);
@@ -752,24 +731,26 @@ function StartSheet({
   const [intention, setIntention] = useState('');
   const [duration, setDuration] = useState(DEFAULT_DURATION);
   const [taskId, setTaskId] = useState('');
-  const [project, setProject] = useState('');
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [projectName, setProjectName] = useState('');
 
   const tasks = useMemo(() => activeTasks(tasksQuery.data?.items ?? []), [tasksQuery.data]);
-  const projects = useMemo(() => projectOptions(tasks, summaryProjects), [summaryProjects, tasks]);
+  const projects = useMemo(
+    () => (projectsQuery.data?.items ?? []).filter((project) => project.status === 'active').sort((a, b) => a.name.localeCompare(b.name, 'ru')),
+    [projectsQuery.data],
+  );
   const selectedTask = tasks.find((task) => task.id === taskId) ?? null;
 
-  useEffect(() => {
-    if (selectedTask?.project) setProject(selectedTask.project);
-  }, [selectedTask]);
-
   const submit = () => {
-    const text = intention.trim() || selectedTask?.title || project.trim() || copy.defaultIntention;
+    const text = intention.trim() || selectedTask?.title || projectName.trim() || copy.defaultIntention;
     if (start.isPending) return;
+    prepareFocusAlarm();
     haptic('light');
     start.mutate(
       {
         task_id: taskId || null,
-        project: project.trim() || selectedTask?.project || null,
+        project_id: projectId,
+        project_name: projectName.trim() || null,
         intention: text,
         planned_minutes: duration,
       },
@@ -777,7 +758,8 @@ function StartSheet({
         onSuccess: () => {
           setIntention('');
           setTaskId('');
-          setProject('');
+          setProjectId(null);
+          setProjectName('');
           setDuration(DEFAULT_DURATION);
           onClose();
         },
@@ -813,7 +795,7 @@ function StartSheet({
               onClick={() => setProjectPickerOpen(true)}
               className="flex h-11 w-full items-center justify-between rounded-xl border border-hairline bg-[var(--surface-strong)] px-3.5 text-left text-[15px] text-ink"
             >
-              <span className="min-w-0 truncate">{project.trim() || copy.noProject}</span>
+              <span className="min-w-0 truncate">{projectName.trim() || copy.noProject}</span>
               <span className="text-[12px] text-hint">{copy.chooseProject}</span>
             </button>
           </div>
@@ -830,37 +812,68 @@ function StartSheet({
         locale={locale}
         onSelect={(task) => {
           setTaskId(task?.id ?? '');
-          setProject(task?.project ?? project);
+          setProjectId(task?.project_id ?? null);
+          setProjectName(task?.project ?? '');
         }}
       />
       <ProjectPickerSheet
         open={projectPickerOpen}
         onClose={() => setProjectPickerOpen(false)}
         projects={projects}
-        selectedProject={project}
+        selectedProjectId={projectId}
+        selectedProjectName={projectName}
         locale={locale}
-        onSelect={setProject}
+        onSelect={(project) => {
+          setProjectId(project.id);
+          setProjectName(project.name);
+        }}
       />
     </>
   );
 }
 
-function ScorePicker({ value, onChange, label }: { value: number; onChange: (value: number) => void; label: string }) {
+function ScorePicker({
+  value,
+  onChange,
+  label,
+  unscoredLabel,
+}: {
+  value: number | null;
+  onChange: (value: number | null) => void;
+  label: string;
+  unscoredLabel: string;
+}) {
+  const groupName = useId();
+  const options: Array<{ value: number | null; label: string }> = [
+    { value: null, label: unscoredLabel },
+    ...[1, 2, 3, 4, 5].map((item) => ({ value: item, label: `${label}: ${item}` })),
+  ];
+
   return (
     <div>
       <FieldLabel>{label}</FieldLabel>
-      <div className="flex gap-2">
-        {[1, 2, 3, 4, 5].map((item) => (
-          <button
-            key={item}
-            type="button"
-            onClick={() => onChange(item)}
-            className={`h-9 flex-1 rounded-full border text-[13px] font-medium ${
-              item <= value ? 'border-[var(--accent-border)] bg-[var(--accent-soft)] text-accent-text' : 'border-hairline text-hint'
-            }`}
-          >
-            {item}
-          </button>
+      <div role="radiogroup" aria-label={label} className="grid grid-cols-6 gap-1.5">
+        {options.map((option) => (
+          <label key={option.value ?? 'unscored'} className="h-9 cursor-pointer">
+            <input
+              type="radio"
+              name={groupName}
+              value={option.value ?? ''}
+              checked={value === option.value}
+              aria-label={option.label}
+              onChange={() => onChange(option.value)}
+              className="peer sr-only"
+            />
+            <span
+              className={`flex h-full items-center justify-center rounded-full border text-[13px] font-medium peer-focus-visible:shadow-[0_0_0_3px_var(--accent-soft)] ${
+                value === option.value
+                  ? 'border-[var(--accent-border)] bg-[var(--accent-soft)] text-accent-text'
+                  : 'border-hairline text-hint'
+              }`}
+            >
+              {option.value ?? '—'}
+            </span>
+          </label>
         ))}
       </div>
     </div>
@@ -884,14 +897,14 @@ function ReflectionSheet({
   const [accomplished, setAccomplished] = useState('');
   const [distraction, setDistraction] = useState('');
   const [nextStep, setNextStep] = useState('');
-  const [score, setScore] = useState(4);
+  const [score, setScore] = useState<number | null>(null);
 
   useEffect(() => {
     if (open && session) {
       setAccomplished(session.reflection.accomplished_text ?? '');
       setDistraction(session.reflection.distraction_text ?? '');
       setNextStep(session.reflection.next_step_text ?? '');
-      setScore(session.reflection.focus_score ?? 4);
+      setScore(session.reflection.focus_score);
     }
   }, [open, session]);
 
@@ -922,7 +935,7 @@ function ReflectionSheet({
     <Sheet open={open} onClose={onClose} title={copy.reflectionTitle}>
       <div className="space-y-4">
         <div className="rounded-2xl bg-[var(--accent-soft)] px-4 py-3">
-          <p className="text-[13px] font-medium text-ink">{session.project ?? copy.noProject}</p>
+          <p className="text-[13px] font-medium text-ink">{session.project_name ?? copy.noProject}</p>
           <p className="mt-0.5 text-[12.5px] text-hint">{session.intention}</p>
         </div>
         <label>
@@ -937,7 +950,7 @@ function ReflectionSheet({
           <FieldLabel>{copy.nextStep}</FieldLabel>
           <Textarea value={nextStep} onChange={setNextStep} rows={2} placeholder={copy.nextStepPlaceholder} />
         </label>
-        <ScorePicker value={score} onChange={setScore} label={copy.score} />
+        <ScorePicker value={score} onChange={setScore} label={copy.score} unscoredLabel={copy.unscored} />
         <Button fullWidth busy={update.isPending} onClick={submit} icon={<Check size={16} />}>
           {copy.saveSession}
         </Button>
@@ -958,41 +971,44 @@ function EditSessionSheet({
   locale: AppLocale;
 }) {
   const copy = COPY[locale];
+  const timeDisplay = useTimeDisplay();
   const update = useUpdateFocusSession();
   const { show } = useToast();
   const [intention, setIntention] = useState('');
-  const [editDate, setEditDate] = useState(() => dateInputValue(new Date()));
-  const [startTime, setStartTime] = useState(() => timeInputValue(new Date()));
-  const [endTime, setEndTime] = useState(() => timeInputValue(new Date()));
+  const [startDate, setStartDate] = useState(() => dateInputValue(new Date(), timeDisplay.timezone));
+  const [startTime, setStartTime] = useState(() => timeInputValue(new Date(), timeDisplay.timezone));
+  const [endDate, setEndDate] = useState(() => dateInputValue(new Date(), timeDisplay.timezone));
+  const [endTime, setEndTime] = useState(() => timeInputValue(new Date(), timeDisplay.timezone));
   const [accomplished, setAccomplished] = useState('');
   const [distraction, setDistraction] = useState('');
   const [nextStep, setNextStep] = useState('');
-  const [score, setScore] = useState(4);
+  const [score, setScore] = useState<number | null>(null);
 
   useEffect(() => {
     if (open && session) {
       const started = new Date(session.started_at);
       const ended = new Date(sessionEndIso(session));
       setIntention(session.intention);
-      setEditDate(dateInputValue(started));
-      setStartTime(timeInputValue(started));
-      setEndTime(timeInputValue(ended));
+      setStartDate(dateInputValue(started, timeDisplay.timezone));
+      setStartTime(timeInputValue(started, timeDisplay.timezone));
+      setEndDate(dateInputValue(ended, timeDisplay.timezone));
+      setEndTime(timeInputValue(ended, timeDisplay.timezone));
       setAccomplished(session.reflection.accomplished_text ?? '');
       setDistraction(session.reflection.distraction_text ?? '');
       setNextStep(session.reflection.next_step_text ?? '');
-      setScore(session.reflection.focus_score ?? 4);
+      setScore(session.reflection.focus_score);
     }
-  }, [open, session]);
+  }, [open, session, timeDisplay.timezone]);
 
   if (!session) return null;
 
-  const range = localRangeToIso(editDate, startTime, endTime);
+  const range = localRangeToIso(startDate, startTime, endDate, endTime, timeDisplay.timezone);
   const preview = range.valid
-    ? `${formatTime(range.started_at)} — ${formatTime(range.ended_at)} · ${secondsLabel((new Date(range.ended_at).getTime() - new Date(range.started_at).getTime()) / 1000, locale)}`
+    ? `${formatTime(range.started_at, timeDisplay)} — ${formatTime(range.ended_at, timeDisplay)} · ${secondsLabel(range.duration_minutes * 60, locale)}`
     : '—';
 
   const submit = () => {
-    const nextRange = localRangeToIso(editDate, startTime, endTime);
+    const nextRange = localRangeToIso(startDate, startTime, endDate, endTime, timeDisplay.timezone);
     if (!nextRange.valid) {
       show(copy.saveError, 'error');
       return;
@@ -1024,48 +1040,33 @@ function EditSessionSheet({
     <Sheet open={open} onClose={onClose} title={copy.editSession}>
       <div className="space-y-4">
         <div className="rounded-2xl bg-[var(--accent-soft)] px-4 py-3">
-          <p className="text-[13px] font-medium text-ink">{session.project ?? copy.noProject}</p>
+          <p className="text-[13px] font-medium text-ink">{session.project_name ?? copy.noProject}</p>
           <p className="mt-0.5 text-[12.5px] text-hint">{session.task?.title ?? session.intention}</p>
         </div>
         <label>
           <FieldLabel>{copy.intention}</FieldLabel>
           <Input value={intention} onChange={setIntention} placeholder={copy.whatWork} />
         </label>
-        <div className="grid grid-cols-3 gap-2">
-          <label>
-            <span className="sr-only">{copy.date}</span>
-            <input
-              aria-label={copy.date}
-              type="date"
-              value={editDate}
-              onChange={(event) => setEditDate(event.target.value)}
-              className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3 text-[14px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
-            />
-          </label>
-          <label>
-            <span className="sr-only">{copy.startTime}</span>
-            <input
-              aria-label={copy.startTime}
-              type="time"
-              value={startTime}
-              onChange={(event) => setStartTime(event.target.value)}
-              className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3 text-[14px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
-            />
-          </label>
-          <label>
-            <span className="sr-only">{copy.endTime}</span>
-            <input
-              aria-label={copy.endTime}
-              type="time"
-              value={endTime}
-              onChange={(event) => setEndTime(event.target.value)}
-              className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3 text-[14px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
-            />
-          </label>
+        <div className="space-y-3">
+          <div>
+            <FieldLabel>{copy.startAt}</FieldLabel>
+            <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_104px] gap-2">
+              <input aria-label={copy.startDate} type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} className="h-11 min-w-0 rounded-xl border border-hairline bg-[var(--surface-strong)] px-2.5 text-[14px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]" />
+              <input aria-label={copy.startTime} type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} className="h-11 min-w-0 rounded-xl border border-hairline bg-[var(--surface-strong)] px-2.5 text-[14px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]" />
+            </div>
+          </div>
+          <div>
+            <FieldLabel>{copy.finish}</FieldLabel>
+            <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_104px] gap-2">
+              <input aria-label={copy.endDate} type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} className="h-11 min-w-0 rounded-xl border border-hairline bg-[var(--surface-strong)] px-2.5 text-[14px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]" />
+              <input aria-label={copy.endTime} type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} className="h-11 min-w-0 rounded-xl border border-hairline bg-[var(--surface-strong)] px-2.5 text-[14px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]" />
+            </div>
+          </div>
         </div>
         <p className="tnum rounded-xl border border-hairline bg-[var(--surface)] px-3 py-2 text-[12.5px] text-hint">
           {copy.startEndPreview}: <span className="text-ink">{preview}</span>
         </p>
+        {!range.valid && <p role="alert" className="text-[12.5px] text-danger">{copy.invalidRange}</p>}
         <label>
           <FieldLabel>{copy.doneQuestion}</FieldLabel>
           <Textarea value={accomplished} onChange={setAccomplished} rows={3} placeholder={copy.donePlaceholder} />
@@ -1078,7 +1079,7 @@ function EditSessionSheet({
           <FieldLabel>{copy.nextStep}</FieldLabel>
           <Textarea value={nextStep} onChange={setNextStep} rows={2} placeholder={copy.nextStepPlaceholder} />
         </label>
-        <ScorePicker value={score} onChange={setScore} label={copy.score} />
+        <ScorePicker value={score} onChange={setScore} label={copy.score} unscoredLabel={copy.unscored} />
         <Button fullWidth busy={update.isPending} onClick={submit} icon={<Check size={16} />}>
           {copy.saveChanges}
         </Button>
@@ -1091,49 +1092,98 @@ function ManualLogSheet({
   open,
   onClose,
   locale,
-  summaryProjects,
 }: {
   open: boolean;
   onClose: () => void;
   locale: AppLocale;
-  summaryProjects: string[];
 }) {
   const copy = COPY[locale];
-  const tasksQuery = useTasks('all');
+  const timeDisplay = useTimeDisplay();
+  const tasksQuery = useFocusTasks();
+  const projectsQuery = useProjects();
   const logFocus = useLogFocusSession();
   const { show } = useToast();
   const [taskPickerOpen, setTaskPickerOpen] = useState(false);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [intention, setIntention] = useState('');
-  const [duration, setDuration] = useState(DEFAULT_DURATION);
   const [taskId, setTaskId] = useState('');
-  const [project, setProject] = useState('');
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [projectName, setProjectName] = useState('');
   const [accomplished, setAccomplished] = useState('');
   const [distraction, setDistraction] = useState('');
   const [nextStep, setNextStep] = useState('');
-  const [score, setScore] = useState(4);
-  const [logDate, setLogDate] = useState(() => dateInputValue(new Date()));
-  const [logTime, setLogTime] = useState(() => timeInputValue(new Date()));
+  const [score, setScore] = useState<number | null>(null);
+  const [rangeDraft, setRangeDraft] = useState<DateTimeRangeDraft>(() => manualRangeDefaults(DEFAULT_DURATION, timeDisplay.timezone));
+  const wasOpenRef = useRef(false);
 
   const tasks = useMemo(() => activeTasks(tasksQuery.data?.items ?? []), [tasksQuery.data]);
-  const projects = useMemo(() => projectOptions(tasks, summaryProjects), [summaryProjects, tasks]);
+  const projects = useMemo(
+    () => (projectsQuery.data?.items ?? []).filter((project) => project.status === 'active').sort((a, b) => a.name.localeCompare(b.name, 'ru')),
+    [projectsQuery.data],
+  );
   const selectedTask = tasks.find((task) => task.id === taskId) ?? null;
-  const preview = useMemo(() => previewStartEnd(logDate, logTime, duration), [duration, logDate, logTime]);
+  const range = localRangeToIso(
+    rangeDraft.startDate,
+    rangeDraft.startTime,
+    rangeDraft.endDate,
+    rangeDraft.endTime,
+    timeDisplay.timezone,
+  );
+  const duration = range.valid ? range.duration_minutes : DEFAULT_DURATION;
+  const preview = range.valid
+    ? `${formatTime(range.started_at, timeDisplay)} — ${formatTime(range.ended_at, timeDisplay)} · ${secondsLabel(range.duration_minutes * 60, locale)}`
+    : '—';
 
   useEffect(() => {
-    if (selectedTask?.project) setProject(selectedTask.project);
-  }, [selectedTask]);
+    if (open && !wasOpenRef.current) {
+      setRangeDraft(manualRangeDefaults(DEFAULT_DURATION, timeDisplay.timezone));
+    }
+    wasOpenRef.current = open;
+  }, [open, timeDisplay.timezone]);
+
+  const setDuration = (nextDuration: number) => {
+    const end = localPartsToDate(rangeDraft.endDate, rangeDraft.endTime, timeDisplay.timezone);
+    if (Number.isNaN(end.getTime())) return;
+    const start = new Date(end.getTime() - nextDuration * 60_000);
+    const startParts = dateTimeInputParts(start, timeDisplay.timezone);
+    setRangeDraft((current) => ({ ...current, startDate: startParts.date, startTime: startParts.time }));
+  };
+
+  const setEndDay = (endDate: string) => {
+    const end = localPartsToDate(endDate, rangeDraft.endTime, timeDisplay.timezone);
+    if (Number.isNaN(end.getTime())) return;
+    const start = new Date(end.getTime() - duration * 60_000);
+    const startParts = dateTimeInputParts(start, timeDisplay.timezone);
+    setRangeDraft((current) => ({
+      ...current,
+      startDate: startParts.date,
+      startTime: startParts.time,
+      endDate,
+    }));
+  };
 
   const submit = () => {
-    const text = intention.trim() || selectedTask?.title || project.trim() || copy.defaultIntention;
+    const nextRange = localRangeToIso(
+      rangeDraft.startDate,
+      rangeDraft.startTime,
+      rangeDraft.endDate,
+      rangeDraft.endTime,
+      timeDisplay.timezone,
+    );
+    if (!nextRange.valid) {
+      show(copy.invalidRange, 'error');
+      return;
+    }
+    const text = intention.trim() || selectedTask?.title || projectName.trim() || copy.defaultIntention;
     if (logFocus.isPending) return;
     logFocus.mutate(
       {
         task_id: taskId || null,
-        project: project.trim() || selectedTask?.project || null,
+        project_id: projectId,
+        project_name: projectName.trim() || null,
         intention: text,
-        logged_at: localPartsToIso(logDate, logTime),
-        duration_minutes: duration,
+        logged_at: nextRange.started_at,
+        duration_minutes: nextRange.duration_minutes,
         accomplished_text: accomplished.trim() || null,
         distraction_text: distraction.trim() || null,
         next_step_text: nextStep.trim() || null,
@@ -1142,15 +1192,14 @@ function ManualLogSheet({
       {
         onSuccess: () => {
           setIntention('');
-          setDuration(DEFAULT_DURATION);
           setTaskId('');
-          setProject('');
+          setProjectId(null);
+          setProjectName('');
           setAccomplished('');
           setDistraction('');
           setNextStep('');
-          setScore(4);
-          setLogDate(dateInputValue(new Date()));
-          setLogTime(timeInputValue(new Date()));
+          setScore(null);
+          setRangeDraft(manualRangeDefaults(DEFAULT_DURATION, timeDisplay.timezone));
           onClose();
         },
         onError: () => show(copy.logError, 'error'),
@@ -1167,36 +1216,28 @@ function ManualLogSheet({
             <Input value={intention} onChange={setIntention} placeholder={copy.logIntentPlaceholder} />
           </label>
           <div className="space-y-3">
-            <FieldLabel>{copy.startAt}</FieldLabel>
             <div className="flex gap-2">
-              <Chip label={copy.todayChip} active={logDate === dayValue(0)} onClick={() => setLogDate(dayValue(0))} />
-              <Chip label={copy.yesterdayChip} active={logDate === dayValue(-1)} onClick={() => setLogDate(dayValue(-1))} />
+              <Chip label={copy.todayChip} active={rangeDraft.endDate === dayValue(0, timeDisplay.timezone)} onClick={() => setEndDay(dayValue(0, timeDisplay.timezone))} />
+              <Chip label={copy.yesterdayChip} active={rangeDraft.endDate === dayValue(-1, timeDisplay.timezone)} onClick={() => setEndDay(dayValue(-1, timeDisplay.timezone))} />
             </div>
-            <div className="grid grid-cols-2 gap-2.5">
-              <label>
-                <span className="sr-only">{copy.date}</span>
-                <input
-                  aria-label={copy.date}
-                  type="date"
-                  value={logDate}
-                  onChange={(event) => setLogDate(event.target.value)}
-                  className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3.5 text-[15px] text-ink outline-none transition-shadow focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
-                />
-              </label>
-              <label>
-                <span className="sr-only">{copy.time}</span>
-                <input
-                  aria-label={copy.time}
-                  type="time"
-                  value={logTime}
-                  onChange={(event) => setLogTime(event.target.value)}
-                  className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3.5 text-[15px] text-ink outline-none transition-shadow focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
-                />
-              </label>
+            <div>
+              <FieldLabel>{copy.startAt}</FieldLabel>
+              <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_104px] gap-2">
+                <input aria-label={copy.startDate} type="date" value={rangeDraft.startDate} onChange={(event) => setRangeDraft((current) => ({ ...current, startDate: event.target.value }))} className="h-11 min-w-0 rounded-xl border border-hairline bg-[var(--surface-strong)] px-2.5 text-[14px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]" />
+                <input aria-label={copy.startTime} type="time" value={rangeDraft.startTime} onChange={(event) => setRangeDraft((current) => ({ ...current, startTime: event.target.value }))} className="h-11 min-w-0 rounded-xl border border-hairline bg-[var(--surface-strong)] px-2.5 text-[14px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]" />
+              </div>
+            </div>
+            <div>
+              <FieldLabel>{copy.finish}</FieldLabel>
+              <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_104px] gap-2">
+                <input aria-label={copy.endDate} type="date" value={rangeDraft.endDate} onChange={(event) => setRangeDraft((current) => ({ ...current, endDate: event.target.value }))} className="h-11 min-w-0 rounded-xl border border-hairline bg-[var(--surface-strong)] px-2.5 text-[14px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]" />
+                <input aria-label={copy.endTime} type="time" value={rangeDraft.endTime} onChange={(event) => setRangeDraft((current) => ({ ...current, endTime: event.target.value }))} className="h-11 min-w-0 rounded-xl border border-hairline bg-[var(--surface-strong)] px-2.5 text-[14px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]" />
+              </div>
             </div>
             <p className="tnum rounded-xl border border-hairline bg-[var(--surface)] px-3 py-2 text-[12.5px] text-hint">
               {copy.startEndPreview}: <span className="text-ink">{preview}</span>
             </p>
+            {!range.valid && <p role="alert" className="text-[12.5px] text-danger">{copy.invalidRange}</p>}
           </div>
           <DurationControl value={duration} onChange={setDuration} label={copy.customDuration} heading={copy.duration} />
           <div>
@@ -1217,7 +1258,7 @@ function ManualLogSheet({
               onClick={() => setProjectPickerOpen(true)}
               className="flex h-11 w-full items-center justify-between rounded-xl border border-hairline bg-[var(--surface-strong)] px-3.5 text-left text-[15px] text-ink"
             >
-              <span className="min-w-0 truncate">{project.trim() || copy.noProject}</span>
+              <span className="min-w-0 truncate">{projectName.trim() || copy.noProject}</span>
               <span className="text-[12px] text-hint">{copy.chooseProject}</span>
             </button>
           </div>
@@ -1233,7 +1274,7 @@ function ManualLogSheet({
             <FieldLabel>{copy.nextStep}</FieldLabel>
             <Textarea value={nextStep} onChange={setNextStep} rows={2} placeholder={copy.optionalProject} />
           </label>
-          <ScorePicker value={score} onChange={setScore} label={copy.score} />
+          <ScorePicker value={score} onChange={setScore} label={copy.score} unscoredLabel={copy.unscored} />
           <Button fullWidth busy={logFocus.isPending} onClick={submit} icon={<ClipboardPenLine size={16} />}>
             {copy.saveBlock}
           </Button>
@@ -1247,16 +1288,21 @@ function ManualLogSheet({
         locale={locale}
         onSelect={(task) => {
           setTaskId(task?.id ?? '');
-          setProject(task?.project ?? project);
+          setProjectId(task?.project_id ?? null);
+          setProjectName(task?.project ?? '');
         }}
       />
       <ProjectPickerSheet
         open={projectPickerOpen}
         onClose={() => setProjectPickerOpen(false)}
         projects={projects}
-        selectedProject={project}
+        selectedProjectId={projectId}
+        selectedProjectName={projectName}
         locale={locale}
-        onSelect={setProject}
+        onSelect={(project) => {
+          setProjectId(project.id);
+          setProjectName(project.name);
+        }}
       />
     </>
   );
@@ -1310,39 +1356,52 @@ function BreathingOrbTimer({ session, now, locale }: { session: FocusSession; no
 
 function ActiveSessionCard({ session, locale, onReviewSession }: { session: FocusSession; locale: AppLocale; onReviewSession: (session: FocusSession) => void }) {
   const copy = COPY[locale];
+  const timeDisplay = useTimeDisplay();
+  const { show } = useToast();
   const now = useNow();
   const abandon = useAbandonFocusSession();
   const finish = useFinishFocusSession();
-  const [notifiedFor, setNotifiedFor] = useState<string | null>(null);
-  const [silencedFor, setSilencedFor] = useState<string | null>(null);
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const overtime = now >= new Date(session.target_end_at).getTime();
-  const soundSilenced = silencedFor === session.id;
-
-  useEffect(() => {
-    if (!overtime || finish.isPending || soundSilenced) return undefined;
-    if (notifiedFor !== session.id) {
-      setNotifiedFor(session.id);
-      haptic('success');
-    }
-    playFocusDoneSound();
-    const timer = window.setInterval(playFocusDoneSound, 1200);
-    return () => window.clearInterval(timer);
-  }, [finish.isPending, notifiedFor, overtime, session.id, soundSilenced]);
+  const mutationPending = finish.isPending || abandon.isPending;
 
   const stopAndReview = () => {
-    if (finish.isPending) return;
+    if (mutationPending) return;
+    setActionError(null);
     finish.mutate(
       {
         id: session.id,
-        input: { ended_at: new Date().toISOString() },
+        input: {},
       },
       {
         onSuccess: (response) => {
+          silenceFocusAlarm(session.id);
           haptic('success');
           onReviewSession(response.session);
         },
+        onError: () => {
+          setActionError(copy.finishError);
+          show(copy.finishError, 'error');
+        },
       },
     );
+  };
+
+  const cancelSession = () => {
+    if (mutationPending) return;
+    setActionError(null);
+    abandon.mutate(session.id, {
+      onSuccess: () => {
+        silenceFocusAlarm(session.id);
+        setConfirmCancel(false);
+        haptic('light');
+      },
+      onError: () => {
+        setActionError(copy.cancelError);
+        show(copy.cancelError, 'error');
+      },
+    });
   };
 
   return (
@@ -1352,7 +1411,7 @@ function ActiveSessionCard({ session, locale, onReviewSession }: { session: Focu
           <div className="flex items-center justify-between gap-3">
             <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-hairline bg-[var(--accent-soft)] px-3 py-1 text-[12px] font-medium text-accent-text">
               <Folder size={14} />
-              {session.project ?? copy.noProject}
+              {session.project_name ?? copy.noProject}
             </span>
             <span className={`inline-flex items-center gap-1.5 text-[12px] font-medium ${overtime ? 'text-success' : 'text-hint'}`}>
               <span className={`h-1.5 w-1.5 rounded-full ${overtime ? 'bg-success' : 'bg-accent'}`} />
@@ -1365,65 +1424,47 @@ function ActiveSessionCard({ session, locale, onReviewSession }: { session: Focu
             {overtime ? copy.timerEnded : copy.focusModeOn}
           </p>
           <p className="tnum mt-2 text-center text-[13px] text-hint">
-            {formatTime(session.started_at)} — {formatTime(session.target_end_at)}
+            {formatTime(session.started_at, timeDisplay)} — {formatTime(session.target_end_at, timeDisplay)}
           </p>
           <div className="mt-4 border-t border-hairline pt-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <h2 className="truncate text-[20px] font-semibold leading-tight tracking-normal text-ink">{session.intention}</h2>
-                <p className="mt-1 truncate text-[13px] text-hint">
-                  {session.task?.title ?? session.project ?? copy.session}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={stopAndReview}
-                aria-label={copy.editSession}
-                className="flex h-11 w-16 shrink-0 items-center justify-center rounded-full border border-hairline text-hint"
-              >
-                <Pencil size={18} />
-              </button>
+            <div className="min-w-0 text-center">
+              <h2 className="truncate text-[20px] font-semibold leading-tight tracking-normal text-ink">{session.intention}</h2>
+              <p className="mt-1 truncate text-[13px] text-hint">
+                {session.task?.title ?? session.project_name ?? copy.session}
+              </p>
             </div>
           </div>
-          {overtime ? (
-            <div className="mt-4 space-y-3">
-              <button
-                type="button"
-                onClick={stopAndReview}
-                disabled={finish.isPending}
-                aria-label={copy.stopTimerReview}
-                className="relative inline-flex h-12 w-full min-w-0 select-none items-center justify-center gap-2 whitespace-nowrap rounded-full bg-accent px-5 text-[15.5px] font-semibold text-white shadow-[0_8px_22px_rgba(46,99,231,0.34)] transition-opacity disabled:opacity-55"
-              >
-                {finish.isPending ? <Loader2 size={16} className="animate-spin" /> : <Check size={17} />}
-                {copy.stopTimerReview}
-              </button>
-              <div className="grid grid-cols-2 gap-3">
-                <Button variant="secondary" onClick={() => setSilencedFor(session.id)}>
+          <div className="mt-4 space-y-3">
+            <button
+              type="button"
+              onClick={stopAndReview}
+              disabled={mutationPending}
+              aria-label={overtime ? copy.stopTimerReview : copy.finishSession}
+              className="relative inline-flex h-12 w-full min-w-0 select-none items-center justify-center gap-2 whitespace-nowrap rounded-full bg-accent px-5 text-[15.5px] font-semibold text-white shadow-[0_8px_22px_rgba(46,99,231,0.34)] transition-opacity disabled:opacity-55"
+            >
+              {finish.isPending ? <Loader2 size={16} className="animate-spin" /> : <Check size={17} />}
+              {overtime ? copy.stopTimerReview : copy.stopReview}
+            </button>
+            <div className={`grid gap-3 ${overtime ? 'grid-cols-2' : 'grid-cols-1'}`}>
+              {overtime && (
+                <Button variant="secondary" disabled={mutationPending} onClick={() => silenceFocusAlarm(session.id)}>
                   {copy.keepCounting}
                 </Button>
-                <Button variant="ghost" busy={abandon.isPending} onClick={() => abandon.mutate(session.id)} icon={<X size={16} />} className="min-w-0">
-                  {copy.cancel}
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <div className="mt-4 grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={stopAndReview}
-                disabled={finish.isPending}
-                aria-label={copy.finishSession}
-                className="relative inline-flex h-11 min-w-0 select-none items-center justify-center gap-2 whitespace-nowrap rounded-full bg-accent px-5 text-[14.5px] font-medium text-white shadow-[0_6px_18px_rgba(46,99,231,0.3)] transition-opacity disabled:opacity-55"
-              >
-                {finish.isPending ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
-                {copy.finishSession}
-              </button>
-              <Button variant="ghost" busy={abandon.isPending} onClick={() => abandon.mutate(session.id)} icon={<X size={16} />} className="min-w-0">
+              )}
+              <Button variant="ghost" disabled={mutationPending} onClick={() => setConfirmCancel(true)} icon={<X size={16} />} className="min-w-0">
                 {copy.cancel}
               </Button>
             </div>
-          )}
+          </div>
+          {actionError && <p role="alert" className="mt-3 text-center text-[12.5px] text-danger">{actionError}</p>}
         </div>
+        <Sheet open={confirmCancel} onClose={() => setConfirmCancel(false)} title={copy.cancelTitle}>
+          <p className="text-[13.5px] leading-relaxed text-hint">{copy.cancelBody}</p>
+          <div className="mt-5 grid grid-cols-2 gap-2">
+            <Button variant="ghost" disabled={mutationPending} onClick={() => setConfirmCancel(false)}>{copy.keepCounting}</Button>
+            <Button variant="danger" busy={abandon.isPending} disabled={finish.isPending} onClick={cancelSession}>{copy.cancelAction}</Button>
+          </div>
+        </Sheet>
       </Card>
   );
 }
@@ -1442,12 +1483,22 @@ function EmptyFocusCard({ onStart, onLog, locale }: { onStart: () => void; onLog
           {copy.readyBody}
         </p>
         <div className="mt-5 grid grid-cols-2 gap-2.5">
-          <Button onClick={onStart} icon={<Plus size={16} />}>
+          <button
+            type="button"
+            onClick={onStart}
+            className="relative inline-flex h-11 select-none items-center justify-center gap-2 whitespace-nowrap rounded-full bg-accent px-5 text-[14.5px] font-medium text-[var(--accent-foreground)] shadow-[0_6px_18px_var(--accent-shadow)] transition-opacity"
+          >
+            <Plus size={16} />
             {copy.startSession}
-          </Button>
-          <Button variant="secondary" onClick={onLog} icon={<ClipboardPenLine size={16} />}>
+          </button>
+          <button
+            type="button"
+            onClick={onLog}
+            className="relative inline-flex h-11 select-none items-center justify-center gap-2 whitespace-nowrap rounded-full bg-[var(--secondary-bg)] px-5 text-[14.5px] font-medium text-[var(--secondary-text)] transition-opacity"
+          >
+            <ClipboardPenLine size={16} />
             {copy.logSession}
-          </Button>
+          </button>
         </div>
       </div>
     </Card>
@@ -1455,7 +1506,37 @@ function EmptyFocusCard({ onStart, onLog, locale }: { onStart: () => void; onLog
 }
 
 function sessionDateKey(session: FocusSession): string {
-  return session.started_at.slice(0, 10);
+  return session.local_date;
+}
+
+interface ChartActivity extends FocusDailyActivity {
+  end_date?: string;
+}
+
+export function aggregateActivityForChart(items: FocusDailyActivity[]): ChartActivity[] {
+  if (items.length <= 31) return items;
+  const weeks: ChartActivity[] = [];
+  for (let index = 0; index < items.length; index += 7) {
+    const chunk = items.slice(index, index + 7);
+    const scored = chunk.filter((item) => item.average_focus_score !== null && item.average_focus_score !== undefined);
+    const scoredSessions = scored.reduce((sum, item) => sum + item.session_count, 0);
+    weeks.push({
+      date: chunk[0].date,
+      end_date: chunk[chunk.length - 1]?.date,
+      focus_seconds: chunk.reduce((sum, item) => sum + item.focus_seconds, 0),
+      session_count: chunk.reduce((sum, item) => sum + item.session_count, 0),
+      average_focus_score: scoredSessions > 0
+        ? Math.round((scored.reduce((sum, item) => sum + (item.average_focus_score ?? 0) * item.session_count, 0) / scoredSessions) * 10) / 10
+        : null,
+    });
+  }
+  return weeks;
+}
+
+function niceChartMax(maxSeconds: number): number {
+  if (maxSeconds <= 0) return 60 * 60;
+  if (maxSeconds <= 60 * 60) return Math.ceil(maxSeconds / (15 * 60)) * 15 * 60;
+  return Math.ceil(maxSeconds / (60 * 60)) * 60 * 60;
 }
 
 function ActivityBarChart({
@@ -1472,31 +1553,34 @@ function ActivityBarChart({
   showSummary?: boolean;
 }) {
   const copy = COPY[locale];
-  const max = Math.max(1, ...items.map((item) => item.focus_seconds));
-  const isMonth = items.length > 14;
-  const selected = selectedDate ? items.find((item) => item.date === selectedDate) ?? null : null;
+  const chartItems = aggregateActivityForChart(items);
+  const weekly = items.length > 31;
+  const max = niceChartMax(Math.max(0, ...chartItems.map((item) => item.focus_seconds)));
+  const isDense = chartItems.length > 14;
+  const selected = selectedDate ? chartItems.find((item) => item.date === selectedDate) ?? null : null;
   const tickIndexes = new Set(
-    isMonth
-      ? [0, 6, 13, 20, 26, items.length - 1].filter((index) => index >= 0 && index < items.length)
-      : items.map((_item, index) => index),
+    isDense
+      ? [0, Math.floor((chartItems.length - 1) / 4), Math.floor((chartItems.length - 1) / 2), Math.floor(((chartItems.length - 1) * 3) / 4), chartItems.length - 1]
+          .filter((index) => index >= 0 && index < chartItems.length)
+      : chartItems.map((_item, index) => index),
   );
 
   return (
-    <div className="rounded-2xl border border-hairline p-3">
-      <div className="grid grid-cols-[28px_1fr] gap-2">
+    <div className="min-w-0 overflow-hidden rounded-2xl border border-hairline p-3">
+      <div className="grid min-w-0 grid-cols-[38px_minmax(0,1fr)] gap-2">
         <div className="flex h-28 flex-col justify-between py-1 text-right text-[10px] text-hint">
-          <span>{isMonth ? '8h' : '6h'}</span>
-          <span>{isMonth ? '4h' : '3h'}</span>
-          <span>0h</span>
+          <span>{secondsLabel(max, locale)}</span>
+          <span>{secondsLabel(max / 2, locale)}</span>
+          <span>0</span>
         </div>
-        <div>
+        <div className="min-w-0 overflow-hidden">
           <div
-            className="grid h-28 items-end gap-1.5 border-b border-hairline bg-[linear-gradient(to_bottom,transparent_0,transparent_32%,var(--hairline)_33%,transparent_34%,transparent_66%,var(--hairline)_67%,transparent_68%)]"
-            style={{ gridTemplateColumns: `repeat(${items.length}, minmax(${isMonth ? '5px' : '14px'}, 1fr))` }}
+            className={`grid h-28 min-w-0 items-end border-b border-hairline bg-[linear-gradient(to_bottom,transparent_0,transparent_49%,var(--hairline)_50%,transparent_51%)] ${isDense ? 'gap-[2px]' : 'gap-1.5'}`}
+            style={{ gridTemplateColumns: `repeat(${Math.max(1, chartItems.length)}, minmax(0, 1fr))` }}
           >
-            {items.map((item) => {
+            {chartItems.map((item) => {
               const active = selected?.date === item.date;
-              const percent = item.focus_seconds > 0 ? Math.max(8, Math.round((item.focus_seconds / max) * 100)) : 0;
+              const percent = item.focus_seconds > 0 ? Math.max(5, Math.round((item.focus_seconds / max) * 100)) : 0;
               return (
                 <button
                   key={item.date}
@@ -1504,8 +1588,9 @@ function ActivityBarChart({
                   data-testid="focus-day-bar"
                   onClick={() => onSelectDate?.(item.date)}
                   onPointerUp={(event) => event.currentTarget.blur()}
-                  className="group flex h-full min-w-0 items-end justify-center rounded-t-xl px-0.5 outline-none focus-visible:shadow-[0_0_0_3px_var(--accent-soft)]"
-                  aria-label={`${item.date}: ${secondsLabel(item.focus_seconds, locale)}`}
+                  disabled={weekly || !onSelectDate}
+                  className="group flex h-full min-w-0 items-end justify-center rounded-t-xl px-px outline-none focus-visible:shadow-[0_0_0_3px_var(--accent-soft)] disabled:cursor-default"
+                  aria-label={`${item.date}${item.end_date ? `–${item.end_date}` : ''}: ${secondsLabel(item.focus_seconds, locale)}`}
                   aria-pressed={active}
                 >
                   <span
@@ -1519,12 +1604,15 @@ function ActivityBarChart({
             })}
           </div>
           <div
-            className="mt-1 grid gap-1.5"
-            style={{ gridTemplateColumns: `repeat(${items.length}, minmax(${isMonth ? '5px' : '14px'}, 1fr))` }}
+            className={`mt-1 grid min-w-0 ${isDense ? 'gap-[2px]' : 'gap-1.5'}`}
+            style={{ gridTemplateColumns: `repeat(${Math.max(1, chartItems.length)}, minmax(0, 1fr))` }}
           >
-            {items.map((item, index) => (
-              <span key={item.date} className={`tnum text-center text-[10px] ${tickIndexes.has(index) ? 'text-hint' : 'text-transparent'}`}>
-                {isMonth ? new Date(`${item.date}T00:00:00`).getDate() : weekdayLabel(item.date, locale).slice(0, 2)}
+            {chartItems.map((item, index) => (
+              <span
+                key={item.date}
+                className={`tnum whitespace-nowrap text-[10px] ${index === 0 ? 'justify-self-start' : index === chartItems.length - 1 ? 'justify-self-end' : 'justify-self-center'} ${tickIndexes.has(index) ? 'text-hint' : 'text-transparent'}`}
+              >
+                {weekly ? shortDateLabel(item.date, locale) : isDense ? new Date(`${item.date}T00:00:00`).getDate() : weekdayLabel(item.date, locale).slice(0, 2)}
               </span>
             ))}
           </div>
@@ -1563,7 +1651,6 @@ function HistoryDetailsSheet({
   customRange,
   onCustomRangeChange,
   summary,
-  sessions,
   onSelectSession,
 }: {
   open: boolean;
@@ -1574,34 +1661,52 @@ function HistoryDetailsSheet({
   customRange: { from_date: string; to_date: string };
   onCustomRangeChange: (range: { from_date: string; to_date: string }) => void;
   summary: FocusSummaryResponse | undefined;
-  sessions: FocusSession[];
-  onSelectSession: (session: FocusSession) => void;
+  onSelectSession: (sessionId: string) => void;
 }) {
   const copy = COPY[locale];
+  const timeDisplay = useTimeDisplay();
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+  const [projectId, setProjectId] = useState('');
   const [draftFrom, setDraftFrom] = useState(customRange.from_date);
   const [draftTo, setDraftTo] = useState(customRange.to_date);
+  const [rangeError, setRangeError] = useState<string | null>(null);
   const wasOpenRef = useRef(false);
-  const daily = summary?.daily_activity ?? [];
-  const normalizedQuery = query.trim().toLowerCase();
-  const visibleSessions = sessions.filter((item) => {
-    if (!normalizedQuery) return true;
-    return `${item.intention} ${item.project ?? ''} ${item.task?.title ?? ''}`.toLowerCase().includes(normalizedQuery);
+  const filteredSummaryQuery = useFocusSummary(period, {
+    ...(period === 'custom' ? customRange : {}),
+    q: query,
+    project_id: projectId,
+    enabled: open,
   });
-  const scopedSessions = selectedDate ? visibleSessions.filter((item) => sessionDateKey(item) === selectedDate) : visibleSessions;
-  const groupedSessions = scopedSessions.reduce<Array<{ date: string; items: FocusSession[] }>>((groups, item) => {
+  const selectedDaySummaryQuery = useFocusSummary('custom', {
+    from_date: selectedDate ?? undefined,
+    to_date: selectedDate ?? undefined,
+    q: query,
+    project_id: projectId,
+    enabled: open && selectedDate !== null,
+  });
+  const sessionsQuery = useInfiniteFocusSessions(selectedDate ? 'custom' : period, {
+    ...(selectedDate
+      ? { from_date: selectedDate, to_date: selectedDate }
+      : period === 'custom'
+        ? customRange
+        : {}),
+    q: query,
+    project_id: projectId,
+    enabled: open,
+  });
+  const daily = filteredSummaryQuery.data?.daily_activity ?? [];
+  const sessions = sessionsQuery.data?.pages.flatMap((page) => page.items) ?? [];
+  const groupedSessions = sessions.reduce<Array<{ date: string; items: FocusSession[] }>>((groups, item) => {
     const date = sessionDateKey(item);
     const group = groups.find((entry) => entry.date === date);
     if (group) group.items.push(item);
     else groups.push({ date, items: [item] });
     return groups;
   }, []);
-  const selectedDay = selectedDate ? daily.find((item) => item.date === selectedDate) ?? null : null;
-  const scopedProjectBreakdown = projectBreakdownFromSessions(scopedSessions, copy);
+  const scopedSummary = selectedDate ? selectedDaySummaryQuery.data : filteredSummaryQuery.data;
+  const scopedProjectBreakdown = scopedSummary?.project_breakdown ?? [];
   const maxProjectSeconds = Math.max(1, ...scopedProjectBreakdown.map((item) => item.focus_seconds));
-  const scopedFocusSeconds = scopedSessions.reduce((sum, item) => sum + (item.duration_seconds ?? 0), 0);
-  const scopedScore = selectedDate ? averageFocusScore(scopedSessions) : summary?.average_focus_score ?? null;
   const projectTitle = selectedDate
     ? `${copy.projectsOn} ${shortDateLabel(selectedDate, locale)}`
     : period === 'month'
@@ -1615,19 +1720,38 @@ function HistoryDetailsSheet({
     if (open && !wasOpenRef.current) {
       setSelectedDate(null);
       setQuery('');
+      setProjectId('');
+      setRangeError(null);
       setDraftFrom(customRange.from_date);
       setDraftTo(customRange.to_date);
     }
     wasOpenRef.current = open;
   }, [customRange.from_date, customRange.to_date, open]);
 
+  useEffect(() => {
+    if (!open) return;
+    setSelectedDate(null);
+    setRangeError(null);
+    setDraftFrom(customRange.from_date);
+    setDraftTo(customRange.to_date);
+  }, [customRange.from_date, customRange.to_date, open, timeDisplay.timezone]);
+
   const setPeriod = (next: 'week' | 'month' | 'custom') => {
     onPeriodChange(next);
     setSelectedDate(null);
+    setRangeError(null);
     if (next === 'custom') onCustomRangeChange(customRange);
   };
 
   const applyRange = () => {
+    const from = Date.parse(`${draftFrom}T12:00:00Z`);
+    const to = Date.parse(`${draftTo}T12:00:00Z`);
+    const spanDays = Math.round((to - from) / 86_400_000) + 1;
+    if (!Number.isFinite(from) || !Number.isFinite(to) || spanDays < 1 || spanDays > 180) {
+      setRangeError(copy.invalidCustomRange);
+      return;
+    }
+    setRangeError(null);
     onPeriodChange('custom');
     onCustomRangeChange({ from_date: draftFrom, to_date: draftTo });
     setSelectedDate(null);
@@ -1655,7 +1779,10 @@ function HistoryDetailsSheet({
                   aria-label={copy.from}
                   type="date"
                   value={draftFrom}
-                  onChange={(event) => setDraftFrom(event.target.value)}
+                  onChange={(event) => {
+                    setDraftFrom(event.target.value);
+                    setRangeError(null);
+                  }}
                   className="h-10 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3 text-[14px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
                 />
               </label>
@@ -1665,7 +1792,10 @@ function HistoryDetailsSheet({
                   aria-label={copy.to}
                   type="date"
                   value={draftTo}
-                  onChange={(event) => setDraftTo(event.target.value)}
+                  onChange={(event) => {
+                    setDraftTo(event.target.value);
+                    setRangeError(null);
+                  }}
                   className="h-10 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3 text-[14px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
                 />
               </label>
@@ -1677,6 +1807,7 @@ function HistoryDetailsSheet({
             >
               {copy.applyRange}
             </button>
+            {rangeError && <p role="alert" className="mt-2 text-[12.5px] text-danger">{rangeError}</p>}
           </div>
         )}
         <label className="block">
@@ -1690,6 +1821,23 @@ function HistoryDetailsSheet({
               className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] pl-9 pr-3 text-[15px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
             />
           </div>
+        </label>
+        <label className="block">
+          <FieldLabel>{copy.project}</FieldLabel>
+          <select
+            aria-label={copy.project}
+            value={projectId}
+            onChange={(event) => {
+              setProjectId(event.target.value);
+              setSelectedDate(null);
+            }}
+            className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3 text-[14px] text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+          >
+            <option value="">{copy.allProjects}</option>
+            {(summary?.project_breakdown ?? []).filter((project) => project.project_id !== null).map((project) => (
+              <option key={project.project_id} value={project.project_id ?? ''}>{project.project_name ?? copy.noProject}</option>
+            ))}
+          </select>
         </label>
         <section>
           <h3 className="mb-2 text-[13px] font-semibold text-ink">{sessionsTitle}</h3>
@@ -1705,13 +1853,13 @@ function HistoryDetailsSheet({
                       key={item.id}
                       type="button"
                       data-testid="focus-history-session-row"
-                      onClick={() => onSelectSession(item)}
+                      onClick={() => onSelectSession(item.id)}
                       className="block w-full border-t border-hairline px-4 py-3 text-left first:border-t-0"
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <p className="truncate text-[14px] font-medium text-ink">{item.intention}</p>
-                          <p className="mt-0.5 truncate text-[12.5px] text-hint">{sessionMetaLabel(item, copy)}</p>
+                          <p className="mt-0.5 truncate text-[12.5px] text-hint">{sessionMetaLabel(item, copy, timeDisplay)}</p>
                         </div>
                         <span className="tnum shrink-0 text-[13px] font-medium text-ink">{secondsLabel(item.duration_seconds ?? 0, locale)}</span>
                       </div>
@@ -1725,9 +1873,20 @@ function HistoryDetailsSheet({
                 </div>
               ))
             ) : (
-              <p className="px-4 py-4 text-[13px] text-hint">{copy.noSessionsForDay}</p>
+              <p className="px-4 py-4 text-[13px] text-hint">{sessionsQuery.isPending ? copy.loadingMore : copy.noSessionsForDay}</p>
+            )}
+            {sessionsQuery.hasNextPage && (
+              <button
+                type="button"
+                onClick={() => void sessionsQuery.fetchNextPage()}
+                disabled={sessionsQuery.isFetchingNextPage}
+                className="h-11 w-full border-t border-hairline text-[13px] font-medium text-accent-text disabled:opacity-60"
+              >
+                {sessionsQuery.isFetchingNextPage ? copy.loadingMore : copy.loadMore}
+              </button>
             )}
           </div>
+          {sessionsQuery.isError && <p role="alert" className="mt-2 text-[12.5px] text-danger">{copy.saveError}</p>}
         </section>
 
         <section>
@@ -1750,15 +1909,15 @@ function HistoryDetailsSheet({
               </div>
               <div>
                 <p className="text-hint">{copy.total}</p>
-                <p className="tnum mt-0.5 font-medium text-ink">{secondsLabel(selectedDay?.focus_seconds ?? scopedFocusSeconds, locale)}</p>
+                <p className="tnum mt-0.5 font-medium text-ink">{secondsLabel(scopedSummary?.total_focus_seconds ?? 0, locale)}</p>
               </div>
               <div>
                 <p className="text-hint">{copy.sessions}</p>
-                <p className="tnum mt-0.5 font-medium text-ink">{selectedDay?.session_count ?? scopedSessions.length} {copy.countSessions}</p>
+                <p className="tnum mt-0.5 font-medium text-ink">{scopedSummary?.total_sessions ?? 0} {copy.countSessions}</p>
               </div>
               <div>
                 <p className="text-hint">{copy.score}</p>
-                <p className="tnum mt-0.5 font-medium text-ink">{selectedDay?.average_focus_score ?? scopedScore ?? '—'}</p>
+                <p className="tnum mt-0.5 font-medium text-ink">{scopedSummary?.average_focus_score ?? '—'}</p>
               </div>
             </div>
           )}
@@ -1768,9 +1927,9 @@ function HistoryDetailsSheet({
           <h3 className="mb-2 text-[13px] font-semibold text-ink">{projectTitle}</h3>
           <div className="space-y-2.5">
             {scopedProjectBreakdown.map((item) => (
-              <div key={item.project}>
+              <div key={item.project_id ?? item.project_name ?? copy.noProject}>
                 <div className="mb-1 flex items-center justify-between gap-3 text-[12.5px]">
-                  <span className="truncate font-medium text-ink">{item.project}</span>
+                  <span className="truncate font-medium text-ink">{item.project_name ?? copy.noProject}</span>
                   <span className="tnum shrink-0 text-hint">{secondsLabel(item.focus_seconds, locale)}</span>
                 </div>
                 <div className="h-2 overflow-hidden rounded-full bg-[var(--hairline)]">
@@ -1803,24 +1962,24 @@ function KpiDelta({ value }: { value: number | null }) {
   );
 }
 
-function AnalyticsKpis({ summary, locale }: { summary: FocusSummaryResponse | undefined; locale: AppLocale }) {
+function AnalyticsKpis({ summary, locale, period }: { summary: FocusSummaryResponse | undefined; locale: AppLocale; period: MainPeriod }) {
   const copy = COPY[locale];
   return (
-    <div className="grid grid-cols-3 gap-2">
-      <div className="rounded-2xl border border-hairline bg-[var(--surface)] px-3 py-3">
+    <div className="grid min-w-0 grid-cols-2 gap-2 min-[390px]:grid-cols-3">
+      <div className="min-w-0 rounded-2xl border border-hairline bg-[var(--surface)] px-3 py-3">
         <p className="text-[11px] font-medium text-hint">{copy.avgDay}</p>
-        <p className="tnum mt-1 text-[18px] font-semibold text-ink">{secondsLabel(summary?.average_daily_focus_seconds ?? 0, locale)}</p>
+        <p className="tnum mt-1 truncate text-[clamp(15px,4.5vw,18px)] font-semibold text-ink">{secondsLabel(summary?.average_daily_focus_seconds ?? 0, locale)}</p>
         <KpiDelta value={summary?.average_daily_focus_delta_percent ?? null} />
       </div>
-      <div className="rounded-2xl border border-hairline bg-[var(--surface)] px-3 py-3">
+      <div className="min-w-0 rounded-2xl border border-hairline bg-[var(--surface)] px-3 py-3">
         <p className="text-[11px] font-medium text-hint">{copy.total}</p>
-        <p className="tnum mt-1 text-[18px] font-semibold text-ink">{secondsLabel(summary?.total_focus_seconds ?? 0, locale)}</p>
+        <p className="tnum mt-1 truncate text-[clamp(15px,4.5vw,18px)] font-semibold text-ink">{secondsLabel(summary?.total_focus_seconds ?? 0, locale)}</p>
         <KpiDelta value={summary?.total_focus_delta_percent ?? null} />
       </div>
-      <div className="rounded-2xl border border-hairline bg-[var(--surface)] px-3 py-3">
+      <div className="col-span-2 min-w-0 rounded-2xl border border-hairline bg-[var(--surface)] px-3 py-3 min-[390px]:col-span-1">
         <p className="text-[11px] font-medium text-hint">{copy.mostFocused}</p>
         <p className="mt-1 truncate text-[18px] font-semibold text-ink">{daypartLabel(summary?.most_focused_daypart ?? null, copy)}</p>
-        <p className="truncate text-[11px] text-hint">{copy.vsAverage}</p>
+        <p className="truncate text-[11px] text-hint">{period === 'month' ? copy.vsMonthAverage : copy.vsWeekAverage}</p>
       </div>
     </div>
   );
@@ -1842,6 +2001,8 @@ function SessionDetailsSheet({
   locale: AppLocale;
 }) {
   const copy = COPY[locale];
+  const timeDisplay = useTimeDisplay();
+  const { show } = useToast();
   const [editOpen, setEditOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const deleteFocus = useDeleteFocusSession();
@@ -1883,12 +2044,12 @@ function SessionDetailsSheet({
           <div className="rounded-2xl border border-hairline bg-[var(--surface)] p-4">
             <p className="text-[19px] font-semibold text-ink">{session.intention}</p>
             <p className="mt-1 text-[13px] text-hint">
-              {session.project ?? copy.noProject}{session.task ? ` · ${session.task.title}` : ''}
+              {session.project_name ?? copy.noProject}{session.task ? ` · ${session.task.title}` : ''}
             </p>
             <div className="mt-4 grid grid-cols-2 gap-2 text-[13px]">
               <div className="rounded-xl bg-[var(--surface-strong)] px-3 py-2">
                 <p className="text-hint">{copy.startEndPreview}</p>
-                <p className="tnum mt-0.5 text-ink">{sessionTimeRangeLabel(session)}</p>
+                <p className="tnum mt-0.5 text-ink">{sessionTimeRangeLabel(session, timeDisplay)}</p>
               </div>
               <div className="rounded-xl bg-[var(--surface-strong)] px-3 py-2">
                 <p className="text-hint">{copy.duration}</p>
@@ -1917,75 +2078,76 @@ function SessionDetailsSheet({
         </div>
       </Sheet>
       <EditSessionSheet session={session} open={editOpen} onClose={() => setEditOpen(false)} locale={locale} />
-      {confirmDelete && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/35 px-5" role="dialog" aria-modal="true" aria-labelledby="focus-delete-title">
-          <div className="w-full max-w-[360px] rounded-3xl border border-hairline bg-[var(--surface-strong)] p-5 shadow-card">
-            <h3 id="focus-delete-title" className="text-[19px] font-semibold text-ink">{copy.deleteTitle}</h3>
-            <p className="mt-2 text-[13.5px] leading-relaxed text-hint">{copy.deleteBody}</p>
-            <div className="mt-4 rounded-2xl border border-hairline bg-[var(--surface)] px-3 py-2">
-              <p className="truncate text-[13.5px] font-medium text-ink">{session.intention}</p>
-              <p className="tnum mt-0.5 text-[12px] text-hint">{shortDateLabel(sessionDateKey(session), locale)} · {sessionTimeRangeLabel(session)} · {secondsLabel(session.duration_seconds ?? 0, locale)}</p>
-            </div>
-            <div className="mt-5 grid grid-cols-2 gap-2">
-              <Button variant="ghost" onClick={() => setConfirmDelete(false)}>{copy.cancel}</Button>
-              <Button
-                variant="danger"
-                busy={deleteFocus.isPending}
-                onClick={() => {
-                  deleteFocus.mutate(session.id, {
-                    onSuccess: closeAfterDelete,
-                  });
-                }}
-              >
-                {copy.deleteAction}
-              </Button>
-            </div>
-          </div>
+      <Sheet open={confirmDelete} onClose={() => setConfirmDelete(false)} title={copy.deleteTitle}>
+        <p className="text-[13.5px] leading-relaxed text-hint">{copy.deleteBody}</p>
+        <div className="mt-4 rounded-2xl border border-hairline bg-[var(--surface)] px-3 py-2">
+          <p className="truncate text-[13.5px] font-medium text-ink">{session.intention}</p>
+          <p className="tnum mt-0.5 text-[12px] text-hint">{shortDateLabel(sessionDateKey(session), locale)} · {sessionTimeRangeLabel(session, timeDisplay)} · {secondsLabel(session.duration_seconds ?? 0, locale)}</p>
         </div>
-      )}
+        <div className="mt-5 grid grid-cols-2 gap-2">
+          <Button variant="ghost" onClick={() => setConfirmDelete(false)}>{copy.cancel}</Button>
+          <Button
+            variant="danger"
+            busy={deleteFocus.isPending}
+            onClick={() => {
+              deleteFocus.mutate(session.id, {
+                onSuccess: closeAfterDelete,
+                onError: () => show(copy.saveError, 'error'),
+              });
+            }}
+          >
+            {copy.deleteAction}
+          </Button>
+        </div>
+      </Sheet>
     </>
   );
 }
 
 export default function FocusPage() {
   const locale = useAppLocale();
+  const timeDisplay = useTimeDisplay();
   const copy = COPY[locale];
   const [startOpen, setStartOpen] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [reviewSession, setReviewSession] = useState<FocusSession | null>(null);
-  const [detailsSession, setDetailsSession] = useState<FocusSession | null>(null);
+  const [detailsSessionId, setDetailsSessionId] = useState<string | null>(null);
   const [detailsFromHistory, setDetailsFromHistory] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [mainPeriod, setMainPeriod] = useState<MainPeriod>('week');
   const [historyPeriod, setHistoryPeriod] = useState<FocusPeriod>('week');
-  const [historyCustomRange, setHistoryCustomRange] = useState(() => rangeDefaults());
+  const [historyCustomRange, setHistoryCustomRange] = useState(() => rangeDefaults(timeDisplay.timezone));
   const state = useFocusState();
   const summary = useFocusSummary(mainPeriod);
+  const selectedDateSummary = useFocusSummary('custom', {
+    from_date: selectedDate ?? undefined,
+    to_date: selectedDate ?? undefined,
+    enabled: selectedDate !== null,
+  });
   const sessionsQuery = useFocusSessions(mainPeriod);
   const historySummary = useFocusSummary(historyPeriod, historyPeriod === 'custom' ? historyCustomRange : undefined);
-  const historySessionsQuery = useFocusSessions(historyPeriod, historyPeriod === 'custom' ? historyCustomRange : undefined);
+  const detailsQuery = useFocusSession(detailsSessionId);
   const active = state.data?.active_session ?? null;
   const today = state.data?.today;
   const sessions = sessionsQuery.data?.items ?? state.data?.recent_sessions ?? [];
-  const historySessions = historySessionsQuery.data?.items ?? [];
   const daily = summary.data?.daily_activity ?? [];
-  const summaryProjects = useMemo(() => summary.data?.project_breakdown.map((item) => item.project) ?? [], [summary.data]);
   const historyPreview = sessions.slice(0, 5);
   const scopedSessionsLabel = mainPeriod === 'month' ? copy.sessionsThisMonth : copy.sessionsThisWeek;
-  const mainScopedSessions = selectedDate ? sessions.filter((item) => sessionDateKey(item) === selectedDate) : sessions;
-  const mainProjectBreakdown = selectedDate ? projectBreakdownFromSessions(mainScopedSessions, copy) : (summary.data?.project_breakdown ?? []);
+  const mainProjectBreakdown = selectedDate
+    ? (selectedDateSummary.data?.project_breakdown ?? [])
+    : (summary.data?.project_breakdown ?? []);
   const mainMaxProjectSeconds = Math.max(1, ...(mainProjectBreakdown.map((item) => item.focus_seconds)));
   const openMainDetails = (session: FocusSession) => {
     setDetailsFromHistory(false);
-    setDetailsSession(session);
+    setDetailsSessionId(session.id);
   };
-  const openHistoryDetails = (session: FocusSession) => {
+  const openHistoryDetails = (sessionId: string) => {
     setDetailsFromHistory(true);
-    setDetailsSession(session);
+    setDetailsSessionId(sessionId);
   };
   const closeDetails = () => {
-    setDetailsSession(null);
+    setDetailsSessionId(null);
     setDetailsFromHistory(false);
   };
   const toggleMainDate = (date: string) => {
@@ -1993,15 +2155,43 @@ export default function FocusPage() {
   };
   const openHistory = () => {
     setHistoryPeriod(mainPeriod);
-    setHistoryCustomRange(rangeDefaults());
+    setHistoryCustomRange(rangeDefaults(timeDisplay.timezone));
     setHistoryOpen(true);
   };
 
+  useEffect(() => {
+    setSelectedDate(null);
+  }, [mainPeriod]);
+
+  useEffect(() => {
+    setSelectedDate(null);
+    setHistoryCustomRange(rangeDefaults(timeDisplay.timezone));
+  }, [timeDisplay.timezone]);
+
+  if (state.isPending) {
+    return (
+      <div className="pb-32">
+        <SkeletonList count={4} lines={2} />
+      </div>
+    );
+  }
+
+  if (!state.data) {
+    return (
+      <div className="pb-32">
+        <Card className="p-5" strong>
+          <div role="alert">
+            <p className="text-[15px] font-semibold text-ink">{copy.stateError}</p>
+            <Button className="mt-4" onClick={() => void state.refetch()}>{copy.retry}</Button>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <Stagger className="pb-32">
-      {state.isPending ? (
-        <SkeletonList count={4} lines={2} />
-      ) : active ? (
+      {active ? (
         <Rise>
           <ActiveSessionCard session={active} locale={locale} onReviewSession={setReviewSession} />
         </Rise>
@@ -2075,19 +2265,19 @@ export default function FocusPage() {
             </div>
           </div>
           <div className="mt-4">
-            <AnalyticsKpis summary={summary.data} locale={locale} />
+            <AnalyticsKpis summary={summary.data} locale={locale} period={mainPeriod} />
           </div>
           <div className="mt-4">
             <ActivityBarChart items={daily} locale={locale} selectedDate={selectedDate} onSelectDate={toggleMainDate} />
           </div>
           {mainProjectBreakdown.length ? (
             <div className="mt-4 divide-y divide-hairline">
-              {mainProjectBreakdown.map((item) => (
-                <div key={item.project} className="py-2.5">
+              {mainProjectBreakdown.slice(0, 5).map((item) => (
+                <div key={item.project_id ?? item.project_name ?? copy.noProject} className="py-2.5">
                   <div className="mb-1 flex items-center justify-between gap-3">
                     <span className="flex min-w-0 items-center gap-2 text-[13.5px] font-medium text-ink">
                       <CircleDot size={14} className="shrink-0 text-accent-text" />
-                      <span className="truncate">{item.project}</span>
+                      <span className="truncate">{item.project_name ?? copy.noProject}</span>
                     </span>
                     <span className="tnum shrink-0 text-[13px] text-hint">{secondsLabel(item.focus_seconds, locale)}</span>
                   </div>
@@ -2101,6 +2291,12 @@ export default function FocusPage() {
                   </div>
                 </div>
               ))}
+              {mainProjectBreakdown.length > 5 && (
+                <button type="button" onClick={openHistory} className="flex w-full items-center justify-between py-3 text-[13px] font-medium text-accent-text">
+                  <span>{copy.viewAllHistory}</span>
+                  <ChevronRight size={17} />
+                </button>
+              )}
             </div>
           ) : (
             <p className="mt-4 text-[13px] text-hint">{copy.projectsEmpty}</p>
@@ -2135,7 +2331,7 @@ export default function FocusPage() {
               >
                 <div className="min-w-0">
                   <p className="truncate text-[14px] font-medium text-ink">{item.intention}</p>
-                  <p className="truncate text-[12.5px] text-hint">{shortDateLabel(sessionDateKey(item), locale)} · {sessionMetaLabel(item, copy)}</p>
+                  <p className="truncate text-[12.5px] text-hint">{shortDateLabel(sessionDateKey(item), locale)} · {sessionMetaLabel(item, copy, timeDisplay)}</p>
                 </div>
                 <span className="tnum shrink-0 text-[13px] font-medium text-ink">{secondsLabel(item.duration_seconds ?? 0, locale)}</span>
               </button>
@@ -2159,15 +2355,15 @@ export default function FocusPage() {
         </>
       )}
 
-      <StartSheet open={startOpen} onClose={() => setStartOpen(false)} locale={locale} summaryProjects={summaryProjects} />
-      <ManualLogSheet open={logOpen} onClose={() => setLogOpen(false)} locale={locale} summaryProjects={summaryProjects} />
+      <StartSheet open={startOpen} onClose={() => setStartOpen(false)} locale={locale} />
+      <ManualLogSheet open={logOpen} onClose={() => setLogOpen(false)} locale={locale} />
       <ReflectionSheet session={reviewSession} open={reviewSession !== null} onClose={() => setReviewSession(null)} locale={locale} />
       <SessionDetailsSheet
-        open={detailsSession !== null}
+        open={detailsSessionId !== null}
         onClose={closeDetails}
         onBack={detailsFromHistory ? closeDetails : undefined}
         onDeleted={closeDetails}
-        session={detailsSession}
+        session={detailsQuery.data?.session ?? null}
         locale={locale}
       />
       <HistoryDetailsSheet
@@ -2179,7 +2375,6 @@ export default function FocusPage() {
         customRange={historyCustomRange}
         onCustomRangeChange={setHistoryCustomRange}
         summary={historySummary.data}
-        sessions={historySessions}
         onSelectSession={openHistoryDetails}
       />
     </Stagger>

@@ -61,6 +61,7 @@ function AppRoutes() {
 
   return (
     <AppShell>
+      <TimezoneMismatchPrompt />
       <Routes>
         <Route path="/" element={<TodayPage />} />
         <Route path="/tasks" element={<TasksPage />} />
@@ -76,7 +77,6 @@ function AppRoutes() {
         <Route path="/more" element={<MorePage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
-      <TimezoneMismatchPrompt />
     </AppShell>
   );
 }
