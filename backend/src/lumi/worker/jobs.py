@@ -1189,6 +1189,8 @@ async def _load_open_tasks_for_cleanup(session, user: User) -> list[Task]:
 
 
 def _needs_cleanup(task: Task) -> bool:
+    if task.status != TaskStatus.INBOX:
+        return False
     skips = _review_skips(task)
     if task.estimated_minutes is None and task.estimate_source != "skipped":
         return True

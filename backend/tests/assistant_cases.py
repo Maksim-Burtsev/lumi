@@ -47,7 +47,7 @@ ASSISTANT_CORE_CASES: Final[tuple[AssistantCase, ...]] = (
         message="Add a task in the Home project to schedule the annual HVAC service.",
         plans=(tool_plan("create_task", {"title": "schedule the annual HVAC service", "project": "Home"}),),
         expected_tools=(ToolExpectation("create_task"),),
-        expected_tasks=(TaskExpectation("HVAC service", project="Home", status="active"),),
+        expected_tasks=(TaskExpectation("HVAC service", project="Home", status="inbox"),),
         reply=(ReplyExpectation(contains="HVAC service"),),
     ),
     AssistantCase(
@@ -57,7 +57,7 @@ ASSISTANT_CORE_CASES: Final[tuple[AssistantCase, ...]] = (
         message="Move the Q3 budget review task to the Finance project.",
         plans=(tool_plan("update_task", {"task_query": "Q3 budget review", "updates": {"project": "Finance"}}),),
         expected_tools=(ToolExpectation("update_task"),),
-        expected_tasks=(TaskExpectation("Q3 budget review", project="Finance", status="active"),),
+        expected_tasks=(TaskExpectation("Q3 budget review", project="Finance", status="inbox"),),
     ),
     AssistantCase(
         id="task_ambiguous_confirmation_en",
@@ -184,7 +184,7 @@ ASSISTANT_CORE_CASES: Final[tuple[AssistantCase, ...]] = (
         message="Добавь задачу в проект Дом: заказать фильтры для воды",
         plans=(tool_plan("create_task", {"title": "заказать фильтры для воды", "project": "Дом"}),),
         expected_tools=(ToolExpectation("create_task"),),
-        expected_tasks=(TaskExpectation("фильтры для воды", project="Дом", status="active"),),
+        expected_tasks=(TaskExpectation("фильтры для воды", project="Дом", status="inbox"),),
         reply=(ReplyExpectation(contains="фильтры для воды"),),
     ),
 )

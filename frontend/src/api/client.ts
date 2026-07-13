@@ -44,7 +44,7 @@ import type {
   SettingsResponse,
   SnoozeInput,
   StartFocusSessionInput,
-  TaskFilter,
+  TaskListQuery,
   TaskResponse,
   TasksResponse,
   TimezonesResponse,
@@ -184,8 +184,10 @@ export class LumiApiClient {
   }
 
   // -------------------------------------------------- Tasks
-  listTasks(filter: TaskFilter = 'all', limit = 100, project_id?: string): Promise<TasksResponse> {
-    return request('GET', '/api/tasks', { query: { filter, limit, project_id } });
+  listTasks(query: TaskListQuery = {}): Promise<TasksResponse> {
+    return request('GET', '/api/tasks', {
+      query: query as Record<string, string | number | undefined>,
+    });
   }
 
   createTask(input: CreateTaskInput): Promise<TaskResponse> {

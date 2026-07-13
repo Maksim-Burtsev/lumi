@@ -24,6 +24,7 @@ const TASKS: TasksResponse = {
       project_id: LUMI_PROJECT_ID,
       tags: [],
       due_at: null,
+      planned_for: null,
       target_at: null,
       reminder_at: null,
       snoozed_until: null,
@@ -33,6 +34,7 @@ const TASKS: TasksResponse = {
       source: 'manual',
       created_at: '2026-06-24T10:00:00Z',
       completed_at: null,
+      bucket: 'later',
     },
     {
       id: '33333333-3333-4333-8333-333333333333',
@@ -44,6 +46,7 @@ const TASKS: TasksResponse = {
       project_id: CONTENT_PROJECT_ID,
       tags: [],
       due_at: null,
+      planned_for: null,
       target_at: null,
       reminder_at: null,
       snoozed_until: null,
@@ -53,6 +56,7 @@ const TASKS: TasksResponse = {
       source: 'manual',
       created_at: '2026-06-24T11:00:00Z',
       completed_at: null,
+      bucket: 'inbox',
     },
     {
       id: '44444444-4444-4444-8444-444444444444',
@@ -64,6 +68,7 @@ const TASKS: TasksResponse = {
       project_id: LUMI_PROJECT_ID,
       tags: [],
       due_at: null,
+      planned_for: null,
       target_at: null,
       reminder_at: null,
       snoozed_until: null,
@@ -73,8 +78,11 @@ const TASKS: TasksResponse = {
       source: 'manual',
       created_at: '2026-06-24T09:00:00Z',
       completed_at: '2026-06-24T09:30:00Z',
+      bucket: 'done',
     },
   ],
+  has_more: false,
+  next_offset: null,
 };
 
 const PROJECTS: ProjectsResponse = {

@@ -1,10 +1,11 @@
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
 from lumi.db.models import TaskEvent, TaskStatus
 from lumi.db.session import session_scope
-from lumi.services.tasks import TaskService
+from lumi.services import tasks as tasks_module
+from lumi.services.tasks import COMPLETED_FROM_STATUS_KEY, TaskService, task_bucket
 from lumi.services.users import UserService
 from lumi.utils.time import utc_now
 
@@ -20,7 +21,7 @@ async def test_create_complete_snooze(user):
             due_at=utc_now() + timedelta(days=1),
             reminder_at=utc_now() + timedelta(days=1),
         )
-        assert task.status == TaskStatus.ACTIVE
+        assert task.status == TaskStatus.INBOX
         task_id = task.id
 
     async with session_scope() as session:
@@ -102,6 +103,176 @@ async def test_list_filters(user):
         assert "Через неделю" in [t.title for t in upcoming]
         done_list = await service.list_tasks(u, filter_="done")
         assert [t.title for t in done_list] == ["Готово"]
+
+
+async def test_task_bucket_partition_uses_target_not_due_and_user_week(monkeypatch, user):
+    now = datetime(2026, 3, 29, 10, 0, tzinfo=UTC)  # DST Sunday in Europe/Berlin.
+    monkeypatch.setattr(tasks_module, "utc_now", lambda: now)
+    async with session_scope() as session:
+        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        u.timezone = "Europe/Berlin"
+        service = TaskService(session)
+        hard_deadline_only = await service.create_task(
+            u,
+            title="Hard deadline only",
+            due_at=datetime(2026, 3, 29, 20, 0, tzinfo=UTC),
+        )
+        await service.create_task(
+            u,
+            title="Sunday plan",
+            target_at=datetime(2026, 3, 29, 20, 0, tzinfo=UTC),
+        )
+        await service.create_task(
+            u,
+            title="Monday plan",
+            target_at=datetime(2026, 3, 29, 22, 0, tzinfo=UTC),
+        )
+        unplanned = await service.create_task(u, title="Intentional later")
+        await service.update_task(u, unplanned, {"status": "active"})
+        done = await service.create_task(u, title="Done")
+        await service.complete_task(u, done)
+
+        assert task_bucket(hard_deadline_only, timezone=u.timezone, now=now) == "inbox"
+        assert [task.title for task in await service.list_tasks(u, filter_="inbox")] == [
+            "Hard deadline only"
+        ]
+        assert [task.title for task in await service.list_tasks(u, filter_="this_week")] == [
+            "Sunday plan"
+        ]
+        assert {task.title for task in await service.list_tasks(u, filter_="later")} == {
+            "Monday plan",
+            "Intentional later",
+        }
+        assert [task.title for task in await service.list_tasks(u, filter_="done")] == ["Done"]
+
+
+async def test_complete_and_status_undo_restore_original_bucket(user):
+    async with session_scope() as session:
+        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        service = TaskService(session)
+        inbox = await service.create_task(u, title="Inbox task")
+        planned = await service.create_task(
+            u,
+            title="Planned task",
+            target_at=utc_now() + timedelta(days=1),
+        )
+
+        await service.complete_task(u, inbox)
+        first_completed_at = inbox.completed_at
+        await service.complete_task(u, inbox)
+        assert inbox.completed_at == first_completed_at
+        assert inbox.metadata_[COMPLETED_FROM_STATUS_KEY] == "inbox"
+
+        await service.update_task(u, inbox, {"status": "active"})
+        assert inbox.status == TaskStatus.INBOX
+        assert inbox.completed_at is None
+        assert COMPLETED_FROM_STATUS_KEY not in inbox.metadata_
+
+        planned_for = planned.target_at
+        await service.complete_task(u, planned)
+        await service.update_task(u, planned, {"status": "active"})
+        assert planned.status == TaskStatus.ACTIVE
+        assert planned.target_at == planned_for
+        assert planned.completed_at is None
+
+        events = await session.execute(
+            select(TaskEvent).where(TaskEvent.task_id == inbox.id).order_by(TaskEvent.created_at)
+        )
+        assert [event.event_type for event in events.scalars()] == [
+            "created",
+            "completed",
+            "updated",
+        ]
+
+
+async def test_legacy_done_and_cancelled_completion_remain_compatible(user):
+    async with session_scope() as session:
+        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        service = TaskService(session)
+        legacy = await service.create_task(u, title="Legacy done")
+        legacy.status = TaskStatus.DONE
+        legacy.completed_at = utc_now()
+        await service.update_task(u, legacy, {"status": "active"})
+        assert legacy.status == TaskStatus.ACTIVE
+        assert legacy.completed_at is None
+
+        cancelled = await service.create_task(u, title="Cancelled")
+        await service.update_task(u, cancelled, {"status": "cancelled"})
+        await service.complete_task(u, cancelled)
+        assert cancelled.status == TaskStatus.DONE
+        await service.update_task(u, cancelled, {"status": "active"})
+        assert cancelled.status == TaskStatus.ACTIVE
+
+
+async def test_search_pagination_is_stable_literal_and_owner_scoped(user):
+    async with session_scope() as session:
+        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        other = await UserService(session).ensure_user(777001)
+        service = TaskService(session)
+        own_tasks = [
+            await service.create_task(u, title="100% ready"),
+            await service.create_task(u, title="Under_score"),
+            await service.create_task(u, title="Alpha", description="Need invoice"),
+            await service.create_task(u, title="Beta", project="Search project"),
+            await service.create_task(u, title="Gamma", tags=["ops-tag"]),
+        ]
+        own_tasks.append(await service.create_task(u, title="100X ready"))
+        await service.create_task(other, title="Private owner task")
+
+        literal = await service.list_tasks(u, q="%")
+        assert [task.title for task in literal] == ["100% ready"]
+        underscore = await service.list_tasks(u, q="_")
+        assert [task.title for task in underscore] == ["Under_score"]
+        assert [task.title for task in await service.list_tasks(u, q="invoice")] == ["Alpha"]
+        assert [task.title for task in await service.list_tasks(u, q="search project")] == [
+            "Beta"
+        ]
+        assert [task.title for task in await service.list_tasks(u, q="ops-tag")] == ["Gamma"]
+
+        first, has_more, next_offset = await service.list_task_page(u, filter_="inbox", limit=2)
+        second, second_has_more, second_offset = await service.list_task_page(
+            u,
+            filter_="inbox",
+            limit=2,
+            offset=next_offset or 0,
+        )
+        third, third_has_more, third_offset = await service.list_task_page(
+            u,
+            filter_="inbox",
+            limit=2,
+            offset=second_offset or 0,
+        )
+        assert has_more is True
+        assert next_offset == 2
+        assert second_has_more is True
+        assert second_offset == 4
+        assert third_has_more is False
+        assert third_offset is None
+        page_ids = [task.id for task in [*first, *second, *third]]
+        assert len(page_ids) == len(set(page_ids)) == len(own_tasks)
+        assert set(page_ids) == {task.id for task in own_tasks}
+        assert all(task.user_id == u.id for task in [*first, *second, *third])
+
+
+async def test_naive_planned_for_uses_user_timezone_and_activates_inbox(user):
+    async with session_scope() as session:
+        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        u.timezone = "Asia/Yerevan"
+        service = TaskService(session)
+        task = await service.create_task(u, title="Local plan")
+
+        await service.update_task(
+            u,
+            task,
+            {"target_at": datetime(2026, 7, 13, 9, 0)},
+        )
+
+        assert task.status == TaskStatus.ACTIVE
+        assert task.target_at == datetime(2026, 7, 13, 5, 0, tzinfo=UTC)
+
+        await service.update_task(u, task, {"status": "inbox"})
+        assert task.status == TaskStatus.INBOX
+        assert task.target_at is None
 
 
 async def test_rename_active_task_by_title_returns_not_found_for_done_task(user):

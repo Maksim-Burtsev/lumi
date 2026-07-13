@@ -51,6 +51,7 @@ function makeTask(overrides: Partial<Task>): Task {
     project_id: null,
     tags: [],
     due_at: null,
+    planned_for: overrides.target_at ?? null,
     target_at: null,
     reminder_at: null,
     snoozed_until: null,
@@ -60,8 +61,13 @@ function makeTask(overrides: Partial<Task>): Task {
     source: 'manual',
     created_at: '2026-06-21T08:00:00Z',
     completed_at: null,
+    bucket: overrides.status === 'done' ? 'done' : overrides.status === 'inbox' ? 'inbox' : 'later',
     ...overrides,
   };
+}
+
+function makeTasksResponse(items: Task[] = []): TasksResponse {
+  return { items, has_more: false, next_offset: null };
 }
 
 function makeProject(overrides: Partial<Project>): Project {
@@ -110,7 +116,7 @@ beforeEach(() => {
 describe('TasksPage Projects UX', () => {
   it('completes a task when the task row itself is tapped', async () => {
     const task = makeTask({ id: 'task-buy', title: 'Buy capsules' });
-    vi.spyOn(api, 'listTasks').mockResolvedValue({ items: [task] } satisfies TasksResponse);
+    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([task]));
     vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
     vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({ items: [] });
     const completeSpy = vi.spyOn(api, 'completeTask').mockResolvedValue({
@@ -128,12 +134,10 @@ describe('TasksPage Projects UX', () => {
   });
 
   it('uses the top field as search and opens task creation from the floating plus', async () => {
-    vi.spyOn(api, 'listTasks').mockResolvedValue({
-      items: [
+    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([
         makeTask({ id: 'task-1', title: 'Buy capsules' }),
         makeTask({ id: 'task-2', title: 'Compare Mira design' }),
-      ],
-    } satisfies TasksResponse);
+    ]));
     vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
     vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({ items: [] });
     const createSpy = vi.spyOn(api, 'createTask').mockResolvedValue({
@@ -158,7 +162,7 @@ describe('TasksPage Projects UX', () => {
   });
 
   it('renders Health Stack projects without demotivating progress percentages', async () => {
-    vi.spyOn(api, 'listTasks').mockResolvedValue({ items: [] } satisfies TasksResponse);
+    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse());
     vi.spyOn(api, 'listProjects').mockResolvedValue({
       items: [
         makeProject({
@@ -197,13 +201,15 @@ describe('TasksPage Projects UX', () => {
   });
 
   it('opens an Attention First project detail when a project row is clicked', async () => {
-    vi.spyOn(api, 'listTasks').mockImplementation(async (_filter, _limit, projectId) => ({
-      items: projectId === 'project-work'
+    vi.spyOn(api, 'listTasks').mockImplementation(async (query) => ({
+      items: query?.project_id === 'project-work'
         ? [
             makeTask({ id: 'task-work', title: 'Extend tool pool', project: 'Work', project_id: 'project-work', estimated_minutes: 45 }),
             makeTask({ id: 'task-later', title: 'Write launch notes', project: 'Work', project_id: 'project-work' }),
           ]
         : [],
+      has_more: false,
+      next_offset: null,
     }));
     vi.spyOn(api, 'listProjects').mockResolvedValue({
       items: [
@@ -235,12 +241,10 @@ describe('TasksPage Projects UX', () => {
 
 describe('TasksPage Review and estimates', () => {
   it('opens a bulk estimate review from the Estimates category', async () => {
-    vi.spyOn(api, 'listTasks').mockResolvedValue({
-      items: [
+    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([
         makeTask({ id: 'task-1', title: 'Compare Mira design', project: 'Lumi' }),
         makeTask({ id: 'task-2', title: 'Buy capsules', project: 'Shopping' }),
-      ],
-    } satisfies TasksResponse);
+    ]));
     vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
     const firstSuggestion = {
       id: 'suggestion-1',
@@ -288,12 +292,10 @@ describe('TasksPage Review and estimates', () => {
   });
 
   it('keeps the bulk estimate review open and removes an accepted row', async () => {
-    vi.spyOn(api, 'listTasks').mockResolvedValue({
-      items: [
+    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([
         makeTask({ id: 'task-1', title: 'Compare Mira design', project: 'Lumi' }),
         makeTask({ id: 'task-2', title: 'Buy capsules', project: 'Shopping' }),
-      ],
-    } satisfies TasksResponse);
+    ]));
     vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
     const firstSuggestion = {
       id: 'suggestion-1',
@@ -358,7 +360,7 @@ describe('TasksPage Review and estimates', () => {
 
   it('lets the user change or permanently skip a rejected estimate', async () => {
     const task = makeTask({ id: 'task-1', title: 'Compare Mira design', project: 'Lumi' });
-    vi.spyOn(api, 'listTasks').mockResolvedValue({ items: [task] } satisfies TasksResponse);
+    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([task]));
     vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
     vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({
       items: [
@@ -412,12 +414,10 @@ describe('TasksPage Review and estimates', () => {
   });
 
   it('shows a prepared Review command center instead of raw task gaps', async () => {
-    vi.spyOn(api, 'listTasks').mockResolvedValue({
-      items: [
+    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([
         makeTask({ id: 'task-1', title: 'Compare Mira design', project: 'Lumi', project_id: 'project-lumi' }),
         makeTask({ id: 'task-2', title: 'Need project', estimated_minutes: 15 }),
-      ],
-    } satisfies TasksResponse);
+    ]));
     vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
     vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({
       items: [
@@ -493,7 +493,7 @@ describe('TasksPage Review and estimates', () => {
       decided_at: null,
       created_at: '2026-06-21T08:00:00Z',
     } satisfies AssistantSuggestion;
-    vi.spyOn(api, 'listTasks').mockResolvedValue({ items: [task] } satisfies TasksResponse);
+    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([task]));
     vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
     vi.spyOn(api, 'listAssistantSuggestions')
       .mockResolvedValueOnce({ items: [dueSuggestion] } satisfies AssistantSuggestionsResponse)
@@ -545,7 +545,7 @@ describe('TasksPage Review and estimates', () => {
       decided_at: null,
       created_at: '2026-06-21T08:00:00Z',
     } satisfies AssistantSuggestion;
-    vi.spyOn(api, 'listTasks').mockResolvedValue({ items: [task] } satisfies TasksResponse);
+    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([task]));
     vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
     vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({ items: [dueSuggestion] });
     const patchSpy = vi.spyOn(api, 'patchTask').mockResolvedValue({
@@ -587,7 +587,7 @@ describe('TasksPage Review and estimates', () => {
       decided_at: null,
       created_at: '2026-06-21T08:00:00Z',
     } satisfies AssistantSuggestion;
-    vi.spyOn(api, 'listTasks').mockResolvedValue({ items: [task] } satisfies TasksResponse);
+    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([task]));
     vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [makeProject({ id: 'project-lumi', name: 'Lumi' })] });
     vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({ items: [projectSuggestion] } satisfies AssistantSuggestionsResponse);
     const patchSpy = vi.spyOn(api, 'patchTask').mockResolvedValue({
@@ -626,13 +626,15 @@ describe('TasksPage Review and estimates', () => {
       health_reason: 'Open ideas',
       next_task: makeTask({ id: 'task-backlog-1', title: 'Think about subscription UX', project: 'Backlog', project_id: 'project-backlog' }),
     });
-    vi.spyOn(api, 'listTasks').mockImplementation(async (_filter, _limit, projectId) => ({
-      items: projectId === 'project-backlog'
+    vi.spyOn(api, 'listTasks').mockImplementation(async (query) => ({
+      items: query?.project_id === 'project-backlog'
         ? [
             makeTask({ id: 'task-backlog-1', title: 'Think about subscription UX', project: 'Backlog', project_id: 'project-backlog' }),
             makeTask({ id: 'task-backlog-2', title: 'Review onboarding ideas', project: 'Backlog', project_id: 'project-backlog', estimated_minutes: 30 }),
           ]
         : [],
+      has_more: false,
+      next_offset: null,
     }));
     vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [backlogProject] });
     vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({
@@ -677,7 +679,7 @@ describe('TasksPage Review and estimates', () => {
       estimated_minutes: 5,
       completed_at: new Date().toISOString(),
     });
-    vi.spyOn(api, 'listTasks').mockResolvedValue({ items: [doneTask] } satisfies TasksResponse);
+    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([doneTask]));
     vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
     vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({ items: [] });
     const patchSpy = vi.spyOn(api, 'patchTask').mockResolvedValue({
@@ -704,7 +706,7 @@ describe('TasksPage Review and estimates', () => {
       status: 'done',
       completed_at: new Date().toISOString(),
     });
-    vi.spyOn(api, 'listTasks').mockResolvedValue({ items: [doneTask] } satisfies TasksResponse);
+    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([doneTask]));
     vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
     vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({ items: [] });
     const patchSpy = vi.spyOn(api, 'patchTask').mockResolvedValue({
@@ -723,9 +725,9 @@ describe('TasksPage Review and estimates', () => {
   });
 
   it('opens an estimate bottom sheet from the task-card nudge', async () => {
-    vi.spyOn(api, 'listTasks').mockResolvedValue({
-      items: [makeTask({ id: 'task-1', title: 'Compare Mira design', project: 'Lumi' })],
-    } satisfies TasksResponse);
+    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([
+      makeTask({ id: 'task-1', title: 'Compare Mira design', project: 'Lumi' }),
+    ]));
     vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
     vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({
       items: [
@@ -758,9 +760,9 @@ describe('TasksPage Review and estimates', () => {
   });
 
   it('accepts the suggested estimate from the task-card nudge', async () => {
-    vi.spyOn(api, 'listTasks').mockResolvedValue({
-      items: [makeTask({ id: 'task-1', title: 'Compare Mira design', project: 'Lumi' })],
-    } satisfies TasksResponse);
+    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([
+      makeTask({ id: 'task-1', title: 'Compare Mira design', project: 'Lumi' }),
+    ]));
     vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
     vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({
       items: [

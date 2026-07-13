@@ -243,7 +243,8 @@ export interface MessagesResponse {
 
 export type TaskStatus = 'inbox' | 'active' | 'done' | 'cancelled';
 export type TaskPriority = 'low' | 'medium' | 'high' | 'urgent';
-export type TaskFilter = 'today' | 'upcoming' | 'inbox' | 'review' | 'done' | 'all';
+export type TaskBucket = 'inbox' | 'this_week' | 'later' | 'done';
+export type TaskFilter = 'today' | 'upcoming' | TaskBucket | 'review' | 'all';
 
 export interface Task {
   id: string;
@@ -255,6 +256,8 @@ export interface Task {
   project_id: string | null;
   tags: string[];
   due_at: string | null;
+  planned_for: string | null;
+  /** @deprecated Use planned_for. */
   target_at: string | null;
   reminder_at: string | null;
   snoozed_until: string | null;
@@ -264,10 +267,21 @@ export interface Task {
   source: string;
   created_at: string;
   completed_at: string | null;
+  bucket: TaskBucket | null;
 }
 
 export interface TasksResponse {
   items: Task[];
+  has_more: boolean;
+  next_offset: number | null;
+}
+
+export interface TaskListQuery {
+  filter?: TaskFilter;
+  q?: string;
+  limit?: number;
+  offset?: number;
+  project_id?: string;
 }
 
 export interface TaskResponse {
@@ -282,6 +296,8 @@ export interface CreateTaskInput {
   project_id?: string;
   tags?: string[];
   due_at?: string;
+  planned_for?: string;
+  /** @deprecated Use planned_for. */
   target_at?: string;
   reminder_at?: string;
   estimated_minutes?: number;
@@ -297,6 +313,8 @@ export interface PatchTaskInput {
   project_id?: string | null;
   tags?: string[];
   due_at?: string | null;
+  planned_for?: string | null;
+  /** @deprecated Use planned_for. */
   target_at?: string | null;
   reminder_at?: string | null;
   estimated_minutes?: number | null;

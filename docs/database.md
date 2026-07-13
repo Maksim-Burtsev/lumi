@@ -56,7 +56,7 @@ erDiagram
 | Table | Key fields | Notes |
 |---|---|---|
 | `projects` | name, normalized_name, status, color, metadata | first-class per-user project identity; unique `(user_id, normalized_name)` |
-| `tasks` | status (inbox/active/done/cancelled), priority, project_id, due_at, reminder_at, snoozed_until, source, tags[] | legacy `project` snapshot remains for compatibility; `metadata.reminder_sent_at` provides reminder idempotency |
+| `tasks` | status (inbox/active/done/cancelled), priority, project_id, target_at, due_at, reminder_at, snoozed_until, source, tags[] | `target_at` stores the optional planned day/horizon (`planned_for` in the API), while `due_at` is only a hard deadline; projects and estimates are optional; legacy `project` remains compatible; metadata keeps reminder idempotency and the pre-completion status used by undo |
 | `task_events` | event_type, before/after JSON, actor | full task change audit |
 | `focus_sessions` | status, task_id, project_id, project_snapshot, planned/duration seconds, start/target/end, reflection, score | one active row per user; snapshot preserves history across project rename/delete; demo rows use `seed_batch_id` |
 | `memories` | kind, importance 1-5, confidence, tags[], normalized_text | dedupe by keyword-overlap >= 0.75; conflict marked as `potential_conflict` |
@@ -100,6 +100,10 @@ GIN: memories.tags, tasks.tags, email_threads.labels
 make migrate                      # alembic upgrade head
 make revision m="add_something"   # autogenerate a new migration
 ```
+
+Tasks V2 reuses the existing `status` and `target_at` columns. Upgrading this
+contract requires no data backfill or migration, and project reads no longer
+create or assign a synthetic Backlog project. Existing Backlog rows are kept.
 
 Safe bootstrap data (`make seed`): user from `ALLOWED_TELEGRAM_USER_IDS` and main
 conversation only. `make seed-focus-demo` is an explicit local-only Focus dataset;

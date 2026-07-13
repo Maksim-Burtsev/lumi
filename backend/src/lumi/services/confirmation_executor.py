@@ -77,13 +77,19 @@ class ConfirmationExecutor:
                 except ValueError:
                     return _text(locale, "I couldn't find an active task. Clarify the title.", "Не нашёл активную задачу. Уточни название.")
                 task_to_update = await self.tasks.get(user, task_id)
-                if task_to_update is None or task_to_update.status == TaskStatus.DONE:
+                updates = payload.get("updates")
+                reopens_done = (
+                    isinstance(updates, dict)
+                    and updates.get("status") == TaskStatus.ACTIVE.value
+                )
+                if task_to_update is None or (
+                    task_to_update.status == TaskStatus.DONE and not reopens_done
+                ):
                     return _text(
                         locale,
                         "This task is already done or deleted — there is nothing to update.",
                         "Эта задача уже закрыта или удалена — обновлять нечего.",
                     )
-                updates = payload.get("updates")
                 if not isinstance(updates, dict) or not updates:
                     return _text(locale, "I didn't understand what to change in the task. Clarify the update.", "Не понял, что изменить в задаче. Уточни изменение.")
                 raw_updates = updates
@@ -103,9 +109,13 @@ class ConfirmationExecutor:
                     actor="user",
                     agent_run_id=agent_run_id,
                 )
+                reply_updates = {
+                    **updates,
+                    **({"status": updated_task.status.value} if "status" in updates else {}),
+                }
                 return format_task_update_reply(
                     updated_task,
-                    updates,
+                    reply_updates,
                     language=str(payload.get("language") or locale),
                     timezone=user.timezone,
                 )
