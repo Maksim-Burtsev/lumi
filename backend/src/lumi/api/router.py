@@ -7,16 +7,13 @@ from fastapi import APIRouter
 from lumi.api.routes import (
     agent_runs,
     assistant_suggestions,
-    automations,
     calendar,
     confirmations,
     connectors,
     debug,
     focus,
-    inbox,
     me,
     memory,
-    news,
     projects,
     realtime,
     tasks,
@@ -33,9 +30,6 @@ api_router.include_router(assistant_suggestions.router, tags=["assistant-suggest
 api_router.include_router(calendar.router, tags=["calendar"])
 api_router.include_router(focus.router, tags=["focus"])
 api_router.include_router(confirmations.router, tags=["confirmations"])
-api_router.include_router(inbox.router, tags=["inbox"])
-api_router.include_router(news.router, tags=["news"])
-api_router.include_router(automations.router, tags=["automations"])
 api_router.include_router(memory.router, tags=["memory"])
 api_router.include_router(agent_runs.router, tags=["agent-runs"])
 api_router.include_router(connectors.router, tags=["connectors"])

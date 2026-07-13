@@ -13,18 +13,17 @@ Section order (`backend/src/lumi/assistant/context_builder.py`):
 3. **Profile**: name, username, timezone
 4. **Permissions**: what can be automatic and what requires confirmation
 5. **Active tasks as current state** (<=15, with overdue items) and **today's calendar**
-6. **Email snapshot** (need-reply count) and **active automations**
-7. **Relevant memory** (top 10 by score)
-8. **Conversation summary** (latest compacted version)
-9. **Only current-message action results** ("Created task ...") so the model does not confuse them with active state
-10. **Recent messages** (up to 30, within remaining budget)
-11. **Current message**
+6. **Relevant memory** (top 10 by score)
+7. **Conversation summary** (latest compacted version)
+8. **Only current-message action results** ("Created task ...") so the model does not confuse them with active state
+9. **Recent messages** (up to 30, within remaining budget)
+10. **Current message**
 
-Budget: `LLM_CONTEXT_MAX_CHARS=120000` (~30k tokens, estimated as chars/4). Sections 1-9 are always included; recent-message history is squeezed into the remaining budget.
+Budget: `LLM_CONTEXT_MAX_CHARS=120000` (~30k tokens, estimated as chars/4). Fixed sections are included first; recent-message history is squeezed into the remaining budget.
 
-## Signal extraction
+## Planner boundary
 
-A separate JSON call (`signal_extraction`) runs before the final reply. Schema: tasks, reminders, memory candidates, calendar requests, automations, email/news commands, plus confidence and requires_confirmation for each item. Extraction failure never breaks chat: it only prevents auto-actions. Invalid JSON also has fragment-level salvage.
+A structured planner call routes only task, calendar, focus, planning, memory, settings, and connector requests to backend tools. General Q&A, research/news, email, image analysis, and arbitrary automation requests use `out_of_scope`; the backend renders a deterministic boundary reply and executes no action. Unknown or stale tool names are logged as skipped instead of reaching the executor.
 
 ### Application thresholds (orchestrator)
 
@@ -36,8 +35,6 @@ Memory:           explicit "remember this" and >= 0.85 -> store
                   otherwise ignore without pending confirmation
 Internal block:   explicit request and >= 0.75 -> create
 External calendar: ALWAYS pending confirmation
-Automation:       >= 0.60 -> pending confirmation (enable only manually)
-Email send/delete: not implemented at all
 ```
 
 ## Memory

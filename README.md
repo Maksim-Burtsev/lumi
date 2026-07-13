@@ -1,6 +1,6 @@
 # Lumi
 
-**Lumi is a personal AI assistant in Telegram.** One chat plus a polished Mini App for tasks, calendar, email, news, and long-term memory. Lumi turns messages, emails, and meetings into a clear action plan.
+**Lumi is a productivity assistant in Telegram.** One chat plus a focused Mini App for Today, Tasks, Sessions, Calendar, and Settings. Lumi turns task and calendar messages into a clear action plan.
 
 ```text
 You:   Remind me tomorrow at 10 to write Sasha about the contract,
@@ -15,18 +15,15 @@ Lumi:  Done.
 
 ## MVP capabilities
 
-- **Chat assistant** on MiniMax M3: stateless LLM, all state stored in Lumi's own database; replies match the latest user message language, while progress/status text stays English
+- **Productivity chat** on MiniMax M3: task, calendar, focus, planning, and work-context requests only; unsupported general Q&A, research, email, news, image analysis, and arbitrary automations get an explicit boundary reply
 - **Tasks and reminders** from natural language, with confirmations for ambiguous cases
 - **Focus sessions** with a route-safe timer, manual logging, reflection, and local-time analytics
 - **Calendar**: internal calendar, Google Calendar sync and confirmed event creation, Yandex.Calendar read-only CalDAV sync, free slots, day planning with focus blocks
-- **Email**: read-only Gmail triage for replies, important mail, and task candidates from emails
-- **News**: scheduled topic digests from Google News RSS
 - **Memory**: Lumi remembers preferences and projects as part of assistant context
-- **Automations**: user-defined cron schedules for news, email, daily planning, sync, and custom prompts; no default automations are enabled
-- **Mini App**: English-only UI with Today, Tasks, Sessions, Calendar, and More (Inbox, News, Automations, Settings, Agent Runs)
+- **Mini App**: English-only UI with Today, Tasks, Sessions, Calendar, and Settings
 - **Observability**: every agent run, LLM call, and action is logged
 
-Security by default: Telegram ID allowlist, initData validation, confirmation for Google Calendar writes and automation enabling, no email send/delete, and no LLM access to shell or files.
+Security by default: Telegram ID allowlist, initData validation, confirmation for Google Calendar writes, a code-enforced tool allowlist, and no LLM access to shell or files.
 
 ## Architecture at a glance
 
@@ -43,9 +40,8 @@ flowchart LR
     RQ --> WRK[worker]
     WRK --> SVC
     WRK --> LLM
-    WRK -. digests/reminders .-> U
-    SVC --> GOOGLE[Gmail / GCal]
-    SVC --> RSS[RSS / Google News]
+    WRK -. planning/reminders .-> U
+    SVC --> GOOGLE[Google Calendar]
 ```
 
 Six containers: `postgres`, `redis`, `api`, `bot`, `worker`, `scheduler`. Details: [docs/architecture.md](docs/architecture.md).
@@ -126,13 +122,13 @@ Open `/app` from the bot or use the menu button. If Telegram shows a blank page 
 
 In the Mini App: Settings -> Yandex.Calendar -> username + app password (id.yandex.ru -> Security -> App passwords -> Calendar CalDAV). Read-only.
 
-### Google (Gmail + Calendar, optional)
+### Google Calendar (optional)
 
-1. In Google Cloud Console, create an OAuth client (**Desktop app**), enable Gmail API and Calendar API, and add yourself to test users.
+1. In Google Cloud Console, create an OAuth client (**Desktop app**), enable Calendar API, and add yourself to test users.
 2. Save the client secret as `data/secrets/google_client_secret.json`.
 3. Run `make google-auth-local`; a browser opens for consent.
 
-After that, `/email`, calendar sync, and morning email triage work. Without Google, Lumi still works fully with the internal calendar.
+After that, Google Calendar sync works. Without Google, Lumi still works fully with the internal calendar.
 External Google Calendar event creation is available only after explicit confirmation.
 
 ## Bot commands
@@ -143,8 +139,6 @@ External Google Calendar event creation is available only after explicit confirm
 | `/today` | day summary: meetings, tasks, attention items |
 | `/tasks` | active tasks |
 | `/plan` | build a day plan with focus blocks |
-| `/news` | news digest for your topics |
-| `/email` | email triage (requires Google) |
 | `/app` | open the Mini App |
 | `/settings` | connection status |
 
@@ -166,7 +160,7 @@ COMPOSE_PROJECT_NAME=lumi_<task_slug> make agent-clean  # clean an agent branch 
 - [docs/architecture.md](docs/architecture.md) - services, flows, diagrams
 - [docs/database.md](docs/database.md) - database schema and ERD
 - [docs/context-management.md](docs/context-management.md) - context, memory, compaction
-- [docs/connectors.md](docs/connectors.md) - Google, RSS, adding Outlook
+- [docs/connectors.md](docs/connectors.md) - Google Calendar and Yandex.Calendar
 - [docs/runbook.md](docs/runbook.md) - operations, debugging, common issues
 - [docs/agent-qa.md](docs/agent-qa.md) - agent self-QA via Telegram Web, Mini App, DB, and logs
 - [docs/focus-timer-design.md](docs/focus-timer-design.md) - Sessions interaction and responsive design direction
@@ -179,4 +173,4 @@ Python 3.12 · FastAPI · aiogram 3 · SQLAlchemy 2 (async) · Alembic · Postgr
 
 ## MVP limits
 
-Local single-user product: one Telegram account in the allowlist, polling instead of webhooks, local files, no voice. The bot runs while the Mac is awake (`caffeinate -dimsu`). VPS migration plan: [docs/runbook.md#production](docs/runbook.md#production).
+Local single-user product: one Telegram account in the allowlist, polling instead of webhooks, text-only productivity chat, local files, no voice. The bot runs while the Mac is awake (`caffeinate -dimsu`). VPS migration plan: [docs/runbook.md#production](docs/runbook.md#production).

@@ -18,7 +18,6 @@ dependencies = [
     "redis>=5",
     "arq>=0.26",
     "croniter>=5",
-    "feedparser>=6.0.11",
     "google-api-python-client>=2.150",
     "google-auth>=2.35",
     "google-auth-oauthlib>=1.2",

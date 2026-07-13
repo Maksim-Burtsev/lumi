@@ -117,6 +117,31 @@ CASES: tuple[PlannerSmokeCase, ...] = (
         expected_mode="final_answer",
     ),
     PlannerSmokeCase(
+        id="research_out_of_scope_en",
+        message="Research the latest AI agent news and summarize it for me.",
+        expected_mode="out_of_scope",
+    ),
+    PlannerSmokeCase(
+        id="general_question_out_of_scope_ru",
+        message="Почему небо голубое?",
+        expected_mode="out_of_scope",
+    ),
+    PlannerSmokeCase(
+        id="email_out_of_scope_en",
+        message="Triage my email inbox and tell me what needs a reply.",
+        expected_mode="out_of_scope",
+    ),
+    PlannerSmokeCase(
+        id="arbitrary_automation_out_of_scope_en",
+        message="Every Friday, research competitors and send me a summary.",
+        expected_mode="out_of_scope",
+    ),
+    PlannerSmokeCase(
+        id="image_request_out_of_scope_en",
+        message="Analyze the image I sent and extract all text.",
+        expected_mode="out_of_scope",
+    ),
+    PlannerSmokeCase(
         id="calendar_read_tomorrow_ru_multilingual",
         message="Какие встречи у меня завтра?",
         expected_mode="tool_calls",

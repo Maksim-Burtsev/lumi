@@ -31,6 +31,15 @@ def final_answer(text: str) -> dict:
     }
 
 
+def out_of_scope() -> dict:
+    return {
+        "mode": "out_of_scope",
+        "tool_calls": [],
+        "should_answer_normally": False,
+        "progress_kind": "answering",
+    }
+
+
 ASSISTANT_CORE_CASES: Final[tuple[AssistantCase, ...]] = (
     AssistantCase(
         id="task_create_project_en",
@@ -162,6 +171,14 @@ ASSISTANT_CORE_CASES: Final[tuple[AssistantCase, ...]] = (
         reply=(ReplyExpectation(contains="tasks"),),
     ),
     AssistantCase(
+        id="research_out_of_scope_en",
+        area="chat",
+        message="Research the latest AI agent news and summarize it for me.",
+        plans=(out_of_scope(),),
+        forbidden_tools=("create_task", "store_memory", "read_calendar_events"),
+        reply=(ReplyExpectation(contains="outside Lumi's scope"),),
+    ),
+    AssistantCase(
         id="task_create_project_ru_multilingual",
         area="task",
         message="Добавь задачу в проект Дом: заказать фильтры для воды",
@@ -195,19 +212,6 @@ ASSISTANT_TOOL_COVERAGE: Final[dict[str, str]] = {
     "update_calendar_private_note": "existing:test_calendar_private_notes",
     "delete_calendar_private_note": "existing:test_calendar_private_notes",
     "create_external_calendar_event": "assistant-core:calendar_external_create_confirmation_en",
-    "create_automation": "existing:test_orchestrator",
-    "read_automations": "existing:test_orchestrator",
-    "update_automation": "existing:test_orchestrator",
-    "run_automation": "existing:test_orchestrator",
-    "email_triage": "existing:worker/email flow",
-    "read_inbox": "existing:test_orchestrator",
-    "read_email_thread": "existing:test_orchestrator",
-    "create_task_from_email": "existing:test_orchestrator",
-    "news_digest": "existing:test_news_service",
-    "read_news_topics": "existing:test_orchestrator",
-    "create_news_topic": "existing:test_orchestrator",
-    "update_news_topic": "existing:test_orchestrator",
-    "run_news_digest": "existing:test_orchestrator",
     "read_settings": "existing:test_orchestrator",
     "update_settings": "existing:test_orchestrator",
     "read_connectors": "existing:test_orchestrator",

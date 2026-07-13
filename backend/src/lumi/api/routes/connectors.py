@@ -194,7 +194,7 @@ async def google_oauth_callback(
         except HTTPException:
             pass  # queue down — user can sync manually
 
-    return page("Google подключен ✓", "Почта и календарь доступны. Вернись в Lumi — статус уже обновился.")
+    return page("Google подключен ✓", "Календарь доступен. Вернись в Lumi — статус уже обновился.")
 
 
 @router.post("/connectors/google/webhook")

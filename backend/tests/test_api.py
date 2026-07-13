@@ -2,9 +2,11 @@ from datetime import datetime, time
 
 import httpx
 import pytest
+from sqlalchemy import select
 
 from lumi.api.deps import get_current_user
 from lumi.api.routes import telegram
+from lumi.db.models import ScheduledTask, ScheduledTaskType
 from lumi.db.session import session_scope
 from lumi.main import app
 from lumi.services.calendar import CalendarService
@@ -194,6 +196,7 @@ async def test_today_shape(client):
                 "suggestions", "recent_runs"):
         assert key in body
     assert body["summary"]["tasks_active"] == 0
+    assert "emails_need_reply" not in body["summary"]
 
 
 async def test_today_timeline_includes_personal_note_fields(client, db_session):
@@ -260,23 +263,10 @@ async def test_tasks_crud(client):
     assert complete.json()["task"]["status"] == "done"
 
 
-async def test_memories_and_automations_endpoints(client):
+async def test_memories_endpoint(client):
     memories = await client.get("/api/memories")
     assert memories.status_code == 200
     assert memories.json() == {"items": []}
-
-    create = await client.post("/api/automations", json={
-        "type": "news_digest", "title": "Утро", "cron_expression": "30 8 * * 1-5",
-        "enabled": False,
-    })
-    assert create.status_code == 201
-    listing = await client.get("/api/automations")
-    assert len(listing.json()["items"]) == 1
-
-    bad = await client.post("/api/automations", json={
-        "type": "news_digest", "title": "x", "cron_expression": "мусор",
-    })
-    assert bad.status_code == 422
 
 
 async def test_confirmations_accept_and_reject(client, db_session):
@@ -325,6 +315,29 @@ async def test_confirmations_accept_and_reject(client, db_session):
     assert again.status_code == 409
 
 
+async def test_legacy_automation_confirmation_cannot_execute(client, db_session):
+    user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID, language_code="en")
+    legacy = await ConfirmationService(db_session).create(
+        user,
+        action_type="create_automation",
+        action_payload={
+            "type": "custom_prompt",
+            "title": "Legacy research",
+            "cron_expression": "0 9 * * *",
+        },
+        prompt="Enable legacy automation?",
+    )
+    await db_session.commit()
+
+    response = await client.post(f"/api/confirmations/{legacy.id}/accept")
+
+    assert response.status_code == 200
+    assert response.json()["executed"] is False
+    assert "no longer available" in response.json()["result_text"]
+    async with session_scope() as session:
+        assert list((await session.execute(select(ScheduledTask))).scalars()) == []
+
+
 async def test_calendar_events_crud(client):
     create = await client.post("/api/calendar/events", json={
         "title": "Фокус", "start_at": "2026-06-11T10:00:00+03:00",
@@ -346,11 +359,80 @@ async def test_calendar_events_crud(client):
     assert items[0]["links"] == ["https://example.com/spec"]
 
 
-async def test_inbox_disconnected(client):
-    summary = await client.get("/api/inbox/summary")
-    assert summary.status_code == 200
-    assert summary.json()["connected"] is False
+@pytest.mark.parametrize(
+    "method,path",
+    (
+        ("GET", "/api/inbox/summary"),
+        ("POST", "/api/inbox/triage/run"),
+        ("GET", "/api/news/topics"),
+        ("POST", "/api/news/digest/run"),
+        ("GET", "/api/automations"),
+        ("POST", "/api/automations"),
+    ),
+)
+async def test_removed_product_routes_return_not_found(client, method, path):
+    response = await client.request(method, path, json={} if method == "POST" else None)
 
-    run = await client.post("/api/inbox/triage/run")
-    assert run.status_code == 409
-    assert run.json()["error"] == "google_not_connected"
+    assert response.status_code == 404
+
+
+async def test_google_oauth_callback_is_single_use_and_starts_calendar_sync(
+    client,
+    db_session,
+    monkeypatch,
+):
+    user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID)
+    await db_session.commit()
+    exchanged: list[str] = []
+    started: list[tuple[str, bool]] = []
+
+    class FakeRedis:
+        def __init__(self) -> None:
+            self.value: str | None = str(user.id)
+
+        async def get(self, key: str):
+            return self.value
+
+        async def delete(self, key: str) -> None:
+            self.value = None
+
+    redis = FakeRedis()
+
+    async def fake_exchange_code(code: str) -> None:
+        exchanged.append(code)
+
+    async def fake_start_background_run(session, user_arg, run_type, **kwargs):
+        started.append((run_type, kwargs["notify"]))
+        return {"run_id": "calendar-run", "status": "queued"}
+
+    monkeypatch.setattr("lumi.worker.queue.get_queue", lambda: _async_value(redis))
+    monkeypatch.setattr("lumi.connectors.google.auth.exchange_code", fake_exchange_code)
+    monkeypatch.setattr("lumi.api.run_helper.start_background_run", fake_start_background_run)
+
+    response = await client.get(
+        "/api/connectors/google/callback",
+        params={"code": "oauth-code", "state": "single-use-state"},
+    )
+
+    assert response.status_code == 200
+    assert "Календарь доступен" in response.text
+    assert "Почта" not in response.text
+    assert exchanged == ["oauth-code"]
+    assert started == [("calendar_sync", False)]
+
+    async with session_scope() as session:
+        scheduled = list((await session.execute(select(ScheduledTask))).scalars())
+        assert len(scheduled) == 1
+        assert scheduled[0].type == ScheduledTaskType.CALENDAR_SYNC
+        assert scheduled[0].config["system"] is True
+
+    stale = await client.get(
+        "/api/connectors/google/callback",
+        params={"code": "second-code", "state": "single-use-state"},
+    )
+    assert "Ссылка устарела" in stale.text
+    assert exchanged == ["oauth-code"]
+
+
+async def _async_value(value):
+    return value

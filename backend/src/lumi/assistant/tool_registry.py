@@ -28,19 +28,6 @@ TOOL_NAMES = {
     "update_calendar_private_note",
     "delete_calendar_private_note",
     "create_external_calendar_event",
-    "create_automation",
-    "read_automations",
-    "update_automation",
-    "run_automation",
-    "email_triage",
-    "read_inbox",
-    "read_email_thread",
-    "create_task_from_email",
-    "news_digest",
-    "read_news_topics",
-    "create_news_topic",
-    "update_news_topic",
-    "run_news_digest",
     "read_settings",
     "update_settings",
     "read_connectors",
@@ -54,7 +41,7 @@ TOOL_CATALOG = """Available backend tools:
 - rename_task(current_title|task_query, new_title, project?, tags?)  # project/tags here are search filters, not update targets
 - complete_task(task_query|current_title, project?, tags?)
 - snooze_task(task_query|current_title, preset?: 1h|3h|tomorrow|next_week, project?, tags?)
-- resolve_entity(query, domains?: tasks|calendar|memories|automations|news|email|settings|connectors[], time_window_local?)
+- resolve_entity(query, domains?: tasks|calendar|memories|settings|connectors[], time_window_local?)
 - store_memory(kind, text, importance?)
 - read_memories(query?, kind?, limit?)
 - update_memory(memory_id, text?, kind?, importance?)
@@ -68,19 +55,6 @@ TOOL_CATALOG = """Available backend tools:
 - update_calendar_private_note(event_id? | event_query?, private_note)
 - delete_calendar_private_note(event_id? | event_query?)
 - create_external_calendar_event(title, start_at_local, end_at_local)
-- create_automation(type, title, cron_expression, timezone?, config?)
-- read_automations(include_system?)
-- update_automation(automation_id, title?, cron_expression?, timezone?, enabled?, config?)
-- run_automation(automation_id)
-- email_triage(time_window?)
-- read_inbox(limit?)
-- read_email_thread(thread_id)
-- create_task_from_email(thread_id, title?)
-- news_digest(topics?)
-- read_news_topics(include_disabled?)
-- create_news_topic(title, query, language?, config?)
-- update_news_topic(topic_id, title?, query?, language?, enabled?, config?)
-- run_news_digest()
 - read_settings()
 - update_settings(timezone?, time_format?)
 - read_connectors()
@@ -126,17 +100,15 @@ Rules:
 - Do not resolve ambiguous task matches yourself. If the user intent is a task update and Planner context has multiple plausible candidates, still call update_task with task_query; backend will ask with confirmation buttons.
 - Choose tools semantically across languages, typos, punctuation, quotes, emotional phrasing, and short follow-ups.
 - For action-only commands set should_answer_normally=false.
-- For ordinary chat or questions without needed tools use mode=final_answer or ask_user.
+- Use mode=out_of_scope for general Q&A, research, news, email, image analysis,
+  or arbitrary user-defined automations. Do not answer those requests or invent an action.
+- Use mode=final_answer for capability questions such as "what can you do?" and for short
+  productivity guidance that does not require backend state. Use ask_user only when a supported
+  tasks/calendar/focus/planning request needs one missing detail.
 - If the user asks to change the app language, interface language, bot language,
   reply language, or to return replies to automatic language matching, use mode=final_answer
   and explain briefly in the latest user message language: the Mini App UI is English only,
   while assistant replies automatically match each message.
-- If the user refers to media, set referenced_media_id to one available_media id.
-- available_media is listed newest-first. For an elliptical follow-up, prefer the first matching media item.
-- Use visual_intent=read_only for visual questions. Use visual_intent=action_evidence only for explicit backend actions based on media.
-- For visual detail missing from media_context use mode=needs_media_understanding or mode=needs_focused_vision.
-- For image-derived arguments set source=image or source=mixed and include evidence.
-
 Examples:
 - User asks to create a task with title "Webhook для Lumi на проде" -> mode=tool_calls, create_task(title="Webhook для Lumi на проде"), should_answer_normally=false.
 - User asks "Aggiungi a Lumi la task scrivere proposta" -> mode=tool_calls, create_task(title="scrivere proposta", project="Lumi"), should_answer_normally=false.
@@ -156,6 +128,8 @@ Examples:
 - User asks "перенеси dalma на 17:30" and context has both task and calendar block named Dalma -> mode=tool_calls,
   resolve_entity(query="Dalma", domains=["tasks","calendar"]), should_answer_normally=false.
 - User asks "what can you do?" -> mode=final_answer, no tool calls.
+- User asks a general factual question or requests research/news/email/image analysis -> mode=out_of_scope, no tool calls.
+- User asks to create an arbitrary recurring automation -> mode=out_of_scope, no tool calls.
 - User asks to show/open/list Lumi tasks -> mode=tool_calls, read_tasks(...), should_answer_normally=false.
 - User asks "Always answer in Russian and switch the app to Russian" -> mode=final_answer,
   final_answer says UI is English only and replies match each message.
@@ -167,21 +141,17 @@ Examples:
 
 
 AGENT_PLANNER_SCHEMA_HINT = {
-    "mode": "final_answer|tool_calls|ask_user|needs_media_understanding|needs_focused_vision",
-    "referenced_media_id": "one available_media media_id, or null",
-    "visual_intent": "none|read_only|action_evidence",
-    "needs_media_understanding": "boolean",
+    "mode": "final_answer|tool_calls|ask_user|out_of_scope",
     "tool_calls": [
         {
             "name": "one of the Available backend tools",
             "args": {"key": "value"},
             "confidence": 0.0,
             "requires_confirmation": False,
-            "source": "text|image|mixed",
+            "source": "text",
             "evidence": ["short fact supporting this call"],
         }
     ],
-    "focused_vision": "null unless mode=needs_focused_vision; then object with non-empty question, reason, confidence",
     "final_answer": "string|null",
     "user_visible_status": "short English progress line, max 80 chars, no links/markdown/success claims",
     "progress_kind": "understanding|reading_calendar|resolving|writing|answering|null",

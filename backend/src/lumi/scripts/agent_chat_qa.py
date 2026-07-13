@@ -32,14 +32,8 @@ from lumi.db.models import (
     Connector,
     ConnectorStatus,
     ConnectorType,
-    EmailThread,
     Memory,
     MemoryKind,
-    NewsTopic,
-    ScheduledTask,
-    ScheduledTaskType,
-    Task,
-    TaskStatus,
     ToolCall,
 )
 from lumi.db.session import dispose_engine, session_scope
@@ -185,7 +179,7 @@ def _calls_evidence(calls: list[dict[str, Any]]) -> str:
     parts = []
     for call in calls:
         result = call.get("result") or {}
-        entity = result.get("task_id") or result.get("event_id") or result.get("topic_id") or result.get("automation_id") or result.get("job_id")
+        entity = result.get("task_id") or result.get("event_id") or result.get("job_id")
         suffix = f" {entity}" if entity else ""
         parts.append(f"{call['tool_name']}:{call['status']}{suffix}")
     return "; ".join(parts) or "no tool calls"
@@ -421,87 +415,6 @@ async def run_p0_p1(telegram_user_id: int) -> list[ScenarioResult]:
 
     async with session_scope() as session:
         user = await UserService(session).ensure_user(telegram_user_id)
-        automation = ScheduledTask(
-            user_id=user.id,
-            type=ScheduledTaskType.NEWS_DIGEST,
-            title=f"Automation QA {suffix}",
-            cron_expression="0 9 * * *",
-            timezone=user.timezone,
-            enabled=True,
-            next_run_at=local_to_utc(_local_dt(day, 9), user.timezone),
-        )
-        session.add(automation)
-        await session.flush()
-        automation_id = str(automation.id)
-    await record(
-        "прочитай, переименуй и запусти QA automation",
-        "read_automations -> update_automation -> run_automation",
-        _plan([
-            _tool("read_automations", {}),
-            _tool("update_automation", {"automation_id": automation_id, "title": f"Automation QA renamed {suffix}"}),
-            _tool("run_automation", {"automation_id": automation_id}),
-        ]),
-        lambda _reply, calls: _async_check(
-            any(call["tool_name"] == "update_automation" and call["status"] == "completed" for call in calls)
-            and any(call["tool_name"] == "run_automation" for call in calls),
-            _calls_evidence(calls),
-        ),
-    )
-
-    async with session_scope() as session:
-        user = await UserService(session).ensure_user(telegram_user_id)
-        seeded_topic = NewsTopic(
-            user_id=user.id,
-            title=f"Seed News QA {suffix}",
-            query="AI productivity",
-            language="en",
-        )
-        session.add(seeded_topic)
-        await session.flush()
-        seeded_topic_id = str(seeded_topic.id)
-    await record(
-        "создай news topic QA, покажи, выключи и запусти digest",
-        "create_news_topic -> read_news_topics -> update_news_topic -> run_news_digest",
-        _plan([
-            _tool("create_news_topic", {"title": f"News QA {suffix}", "query": "AI agents", "language": "en"}),
-            _tool("read_news_topics", {}),
-            _tool("update_news_topic", {"topic_id": seeded_topic_id, "enabled": False}),
-            _tool("run_news_digest", {}),
-        ]),
-        lambda _reply, calls: _async_check(
-            any(call["tool_name"] == "create_news_topic" and call["status"] == "completed" for call in calls)
-            and any(call["tool_name"] == "update_news_topic" and call["status"] == "completed" for call in calls)
-            and any(call["tool_name"] == "run_news_digest" for call in calls),
-            _calls_evidence(calls),
-        ),
-    )
-
-    async with session_scope() as session:
-        user = await UserService(session).ensure_user(telegram_user_id)
-        thread = EmailThread(
-            user_id=user.id,
-            provider="google",
-            external_thread_id=f"qa-thread-{suffix}",
-            subject=f"Inbox QA {suffix}",
-            snippet="Need to follow up from QA script.",
-            last_message_at=local_to_utc(_local_dt(day, 12), user.timezone),
-        )
-        session.add(thread)
-        await session.flush()
-        thread_id = str(thread.id)
-    await record(
-        "покажи inbox и создай задачу из QA email",
-        "read_inbox -> read_email_thread -> create_task_from_email",
-        _plan([
-            _tool("read_inbox", {"limit": 5}),
-            _tool("read_email_thread", {"thread_id": thread_id}),
-            _tool("create_task_from_email", {"thread_id": thread_id}),
-        ]),
-        lambda _reply, calls: _check_email_task_created(telegram_user_id, f"Inbox QA {suffix}", calls),
-    )
-
-    async with session_scope() as session:
-        user = await UserService(session).ensure_user(telegram_user_id)
         existing = await session.execute(
             select(Connector).where(Connector.user_id == user.id, Connector.type == ConnectorType.GOOGLE)
         )
@@ -566,20 +479,6 @@ async def _check_memory_deleted(
         user = await UserService(session).ensure_user(telegram_user_id)
         memory = await MemoryService(session).get(user, uuid.UUID(memory_id))
     return memory is None, f"memory_exists={memory is not None}; {_calls_evidence(calls)}"
-
-
-async def _check_email_task_created(
-    telegram_user_id: int,
-    title: str,
-    calls: list[dict[str, Any]],
-) -> tuple[bool, str]:
-    async with session_scope() as session:
-        user = await UserService(session).ensure_user(telegram_user_id)
-        result = await session.execute(
-            select(Task).where(Task.user_id == user.id, Task.title == title, Task.status == TaskStatus.ACTIVE)
-        )
-        task = result.scalar_one_or_none()
-    return task is not None, f"task_created={task is not None}; {_calls_evidence(calls)}"
 
 
 async def _check_settings_updated(

@@ -51,7 +51,6 @@ async def get_app_settings(
         "google": google,
         "yandex": yandex,
         "flags": {
-            "store_email_bodies": settings.store_email_bodies,
             "store_llm_debug_payloads": settings.store_llm_debug_payloads,
             "dev_auth": settings.dev_auth_enabled,
         },

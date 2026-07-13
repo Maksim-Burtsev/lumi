@@ -1,4 +1,4 @@
-"""Telegram image extraction and transient download helpers."""
+"""Telegram attachment classification for product-scope rejection and audit."""
 
 from __future__ import annotations
 
@@ -7,22 +7,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from lumi.assistant.media import ImageInput
-from lumi.config import get_settings
-from lumi.db.models import Message, MessageRole
-
 SUPPORTED_IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
-
-
-class ImageDownloadError(Exception):
-    pass
-
-
-class ImageTooLargeError(ImageDownloadError):
-    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,57 +279,3 @@ class AttachmentBatchBuffer:
 
     def _key(self, item: ClassifiedAttachmentMessage) -> str:
         return f"{self.key_prefix}:{item.chat_id}:{item.media_group_id}"
-
-
-async def find_latest_image_metadata(session: AsyncSession, conversation_id) -> dict[str, Any] | None:
-    result = await session.execute(
-        select(Message)
-        .where(
-            Message.conversation_id == conversation_id,
-            Message.role == MessageRole.USER,
-            Message.metadata_["images"].is_not(None),
-        )
-        .order_by(Message.created_at.desc())
-        .limit(50)
-    )
-    for message in result.scalars():
-        images = (message.metadata_ or {}).get("images") or []
-        if images:
-            return images[0]
-    return None
-
-
-def ref_from_metadata(metadata: dict[str, Any], *, source: str = "latest") -> TelegramImageRef | None:
-    return TelegramImageRef.from_metadata(metadata, source=source)
-
-
-async def download_image_input(bot: Any, ref: TelegramImageRef) -> ImageInput:
-    max_bytes = get_settings().telegram_image_max_bytes
-    if ref.file_size is not None and ref.file_size > max_bytes:
-        raise ImageTooLargeError(f"image is too large: {ref.file_size} bytes")
-    tg_file = await bot.get_file(ref.file_id)
-    file_path = getattr(tg_file, "file_path", None)
-    if not file_path:
-        raise ImageDownloadError("telegram did not return file_path")
-    downloaded = await bot.download_file(file_path)
-    if isinstance(downloaded, bytes | bytearray):
-        data = bytes(downloaded)
-    elif hasattr(downloaded, "read"):
-        data = downloaded.read()
-    else:
-        raise ImageDownloadError("telegram returned unsupported file object")
-    if len(data) > max_bytes:
-        raise ImageTooLargeError(f"image is too large: {len(data)} bytes")
-    return ImageInput(
-        data=data,
-        mime_type=ref.mime_type,
-        file_id=ref.file_id,
-        file_unique_id=ref.file_unique_id,
-        file_size=ref.file_size or len(data),
-        file_name=ref.file_name,
-        width=ref.width,
-        height=ref.height,
-        source=ref.source,
-        telegram_message_id=ref.telegram_message_id,
-        media_group_id=ref.media_group_id,
-    )

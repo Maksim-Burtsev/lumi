@@ -1,4 +1,4 @@
-"""arq worker jobs: digests, triage, planning, sync, reminders, compaction."""
+"""arq worker jobs: task planning, calendar sync, reminders, and chat maintenance."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import asyncio
 import json
 import uuid
 from datetime import datetime, timedelta
-from html import escape
 from time import monotonic
 from typing import Any
 
@@ -16,11 +15,9 @@ from sqlalchemy import select
 from lumi.assistant.orchestrator import AssistantOrchestrator
 from lumi.bot.formatting import rich_html_requires_rich_message, telegram_plain_text
 from lumi.bot.keyboards import markup_from_buttons
-from lumi.bot.media import ImageDownloadError, download_image_input, ref_from_metadata
 from lumi.bot.schedule_messages import (
     ScheduleMessageItem,
     render_schedule_message,
-    render_today_schedule,
     schedule_plan_title,
 )
 from lumi.config import get_settings
@@ -131,14 +128,6 @@ def _user_visible_progress_text(status_text: str) -> str:
     if raw_text == "__thinking__":
         return "Thinking..."
     return telegram_plain_text(raw_text).strip()
-
-
-def _plain_text_rich_html(text: str) -> str:
-    return "".join(f"<p>{escape(line)}</p>" for line in text.splitlines() if line.strip())
-
-
-def _join_rich_sections(parts: list[str]) -> str:
-    return "<hr/>".join(part for part in parts if part)
 
 
 def _run_reply_language(run: AgentRun, user: User) -> str:
@@ -413,22 +402,6 @@ def _delivery_retry_delay(settings, retry_count: int) -> int:
     return min(base * (2 ** max(0, retry_count - 1)), 300)
 
 
-async def _download_turn_image(metadata: dict[str, Any], *, source: str):
-    settings = get_settings()
-    if not settings.telegram_bot_token:
-        return None
-    from aiogram import Bot
-
-    ref = ref_from_metadata(metadata, source=source)
-    if ref is None:
-        return None
-    bot = Bot(token=settings.telegram_bot_token)
-    try:
-        return await download_image_input(bot, ref)
-    finally:
-        await bot.session.close()
-
-
 async def _get_or_create_run(
     session, *, user: User, run_id: str | None, type_: AgentRunType, trigger: str,
     scheduled_task_id: str | None = None,
@@ -583,30 +556,6 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
     turn_work_started_at = monotonic()
 
     payload = turn_snapshot["payload"]
-    image = None
-    image_payload = payload.get("image")
-    if image_payload:
-        try:
-            image = await _download_turn_image(
-                image_payload, source=image_payload.get("source") or "attached"
-            )
-        except ImageDownloadError as exc:
-            next_turn = None
-            async with session_scope() as session:
-                next_turn = await TurnService(session).fail_turn(parsed_turn_id, str(exc))
-            await send_turn_reply(
-                user=user,
-                turn=turn,
-                reply_text="Не смог скачать картинку из Telegram. Пришли ее заново.",
-                buttons=[],
-            )
-            if next_turn is not None:
-                await _enqueue_turn(next_turn)
-            return "image download failed"
-
-    async def image_loader(metadata: dict):
-        return await _download_turn_image(metadata, source="recent")
-
     last_progress_text: str | None = None
     last_progress_at = 0.0
     last_stream_text: str | None = None
@@ -708,10 +657,7 @@ async def process_assistant_turn(ctx: dict[str, Any], turn_id: str) -> str:
                 username=user_snapshot["username"],
                 first_name=user_snapshot["first_name"],
                 last_name=user_snapshot["last_name"],
-                image=image,
-                ignored_attachments=list(payload.get("ignored_attachments") or []),
                 message_context=payload,
-                image_loader=image_loader,
                 on_progress=on_progress,
                 on_reply_delta=reply_delta_callback,
                 touch_last_seen=False,
@@ -825,110 +771,6 @@ async def enqueue_due_assistant_turns(ctx: dict[str, Any]) -> str:
         if job_id:
             enqueued += 1
     return f"enqueued {enqueued} assistant turns"
-
-
-@_job(AgentRunType.MORNING_BRIEF)
-async def run_morning_brief(*, session, user: User, run: AgentRun, notify: bool) -> str:
-    """One message: today's plan (meetings + tasks) + mail + news."""
-    from lumi.bot.formatting import format_today
-    from lumi.connectors.google.auth import GoogleNotConnectedError, token_file_exists
-    from lumi.services.email import EmailService
-    from lumi.services.news import NewsService
-    from lumi.services.notifier import send_telegram_message
-    from lumi.services.today import TodayService
-
-    parts: list[str] = []
-    rich_parts: list[str] = []
-    payload = await TodayService(session).build_payload(user)
-    today_schedule = render_today_schedule(payload, timezone=user.timezone, language=user.locale)
-    if today_schedule is not None:
-        parts.append(today_schedule.plain_text)
-        rich_parts.append(today_schedule.rich_html)
-    else:
-        today_text = format_today(payload, user.timezone)
-        parts.append(today_text)
-        rich_parts.append(_plain_text_rich_html(today_text))
-
-    if token_file_exists():
-        try:
-            triage, _threads = await EmailService(session).triage_inbox(user, agent_run_id=run.id)
-            if triage.telegram_digest:
-                mail_text = "📬 Почта\n" + triage.telegram_digest
-                parts.append(mail_text)
-                rich_parts.append(_plain_text_rich_html(mail_text))
-        except GoogleNotConnectedError:
-            pass
-        except Exception:  # noqa: BLE001 — почта не должна валить весь бриф
-            log.exception("morning brief: triage failed")
-
-    try:
-        digest = await NewsService(session).generate_digest(user, agent_run_id=run.id)
-        if digest is not None:
-            news_text = "📰 Новости\n" + digest.digest_text
-            parts.append(news_text)
-            rich_parts.append(_plain_text_rich_html(news_text))
-    except Exception:  # noqa: BLE001
-        log.exception("morning brief: news failed")
-
-    text = "\n\n———\n\n".join(parts)
-    if notify:
-        await send_telegram_message(
-            user,
-            text,
-            rich_html=_join_rich_sections(rich_parts) if rich_parts else None,
-            open_app_button=today_schedule is not None,
-        )
-    return f"brief: {len(parts)} sections"
-
-
-@_job(AgentRunType.NEWS_DIGEST)
-async def run_news_digest(*, session, user: User, run: AgentRun, notify: bool) -> str:
-    from lumi.services.news import NewsService
-    from lumi.services.notifier import send_telegram_message
-
-    digest = await NewsService(session).generate_digest(user, agent_run_id=run.id)
-    if digest is None:
-        if notify:
-            await send_telegram_message(user, "Новостных тем пока нет — добавь их в Mini App, раздел News.")
-        return "no topics"
-    if notify:
-        await send_telegram_message(user, digest.digest_text)
-    return f"digest: {len(digest.items_json)} items"
-
-
-@_job(AgentRunType.EMAIL_TRIAGE)
-async def run_email_triage(*, session, user: User, run: AgentRun, notify: bool) -> str:
-    from lumi.connectors.google.auth import GoogleNotConnectedError
-    from lumi.services.email import EmailService
-    from lumi.services.notifier import send_telegram_message
-
-    try:
-        triage, threads = await EmailService(session).triage_inbox(user, agent_run_id=run.id)
-    except GoogleNotConnectedError:
-        if notify:
-            await send_telegram_message(
-                user,
-                "Gmail не подключен. Подключи Google: положи client_secret.json в data/secrets "
-                "и выполни make google-auth-local.",
-            )
-        return "google not connected"
-    if notify and triage.telegram_digest:
-        reply_markup = None
-        candidates = [
-            t for t in threads
-            if t.metadata_.get("task_candidate")
-        ]
-        if candidates:
-            from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-
-            reply_markup = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(
-                    text=f"✓ Создать задачи ({len(candidates)})",
-                    callback_data="email_create_tasks",
-                )
-            ]])
-        await send_telegram_message(user, triage.telegram_digest, reply_markup=reply_markup)
-    return f"triaged {len(threads)} threads"
 
 
 @_job(AgentRunType.DAILY_PLANNING)
@@ -1080,107 +922,6 @@ async def summarize_calendar_private_note(
         summary=str(response.get("summary") or ""),
     )
     return f"summarized {event.id}"
-
-
-@_job(AgentRunType.TASK_REVIEW)
-async def run_task_review(*, session, user: User, run: AgentRun, notify: bool) -> str:
-    from lumi.assistant.prompts import TASK_REVIEW_SYSTEM
-    from lumi.services.notifier import send_telegram_message
-    from lumi.services.tasks import TaskService
-
-    tasks = await TaskService(session).list_active(user, limit=50)
-    if not tasks:
-        if notify:
-            await send_telegram_message(user, "No active tasks; no review needed. Clear horizon.")
-        return "no tasks"
-    now = utc_now()
-    lines = []
-    for t in tasks:
-        line = f"- [{t.priority.value}] {t.title}"
-        if t.due_at:
-            line += f" (due {fmt_local(t.due_at, user.timezone)}"
-            line += ", OVERDUE)" if t.due_at < now else ")"
-        lines.append(line)
-    response = await LLMGateway().complete(
-        messages=[
-            LLMMessage(
-                role="user",
-                content=f"Target language: {user.locale or 'en'}\nTasks:\n" + "\n".join(lines),
-            )
-        ],
-        system=TASK_REVIEW_SYSTEM,
-        request_kind="task_review",
-        user_id=user.id,
-        agent_run_id=run.id,
-        session=session,
-    )
-    if notify:
-        await send_telegram_message(user, response.text.strip())
-    return f"reviewed {len(tasks)} tasks"
-
-
-@_job(AgentRunType.CUSTOM)
-async def run_custom_prompt(*, session, user: User, run: AgentRun, notify: bool,
-                            prompt: str = "") -> str:
-    from lumi.assistant.prompts import LUMI_SYSTEM_PROMPT
-    from lumi.services.notifier import send_telegram_message
-
-    if not prompt:
-        # Pull prompt from the scheduled task config.
-        if run.scheduled_task_id:
-            result = await session.execute(
-                select(ScheduledTask).where(ScheduledTask.id == run.scheduled_task_id)
-            )
-            scheduled = result.scalar_one_or_none()
-            prompt = (scheduled.config or {}).get("prompt", "") if scheduled else ""
-    if not prompt:
-        return "empty prompt"
-    config: dict[str, Any] = {}
-    if run.scheduled_task_id:
-        result = await session.execute(
-            select(ScheduledTask).where(ScheduledTask.id == run.scheduled_task_id)
-        )
-        scheduled = result.scalar_one_or_none()
-        config = (scheduled.config or {}) if scheduled else {}
-    output_format = config.get("format", "text")  # text | md | html
-
-    format_hint = ""
-    if output_format == "md":
-        format_hint = "\n\nFormat the result as a structured Markdown document with headings."
-    elif output_format == "html":
-        format_hint = (
-            "\n\nFormat the result as a complete self-contained HTML document "
-            "(one file, polished typography, no external dependencies)."
-        )
-    response = await LLMGateway().complete(
-        messages=[LLMMessage(role="user", content=prompt + format_hint)],
-        system=LUMI_SYSTEM_PROMPT,
-        max_tokens=4096,
-        request_kind="custom_prompt",
-        user_id=user.id,
-        agent_run_id=run.id,
-        session=session,
-    )
-    text_out = response.text.strip()
-    if notify:
-        if output_format in ("md", "html"):
-            from lumi.services.notifier import send_telegram_document
-            from lumi.utils.time import local_now
-
-            stamp = local_now(user.timezone).strftime("%d-%m-%H%M")
-            ext = "md" if output_format == "md" else "html"
-            title = (config.get("title") or "lumi-report").replace(" ", "-")[:40]
-            ok = await send_telegram_document(
-                user,
-                file_name=f"{title}-{stamp}.{ext}",
-                content=text_out.encode("utf-8"),
-                caption="Готово — результат во вложении.",
-            )
-            if not ok:
-                await send_telegram_message(user, text_out)
-        else:
-            await send_telegram_message(user, text_out)
-    return f"custom prompt done ({output_format})"
 
 
 @_job(AgentRunType.COMPACTION)
@@ -1875,21 +1616,9 @@ async def recover_pending_calendar_private_note_summaries(ctx: dict[str, Any]) -
 
 
 JOB_BY_AUTOMATION_TYPE = {
-    "morning_brief": "run_morning_brief",
-    "news_digest": "run_news_digest",
-    "email_triage": "run_email_triage",
-    "daily_planning": "run_daily_planning",
     "calendar_sync": "run_calendar_sync",
-    "task_review": "run_task_review",
-    "custom_prompt": "run_custom_prompt",
 }
 
 AGENT_RUN_TYPE_BY_AUTOMATION = {
-    "morning_brief": AgentRunType.MORNING_BRIEF,
-    "news_digest": AgentRunType.NEWS_DIGEST,
-    "email_triage": AgentRunType.EMAIL_TRIAGE,
-    "daily_planning": AgentRunType.DAILY_PLANNING,
     "calendar_sync": AgentRunType.CALENDAR_SYNC,
-    "task_review": AgentRunType.TASK_REVIEW,
-    "custom_prompt": AgentRunType.CUSTOM,
 }

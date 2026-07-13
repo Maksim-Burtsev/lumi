@@ -74,17 +74,16 @@ async def connection_status() -> dict:
         return {
             "status": "disconnected",
             "scopes": [],
-            "gmail_available": False,
             "calendar_available": False,
             "last_error": None,
         }
     try:
         creds = await load_credentials()
-        scopes = list(creds.scopes or settings.google_scopes)
+        configured_scopes = set(settings.google_scopes)
+        scopes = [scope for scope in (creds.scopes or settings.google_scopes) if scope in configured_scopes]
         return {
             "status": "connected",
             "scopes": scopes,
-            "gmail_available": any("gmail" in s for s in scopes),
             "calendar_available": any("calendar" in s for s in scopes),
             "last_error": None,
         }
@@ -92,7 +91,6 @@ async def connection_status() -> dict:
         return {
             "status": "needs_reauth",
             "scopes": [],
-            "gmail_available": False,
             "calendar_available": False,
             "last_error": str(exc),
         }
@@ -149,7 +147,7 @@ def build_auth_url(state: str) -> str:
     flow = _build_flow()
     url, _ = flow.authorization_url(
         access_type="offline",            # refresh_token for long-lived access
-        include_granted_scopes="true",
+        include_granted_scopes="false",
         prompt="consent",
         state=state,
     )

@@ -26,6 +26,10 @@ def _split_csv_int(value: object) -> object:
 
 CsvStrList = Annotated[list[str], NoDecode, BeforeValidator(_split_csv)]
 CsvIntList = Annotated[list[int], NoDecode, BeforeValidator(_split_csv_int)]
+GOOGLE_CALENDAR_SCOPES = (
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
+)
 
 
 class Settings(BaseSettings):
@@ -54,7 +58,6 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     allowed_telegram_user_ids: CsvIntList = Field(default_factory=list)
     log_unauthorized_telegram_ids: bool = True
-    telegram_image_max_bytes: int = 10_000_000
     telegram_webhook_enabled: bool = False
     telegram_webhook_secret: str | None = None
     telegram_chat_debounce_ms: int = 1200
@@ -96,21 +99,10 @@ class Settings(BaseSettings):
     google_oauth_client_secret_file: str | None = "/app/data/secrets/google_client_secret.json"
     google_oauth_token_file: str | None = "/app/data/secrets/google_token.json"
     google_scopes: CsvStrList = Field(
-        default_factory=lambda: [
-            "https://www.googleapis.com/auth/gmail.readonly",
-            "https://www.googleapis.com/auth/calendar.readonly",
-            "https://www.googleapis.com/auth/calendar.events",
-        ]
+        default_factory=lambda: list(GOOGLE_CALENDAR_SCOPES)
     )
     calendar_sync_days_ahead: int = 90
     calendar_sync_days_back: int = 1
-    store_email_bodies: bool = False
-
-    # --- News ---
-    news_default_topics: CsvStrList = Field(
-        default_factory=lambda: ["AI agents", "Telegram Mini Apps", "LLM pricing"]
-    )
-    news_max_items_per_topic: int = 10
 
     # --- Scheduler ---
     scheduler_tick_seconds: int = 30
@@ -136,6 +128,12 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("google_scopes")
+    @classmethod
+    def _google_calendar_scopes_only(cls, value: list[str]) -> list[str]:
+        scopes = [scope for scope in value if scope in GOOGLE_CALENDAR_SCOPES]
+        return scopes or list(GOOGLE_CALENDAR_SCOPES)
 
     @model_validator(mode="after")
     def _validate_telegram_progress_thresholds(self) -> Self:

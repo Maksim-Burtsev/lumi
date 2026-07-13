@@ -8,16 +8,12 @@ from lumi.db.models import (
     AgentRun,
     AssistantSuggestion,
     CalendarEvent,
-    EmailThread,
     FocusSession,
     LLMCall,
     Memory,
     Message,
-    NewsDigestRun,
-    NewsTopic,
     PendingConfirmation,
     Project,
-    ScheduledTask,
     Task,
     ToolCall,
     User,
@@ -186,22 +182,6 @@ def event_to_dict(event: CalendarEvent) -> dict[str, Any]:
     }
 
 
-def thread_to_dict(thread: EmailThread) -> dict[str, Any]:
-    candidate = (thread.metadata_ or {}).get("task_candidate")
-    return {
-        "id": str(thread.id),
-        "subject": thread.subject,
-        "sender": thread.participants[0] if thread.participants else None,
-        "snippet": thread.snippet,
-        "category": thread.category.value,
-        "importance": thread.importance,
-        "summary": thread.summary,
-        "suggested_action": (thread.metadata_ or {}).get("suggested_action"),
-        "last_message_at": _iso(thread.last_message_at),
-        "task_candidate": candidate,
-    }
-
-
 def confirmation_to_dict(confirmation: PendingConfirmation, *, locale: str | None = None) -> dict[str, Any]:
     policy = policy_for_action(confirmation.action_type)
     return {
@@ -214,42 +194,6 @@ def confirmation_to_dict(confirmation: PendingConfirmation, *, locale: str | Non
         "expires_at": _iso(confirmation.expires_at),
         "decided_at": _iso(confirmation.decided_at),
         **policy_to_dict(policy, locale=locale),
-    }
-
-
-def topic_to_dict(topic: NewsTopic) -> dict[str, Any]:
-    return {
-        "id": str(topic.id),
-        "title": topic.title,
-        "query": topic.query,
-        "language": topic.language,
-        "enabled": topic.enabled,
-        "created_at": _iso(topic.created_at),
-    }
-
-
-def digest_to_dict(digest: NewsDigestRun) -> dict[str, Any]:
-    return {
-        "id": str(digest.id),
-        "title": digest.title,
-        "digest_text": digest.digest_text,
-        "created_at": _iso(digest.created_at),
-    }
-
-
-def automation_to_dict(automation: ScheduledTask) -> dict[str, Any]:
-    return {
-        "id": str(automation.id),
-        "type": automation.type.value,
-        "title": automation.title,
-        "cron_expression": automation.cron_expression,
-        "timezone": automation.timezone,
-        "enabled": automation.enabled,
-        "config": automation.config,
-        "last_run_at": _iso(automation.last_run_at),
-        "next_run_at": _iso(automation.next_run_at),
-        "failure_count": automation.failure_count,
-        "last_error": automation.last_error,
     }
 
 

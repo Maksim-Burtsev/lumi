@@ -394,9 +394,6 @@ class EntityResolveRequest(BaseModel):
         "tasks",
         "calendar",
         "memories",
-        "automations",
-        "news",
-        "email",
         "settings",
         "connectors",
     ]] = Field(default_factory=list)
@@ -527,69 +524,6 @@ class MemoryDeleteRequest(BaseModel):
     confidence: float = 0.0
 
 
-class AutomationReadRequest(BaseModel):
-    include_system: bool = False
-    confidence: float = 0.0
-
-
-class AutomationUpdateRequest(BaseModel):
-    automation_id: uuid.UUID
-    title: str | None = None
-    cron_expression: str | None = None
-    timezone: str | None = None
-    enabled: bool | None = None
-    config: dict[str, Any] | None = None
-    confidence: float = 0.0
-
-
-class AutomationRunRequest(BaseModel):
-    automation_id: uuid.UUID
-    confidence: float = 0.0
-
-
-class NewsTopicReadRequest(BaseModel):
-    include_disabled: bool = True
-    confidence: float = 0.0
-
-
-class NewsTopicCreateRequest(BaseModel):
-    title: str
-    query: str
-    language: str = "ru"
-    config: dict[str, Any] = Field(default_factory=dict)
-    confidence: float = 0.0
-
-
-class NewsTopicUpdateRequest(BaseModel):
-    topic_id: uuid.UUID
-    title: str | None = None
-    query: str | None = None
-    language: str | None = None
-    enabled: bool | None = None
-    config: dict[str, Any] | None = None
-    confidence: float = 0.0
-
-
-class NewsDigestRunRequest(BaseModel):
-    confidence: float = 0.0
-
-
-class InboxReadRequest(BaseModel):
-    limit: int = 10
-    confidence: float = 0.0
-
-
-class EmailThreadReadRequest(BaseModel):
-    thread_id: uuid.UUID
-    confidence: float = 0.0
-
-
-class EmailTaskCreateRequest(BaseModel):
-    thread_id: uuid.UUID
-    title: str | None = None
-    confidence: float = 0.0
-
-
 class SettingsReadRequest(BaseModel):
     confidence: float = 0.0
 
@@ -604,28 +538,6 @@ class SettingsUpdateRequest(BaseModel):
 
 
 class ConnectorsReadRequest(BaseModel):
-    confidence: float = 0.0
-
-
-class AutomationRequest(BaseModel):
-    type: Literal["news_digest", "email_triage", "daily_planning", "calendar_sync", "task_review", "custom_prompt"]
-    title: str
-    cron_expression: str | None = None
-    timezone: str | None = None
-    config: dict[str, Any] = Field(default_factory=dict)
-    requires_confirmation: bool = True
-    confidence: float = 0.0
-
-
-class EmailRequest(BaseModel):
-    kind: Literal["triage", "summarize", "find"]
-    time_window: str | None = None
-    confidence: float = 0.0
-
-
-class NewsRequest(BaseModel):
-    kind: Literal["digest", "add_topic"]
-    topics: list[str] = Field(default_factory=list)
     confidence: float = 0.0
 
 
@@ -809,6 +721,7 @@ class AgentPlan(BaseModel):
         "final_answer",
         "tool_calls",
         "ask_user",
+        "out_of_scope",
         "needs_media_understanding",
         "needs_focused_vision",
     ] = "final_answer"
@@ -875,40 +788,11 @@ class ExtractedSignals(BaseModel):
     task_updates: list[TaskUpdate] = Field(default_factory=list)
     memory_candidates: list[MemoryCandidate] = Field(default_factory=list)
     calendar_requests: list[CalendarRequest] = Field(default_factory=list)
-    automation_requests: list[AutomationRequest] = Field(default_factory=list)
-    email_requests: list[EmailRequest] = Field(default_factory=list)
-    news_requests: list[NewsRequest] = Field(default_factory=list)
     should_answer_normally: bool = True
 
     @classmethod
     def empty(cls) -> ExtractedSignals:
         return cls()
-
-
-# --- Email triage output -----------------------------------------------------
-
-class TriageTaskCandidate(BaseModel):
-    title: str
-    due_at_local: datetime | None = None
-    priority: Literal["low", "medium", "high", "urgent"] = "medium"
-
-
-class TriageThreadResult(BaseModel):
-    external_thread_id: str
-    category: Literal[
-        "needs_reply", "waiting_for_me", "decision_needed", "fyi",
-        "newsletter", "invoice_document", "ignore", "unknown",
-    ] = "unknown"
-    importance: int = Field(default=3, ge=1, le=5)
-    reason: str | None = None
-    suggested_action: str | None = None
-    task_candidate: TriageTaskCandidate | None = None
-
-
-class TriageResult(BaseModel):
-    summary: str = ""
-    threads: list[TriageThreadResult] = Field(default_factory=list)
-    telegram_digest: str = ""
 
 
 # --- Daily planning output ---------------------------------------------------

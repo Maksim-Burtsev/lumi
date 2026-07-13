@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lumi.db.models import (
     AgentRun,
     CalendarEventStatus,
-    EmailCategory,
-    EmailThread,
     User,
 )
 from lumi.i18n import normalize_app_locale
@@ -84,14 +82,6 @@ class TodayService:
                 })
         timeline.sort(key=lambda item: item["start_at"])
 
-        needs_reply_count_result = await self.session.execute(
-            select(func.count()).select_from(EmailThread).where(
-                EmailThread.user_id == user.id,
-                EmailThread.category == EmailCategory.NEEDS_REPLY,
-            )
-        )
-        emails_need_reply = needs_reply_count_result.scalar_one()
-
         # --- needs attention ------------------------------------------------
         needs_attention: list[dict] = []
         for task in active_tasks:
@@ -103,24 +93,6 @@ class TodayService:
                     "subtitle": _overdue_subtitle(task.due_at, user.timezone, locale),
                     "ref_id": str(task.id),
                 })
-        important_threads = await self.session.execute(
-            select(EmailThread)
-            .where(
-                EmailThread.user_id == user.id,
-                EmailThread.category.in_([EmailCategory.NEEDS_REPLY, EmailCategory.DECISION_NEEDED]),
-            )
-            .order_by(EmailThread.importance.desc(), EmailThread.last_message_at.desc().nulls_last())
-            .limit(3)
-        )
-        for thread in important_threads.scalars():
-            sender = thread.participants[0] if thread.participants else ""
-            needs_attention.append({
-                "id": f"email-{thread.id}",
-                "kind": "email",
-                "title": thread.subject or _text(locale, "(no subject)", "(без темы)"),
-                "subtitle": thread.summary or sender or None,
-                "ref_id": str(thread.id),
-            })
         for confirmation in await self.confirmations.list_pending(user, limit=3):
             policy = policy_for_action(confirmation.action_type)
             if policy.approval_mode == "auto":
@@ -181,15 +153,6 @@ class TodayService:
                 ),
                 "action": {"type": "plan_day", "payload": {"date": tomorrow}},
             })
-        if emails_need_reply:
-            suggestions.append({
-                "id": "suggest-triage",
-                "kind": "email_triage",
-                "title": _text(locale, "Triage inbox", "Разобрать почту"),
-                "description": _emails_need_reply_description(emails_need_reply, locale),
-                "action": {"type": "run_triage", "payload": {}},
-            })
-
         # --- precomputed slot suggestions ------------------------------------
         slot_suggestions = []
         assistant_suggestions = AssistantSuggestionService(self.session)
@@ -233,7 +196,6 @@ class TodayService:
                 "tasks_active": task_counts["tasks_active"],
                 "tasks_due_today": task_counts["tasks_due_today"],
                 "tasks_overdue": task_counts["tasks_overdue"],
-                "emails_need_reply": emails_need_reply,
             },
             "timeline": timeline,
             "needs_attention": needs_attention,
@@ -294,12 +256,6 @@ def _overdue_tasks_description(count: int, locale: str) -> str:
     if locale == "en":
         return f"{count} overdue {_en_plural(count, 'task', 'tasks')} — I can suggest new slots"
     return f"{count} задач просрочено — предложу новые слоты"
-
-
-def _emails_need_reply_description(count: int, locale: str) -> str:
-    if locale == "en":
-        return f"{count} {_en_plural(count, 'email needs', 'emails need')} a reply"
-    return f"{count} писем ждут ответа"
 
 
 def _run_brief(run: AgentRun) -> dict:

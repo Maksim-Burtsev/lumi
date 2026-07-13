@@ -10,8 +10,8 @@ Core principle: **the LLM is stateless, the backend is stateful**. The model pro
 | `redis` | redis:7-alpine | arq queue and coordination |
 | `api` | `uvicorn lumi.main:app` | Mini App REST API, initData validation, `/app` static files |
 | `bot` | `python -m lumi.bot.runner` | aiogram long polling, commands, callbacks |
-| `worker` | `python -m lumi.worker.main` | arq jobs: digests, triage, planning, sync, reminder cron, compaction |
-| `scheduler` | `python -m lumi.scheduler.main` | every 30s: due `scheduled_tasks` -> queue |
+| `worker` | `python -m lumi.worker.main` | arq jobs: assistant turns, planning, calendar sync, reminders, compaction |
+| `scheduler` | `python -m lumi.scheduler.main` | every 30s: due system `calendar_sync` tasks -> queue |
 
 All four Python processes use the same `lumi-backend` image: one build, different commands.
 
@@ -23,7 +23,7 @@ flowchart TD
     TG -->|long polling| BOT[bot · aiogram]
     BOT --> GUARD[allowlist + private-only]
     GUARD --> ORCH[AssistantOrchestrator]
-    ORCH --> EXTR[SignalExtractor]
+    ORCH --> PLAN[Structured planner]
     ORCH --> CTX[ContextBuilder]
     ORCH --> LLMGW[LLMGateway]
     LLMGW --> MMX[MiniMax M3]
@@ -43,12 +43,11 @@ flowchart TD
 
     SCHED[scheduler] -->|due tasks| Q[(Redis · arq)]
     API -->|run now| Q
-    BOT -->|/plan /news /email| Q
+    BOT -->|/plan| Q
     Q --> WRK[worker]
     WRK --> SVCS
     WRK --> LLMGW
-    WRK --> GOOGLE[Gmail / Google Calendar]
-    WRK --> RSS[Google News RSS]
+    WRK --> GOOGLE[Google Calendar]
     WRK -->|sendMessage| TG
 ```
 
@@ -65,8 +64,8 @@ sequenceDiagram
     U->>B: "Remind me tomorrow at 10 to write Sasha"
     B->>O: handle_user_message()
     O->>DB: save Message(user), create AgentRun(chat)
-    O->>L: signal_extraction -> JSON
-    O->>DB: create Task + reminder, log ToolCall
+    O->>L: agent_planner -> typed tool_calls
+    O->>DB: validate + create Task/reminder + log ToolCall
     O->>DB: ContextBuilder: profile/tasks/calendar/memory/summary/recent
     O->>L: final_chat (full context + action results)
     O->>DB: save Message(assistant), AgentRun completed
@@ -74,7 +73,7 @@ sequenceDiagram
     B->>B: needs_compaction? -> enqueue compact_conversation
 ```
 
-Key detail: extraction and the final reply are **two separate LLM calls**. Extraction returns strict JSON and can fail silently (chat still works); the final reply receives the list of already executed backend actions in context, so it does not invent them.
+Key detail: the planner never executes actions. The backend validates each retained productivity tool, writes a `tool_calls` audit row, and only then executes it. Unsupported domains use a deterministic `out_of_scope` reply; unknown/stale tool names are logged as skipped. The final reply receives only backend-confirmed action results, so it cannot turn a proposal into fake success.
 
 ## Mini App flow
 
@@ -92,9 +91,9 @@ sequenceDiagram
     API-->>WA: JSON -> premium UI
 ```
 
-`Run now` endpoints (`plan-day`, `triage/run`, `digest/run`, `automations/{id}/run`) create an `agent_run`, **commit**, and enqueue a Redis job. The Mini App keeps a `GET /api/realtime` SSE stream open: the backend writes small `ui_events` inside the same transaction, publishes them to Redis only after commit, and the frontend invalidates React Query and refetches current REST endpoints. The older `GET /api/agent-runs/{id}` polling path remains as a fallback for user-started runs.
+Explicit planning and calendar-sync endpoints create an `agent_run`, **commit**, and enqueue a Redis job. The Mini App keeps a `GET /api/realtime` SSE stream open: the backend writes small `ui_events` inside the same transaction, publishes them to Redis only after commit, and the frontend invalidates React Query and refetches current REST endpoints. `GET /api/agent-runs/{id}` remains available for observability and fallback polling.
 
-## Automation flow
+## System Calendar sync flow
 
 ```mermaid
 sequenceDiagram
@@ -102,20 +101,19 @@ sequenceDiagram
     participant DB as Postgres
     participant R as Redis
     participant W as worker
-    participant TG as Telegram
 
-    S->>DB: SELECT scheduled_tasks WHERE next_run_at <= now FOR UPDATE SKIP LOCKED
+    S->>DB: SELECT due scheduled_tasks FOR UPDATE SKIP LOCKED
+    S->>S: allow only hidden system calendar_sync
     S->>DB: locked_until = now + 300s (double-run guard)
-    S->>DB: create AgentRun(queued)
-    S->>R: enqueue_job(run_news_digest, ...)
+    S->>DB: create AgentRun(calendar_sync, queued)
+    S->>R: enqueue_job(run_calendar_sync, notify=false)
     S->>DB: next_run_at = croniter.next() in user TZ
     W->>R: consume
     W->>DB: mark running -> execute -> mark completed/failed
     W->>DB: failure_count/last_error on scheduled_task
-    W->>TG: send digest/plan/reminder to user
 ```
 
-Reminders are a separate arq cron in the worker, running every minute: `find_due_reminders()` across all users, Telegram delivery with buttons, and idempotency via `metadata.reminder_sent_at`.
+Legacy user-created scheduled rows are retained for audit/history but disabled when encountered; no schema or table is dropped. Reminders are a separate arq cron in the worker, running every minute: `find_due_reminders()` across all users, Telegram delivery with buttons, and idempotency via `metadata.reminder_sent_at`.
 
 ## Code layers
 
@@ -124,15 +122,15 @@ bot/api  ->  assistant/orchestrator  ->  services  ->  connectors / llm  ->  DB 
 ```
 
 - `lumi/assistant/` - orchestrator, context_builder, signal_extractor, memory_service, compaction, prompts
-- `lumi/services/` - tasks, calendar, planning, email, news, automations, confirmations, today, runs, audit, users, notifier
-- `lumi/connectors/` - google (auth/gmail/calendar), news (rss)
+- `lumi/services/` - tasks, calendar, planning, system scheduling, confirmations, today, runs, audit, users, notifier
+- `lumi/connectors/` - Google Calendar and Yandex.Calendar
 - `lumi/llm/` - base protocol, minimax, mock, gateway (llm_calls logging), json_utils
 - `lumi/security/` - telegram_auth (HMAC initData), crypto (Fernet)
 - `lumi/api/` - deps (auth), routes/*, serializers, run_helper
 - `lumi/bot/` - handlers, keyboards, formatting, runner
 - `lumi/worker/`, `lumi/scheduler/` - background processing
 
-Rule: bot handlers and API routes never call MiniMax/Gmail/Calendar directly; they go through services and connectors. Every agent action is a row in `tool_calls`, every model call is in `llm_calls`, and every run is in `agent_runs` (see Agent Runs in the Mini App).
+Rule: bot handlers and API routes never call MiniMax or Calendar providers directly; they go through services and connectors. Every proposed tool that reaches the executor has a row in `tool_calls`, every model call is in `llm_calls`, and every run is in `agent_runs`.
 
 ## Agent run lifecycle
 
@@ -148,18 +146,17 @@ queued -> running -> completed
 Risky or low-confidence actions are not executed immediately:
 
 ```text
-SignalExtractor -> PendingConfirmation(pending) + [yes]/[no] buttons in Telegram
+Planner tool call -> PendingConfirmation(pending) + [yes]/[no] buttons in Telegram
 -> callback confirm:<id> -> ConfirmationExecutor -> action -> audit_log
 ```
 
-Always require confirmation: writes to external Google Calendar, enabling automations, and tasks/memory below the confidence threshold. Email sending/deletion is not implemented at all by design.
+Always require confirmation: writes to external Google Calendar and tasks/memory below the confidence threshold. User-defined automations, email/news actions, image analysis, research, and general Q&A are outside the product scope.
 
 ## Extension points
 
 | Today | Replacement | Where to change |
 |---|---|---|
 | MiniMax M3 | OpenAI/Anthropic/local | `lumi/llm/` - new provider behind `LLMProvider` |
-| Gmail | Outlook | `lumi/connectors/` + `EmailService` |
 | keyword memory | pgvector | `MemoryService.retrieve_relevant` |
 | polling | webhook | `bot/runner.py` |
 | no real-time | SSE + Redis fanout | `services/realtime.py`, `/api/realtime`, `ui_events` |

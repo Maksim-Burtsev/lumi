@@ -30,7 +30,7 @@ GET /api/settings → {
   "llm": {"provider": "minimax"|"mock", "model": str, "configured": bool},
   "google": GoogleStatus,
   "yandex": YandexStatus,
-  "flags": {"store_email_bodies": bool, "store_llm_debug_payloads": bool, "dev_auth": bool},
+  "flags": {"store_llm_debug_payloads": bool, "dev_auth": bool},
   "app": {"public_url": str|null, "env": str}
 }
 
@@ -52,7 +52,7 @@ GET /api/today → {
   "greeting": str,                      // localized greeting, e.g. Good morning / Good afternoon / ...
   "summary": {
     "meetings_today": int, "tasks_active": int, "tasks_due_today": int,
-    "tasks_overdue": int, "emails_need_reply": int
+    "tasks_overdue": int
   },
   "timeline": [TimelineItem],           // today's events + focus blocks, sorted by start
   "needs_attention": [AttentionItem],
@@ -67,15 +67,15 @@ TimelineItem = {
   "status": "confirmed"|"tentative"|"proposed"|"cancelled", "busy": bool
 }
 
-AttentionItem = {"id": str, "kind": "overdue_task"|"due_task"|"email"|"confirmation",
+AttentionItem = {"id": str, "kind": "overdue_task"|"due_task"|"confirmation",
                  "title": str, "subtitle": str|null, "ref_id": uuid|null,
                  "action_type": str|null, "action_payload": object|null,
                  "risk_class": str|null, "approval_mode": str|null, "ui_mode": str|null,
                  "primary_label": str|null, "secondary_label": str|null}
 
-Suggestion = {"id": str, "kind": "focus_block"|"plan_day"|"email_triage"|"news_digest",
+Suggestion = {"id": str, "kind": "focus_block"|"plan_day",
               "title": str, "description": str|null,
-              "action": {"type": "plan_day"|"run_triage"|"run_digest"|"confirm_block", "payload": object}}
+              "action": {"type": "plan_day"|"confirm_block", "payload": object}}
 
 SlotSuggestion = {"id": uuid, "title": str, "description": str|null,
                   "start_at": ts, "end_at": ts,
@@ -242,55 +242,9 @@ POST /api/calendar/sync → {"run_id": uuid, "status": "queued"}           // re
 GET  /api/calendar/free-slots?date=YYYY-MM-DD&duration=60 → {"items": [{"start_at": ts, "end_at": ts}]}
 ```
 
-## Inbox (email)
+## Removed product routes
 
-```
-GET /api/inbox/summary → {
-  "connected": bool,
-  "last_triage_at": ts|null,
-  "counts": {"needs_reply": int, "waiting_for_me": int, "decision_needed": int,
-             "fyi": int, "newsletter": int, "invoice_document": int, "ignore": int, "unknown": int},
-  "threads": [EmailThread]              // most recent 50
-}
-
-EmailThread = {
-  "id": uuid, "subject": str|null, "sender": str|null, "snippet": str|null,
-  "category": str, "importance": int, "summary": str|null,
-  "suggested_action": str|null, "last_message_at": ts|null,
-  "task_candidate": {"title": str, "due_at": ts|null, "priority": str}|null
-}
-
-POST /api/inbox/triage/run → {"run_id": uuid, "status": "queued"}   // 409 {"error":"google_not_connected"} if no connector
-POST /api/inbox/threads/{id}/create-task → {"task": Task}
-```
-
-## News
-
-```
-NewsTopic = {"id": uuid, "title": str, "query": str, "language": str, "enabled": bool, "created_at": ts}
-
-GET   /api/news/topics → {"items": [NewsTopic]}
-POST  /api/news/topics  body: {"title": str, "query": str, "language"?} → {"topic": NewsTopic} (201)
-PATCH /api/news/topics/{id}  body: subset → {"topic": NewsTopic}
-GET   /api/news/digests?limit=5 → {"items": [{"id": uuid, "title": str, "digest_text": str, "created_at": ts}]}
-POST  /api/news/digest/run → {"run_id": uuid, "status": "queued"}
-```
-
-## Automations
-
-```
-Automation = {
-  "id": uuid, "type": "news_digest"|"email_triage"|"daily_planning"|"calendar_sync"|"task_review"|"custom_prompt",
-  "title": str, "cron_expression": str, "timezone": str, "enabled": bool,
-  "config": object, "last_run_at": ts|null, "next_run_at": ts|null,
-  "failure_count": int, "last_error": str|null
-}
-
-GET   /api/automations → {"items": [Automation]}
-POST  /api/automations  body: {"type", "title", "cron_expression", "timezone"?, "config"?, "enabled"?} → {"automation": Automation} (201)
-PATCH /api/automations/{id}  body: subset → {"automation": Automation}
-POST  /api/automations/{id}/run → {"run_id": uuid, "status": "queued"}
-```
+`/api/inbox/*`, `/api/news/*`, and `/api/automations/*` are intentionally absent. Historical database rows remain for non-destructive audit compatibility, but they are not exposed or executed.
 
 ## Memory
 
@@ -327,7 +281,7 @@ GET /api/agent-runs/{id} → {
 GoogleStatus = {
   "status": "disconnected"|"connected"|"error"|"needs_reauth",
   "scopes": [str], "last_sync_at": ts|null, "last_error": str|null,
-  "gmail_available": bool, "calendar_available": bool
+  "calendar_available": bool
 }
 
 GET  /api/connectors/google/status → GoogleStatus
@@ -368,8 +322,7 @@ data: {"topics":["*"],"event_type":"resync","payload":{"reason":"client_queue_ov
 ```
 
 Events are invalidation hints, not source-of-truth payloads. The Mini App refetches existing REST
-queries for topics such as `tasks`, `focus`, `calendar`, `runs`, `inbox`, `news`, `automations`,
-`memories`, and `settings`.
+queries for topics such as `tasks`, `focus`, `calendar`, `runs`, `memories`, and `settings`.
 
 ## Debug (local only, `APP_ENV=local`)
 

@@ -3,7 +3,7 @@
 
 Usage:
   1. Create an OAuth client (Desktop app) in Google Cloud Console,
-     enable Gmail API + Google Calendar API, add yourself as a test user.
+     enable Google Calendar API, add yourself as a test user.
   2. Save the client secret JSON to ./data/secrets/google_client_secret.json
   3. pip install google-auth-oauthlib   (or: uv pip install google-auth-oauthlib)
   4. python3 scripts/google_auth_local.py
@@ -20,7 +20,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 CLIENT_SECRET = REPO_ROOT / "data" / "secrets" / "google_client_secret.json"
 TOKEN_PATH = REPO_ROOT / "data" / "secrets" / "google_token.json"
 SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/calendar.readonly",
     "https://www.googleapis.com/auth/calendar.events",
 ]

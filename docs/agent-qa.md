@@ -106,7 +106,8 @@ Check more than the happy path, and check both English and Russian phrasing. Min
 - Exact-title flow: update a task by title.
 - Ambiguous flow: several similar tasks produce pending confirmation/buttons, not a false success.
 - Missing-candidate flow: safe clarification, no fake "done".
-- Ordinary no-tool question: normal answer without tool execution.
+- Capability question: scoped answer without tool execution.
+- General Q&A/research/email/news/image/automation request: domain-boundary reply without tool execution or fake action.
 - English + Russian phrasing for realistic user messages.
 - Mini App load from Telegram menu: `/app`, assets, `/api/settings`, `/api/today`.
 

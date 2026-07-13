@@ -16,15 +16,17 @@ from lumi.bot.media import (
     AttachmentBatchBuffer,
     build_logical_message,
     classify_attachment_message,
-    extract_image_ref,
 )
 from lumi.bot.schedule_messages import render_today_schedule
 from lumi.config import get_settings
-from lumi.db.models import CalendarEventStatus, ConfirmationStatus, Message, MessageRole
+from lumi.db.models import AgentRunType, CalendarEventStatus, ConfirmationStatus, Message, MessageRole
 from lumi.db.session import session_scope
 from lumi.i18n import normalize_reply_language
 from lumi.logging import get_logger, telegram_update_id_var
-from lumi.services.confirmation_executor import ConfirmationExecutor
+from lumi.services.confirmation_executor import (
+    REMOVED_CONFIRMATION_ACTIONS,
+    ConfirmationExecutor,
+)
 from lumi.services.confirmations import ConfirmationService
 from lumi.services.realtime import commit_with_realtime
 from lumi.services.runs import RunService
@@ -35,14 +37,13 @@ from lumi.services.today import TodayService
 from lumi.services.turns import TelegramIntakeService, TurnService
 from lumi.services.users import UserService
 from lumi.utils.text import chunk_telegram
-from lumi.worker.jobs import AGENT_RUN_TYPE_BY_AUTOMATION, JOB_BY_AUTOMATION_TYPE
 from lumi.worker.queue import enqueue_job, get_queue
 
 log = get_logger(__name__)
 router = Router(name="lumi")
 REJECTED_ATTACHMENT_REPLY = (
-    "Не обрабатываю сообщения с несколькими картинками или неподдерживаемыми вложениями. "
-    "Пришли одно изображение JPEG/PNG/WEBP до 10 MB без других файлов."
+    "Я не анализирую изображения и другие вложения. "
+    "Могу помочь с задачами, календарём, фокус-сессиями и планом дня — опиши запрос текстом."
 )
 
 
@@ -398,10 +399,10 @@ async def cmd_start(message: TgMessage) -> None:
     settings = get_settings()
     text = (
         f"Привет, {name}! Я Lumi — твой личный ассистент.\n\n"
-        "Я веду задачи, напоминания, календарь, почту и новости — всё в одном чате.\n\n"
+        "Я веду задачи, напоминания, календарь и фокус-сессии — всё в одном чате.\n\n"
         "Попробуй написать:\n"
         "«Напомни завтра в 10 написать Саше по договору»\n\n"
-        "Или открой Mini App — там Today, задачи, календарь и автоматизации.\n\n"
+        "Или открой Mini App — там Today, задачи, сессии и календарь.\n\n"
         "Хочешь, чтобы я сразу понимал твой контекст? Жми /intro — 5 коротких вопросов."
     )
     if not settings.mini_app_url:
@@ -532,7 +533,7 @@ async def cmd_tasks(message: TgMessage) -> None:
     await _reply_chunks(message, text)
 
 
-async def _enqueue_automation_run(message: TgMessage, automation_type: str, started_text: str) -> None:
+async def _enqueue_daily_planning(message: TgMessage) -> None:
     tg_user = message.from_user
     if tg_user is None:
         return
@@ -545,7 +546,7 @@ async def _enqueue_automation_run(message: TgMessage, automation_type: str, star
         )
         run = await RunService(session).create(
             user_id=user.id,
-            type_=AGENT_RUN_TYPE_BY_AUTOMATION[automation_type],
+            type_=AgentRunType.DAILY_PLANNING,
             trigger="telegram_command",
         )
         run.metadata_ = {
@@ -555,11 +556,11 @@ async def _enqueue_automation_run(message: TgMessage, automation_type: str, star
         user_id = str(user.id)
         run_id = str(run.id)
     job_id = await enqueue_job(
-        JOB_BY_AUTOMATION_TYPE[automation_type], user_id,
+        "run_daily_planning", user_id,
         agent_run_id=run_id, trigger="telegram_command",
     )
     if job_id:
-        await message.answer(started_text)
+        await message.answer("Собираю план дня — пришлю через минуту.")
     else:
         await message.answer("Очередь задач недоступна — проверь, что worker и Redis запущены.")
 
@@ -568,21 +569,7 @@ async def _enqueue_automation_run(message: TgMessage, automation_type: str, star
 async def cmd_plan(message: TgMessage) -> None:
     if not await _check_allowed(message):
         return
-    await _enqueue_automation_run(message, "daily_planning", "Собираю план дня — пришлю через минуту.")
-
-
-@router.message(Command("news"))
-async def cmd_news(message: TgMessage) -> None:
-    if not await _check_allowed(message):
-        return
-    await _enqueue_automation_run(message, "news_digest", "Собираю свежий дайджест — пришлю через пару минут.")
-
-
-@router.message(Command("email"))
-async def cmd_email(message: TgMessage) -> None:
-    if not await _check_allowed(message):
-        return
-    await _enqueue_automation_run(message, "email_triage", "Разбираю почту — скоро пришлю выжимку.")
+    await _enqueue_daily_planning(message)
 
 
 @router.message(Command("settings"))
@@ -642,17 +629,16 @@ async def on_chat_message(message: TgMessage, bot: Bot, telegram_update_id: int 
 
     text = logical_message.text
     turn_text, message_context = _message_context_payload(message, text=text)
-    image_ref = logical_message.image_ref
     supported_images = [image.to_metadata() for image in (logical_message.supported_images or [])]
     unsupported_attachments = list(logical_message.unsupported_attachments or [])
 
-    if logical_message.is_rejected:
+    if supported_images or unsupported_attachments:
         await _record_rejected_attachment_turn(
             message,
             text=text,
             supported_images=supported_images,
             unsupported_attachments=unsupported_attachments,
-            rejection_reason=logical_message.rejection_reason or "attachment_rejected",
+            rejection_reason="unsupported_product_attachment",
             telegram_message_ids=list(logical_message.telegram_message_ids or [message.message_id]),
             media_group_id=logical_message.media_group_id,
             telegram_message_id=logical_message.primary_message_id,
@@ -679,14 +665,6 @@ async def on_chat_message(message: TgMessage, bot: Bot, telegram_update_id: int 
             await commit_with_realtime(session)
             await message.answer(reply)
             return
-        if image_ref is None and not logical_message.media_group_id and message.reply_to_message:
-            image_ref = extract_image_ref(message.reply_to_message, source="reply")
-
-    if image_ref is not None:
-        if image_ref.file_size and image_ref.file_size > get_settings().telegram_image_max_bytes:
-            await message.answer("Картинка слишком большая. Пришли изображение до 10 MB.")
-            return
-
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
     try:
@@ -701,8 +679,6 @@ async def on_chat_message(message: TgMessage, bot: Bot, telegram_update_id: int 
                 first_name=tg_user.first_name,
                 last_name=tg_user.last_name,
                 language_code=tg_user.language_code,
-                image_metadata=image_ref.to_metadata() if image_ref else None,
-                ignored_attachments=[],
                 payload={
                     **message_context,
                     "media_group_id": logical_message.media_group_id,
@@ -776,13 +752,20 @@ async def on_confirmation(callback: CallbackQuery) -> None:
             await callback.answer("Уже решено")
             return
         confirmation = await confirmations.decide(user, confirmation, accept=accept)
-        if accept and confirmation.status == ConfirmationStatus.ACCEPTED:
-            text = await ConfirmationExecutor(session).execute(user, confirmation)
-        elif confirmation.status == ConfirmationStatus.EXPIRED:
+        if confirmation.status == ConfirmationStatus.EXPIRED:
             text = "Это предложение уже истекло."
+            callback_text = "Истекло"
+        elif accept and confirmation.status == ConfirmationStatus.ACCEPTED:
+            if confirmation.action_type in REMOVED_CONFIRMATION_ACTIONS:
+                text = "Это действие больше не входит в продуктивный контур Lumi."
+                callback_text = "Недоступно"
+            else:
+                text = await ConfirmationExecutor(session).execute(user, confirmation)
+                callback_text = "Готово"
         else:
             text = "Ок, не делаю."
-    await callback.answer("Готово" if accept else "Отменено")
+            callback_text = "Отменено"
+    await callback.answer(callback_text)
     await _answer_callback_message(callback, text)
 
 
@@ -1114,61 +1097,6 @@ async def on_block_confirm(callback: CallbackQuery) -> None:
     await _answer_callback_message(callback, text)
 
 
-@router.callback_query(F.data == "email_create_tasks")
-async def on_email_create_tasks(callback: CallbackQuery) -> None:
-    if not await _check_allowed(callback):
-        await callback.answer()
-        return
-    async with session_scope() as session:
-        user = await UserService(session).ensure_user(callback.from_user.id)
-        from sqlalchemy import select
-
-        from lumi.db.models import EmailThread
-        from lumi.utils.time import local_to_utc
-
-        result = await session.execute(
-            select(EmailThread).where(
-                EmailThread.user_id == user.id,
-                EmailThread.triage_status == "triaged",
-            ).order_by(EmailThread.updated_at.desc()).limit(20)
-        )
-        tasks_service = TaskService(session)
-        created: list[str] = []
-        for thread in result.scalars():
-            candidate = thread.metadata_.get("task_candidate")
-            if not candidate or thread.metadata_.get("task_created"):
-                continue
-            due_at = None
-            if candidate.get("due_at_local"):
-                from datetime import datetime
-
-                try:
-                    due_at = local_to_utc(
-                        datetime.fromisoformat(candidate["due_at_local"]), user.timezone
-                    )
-                except ValueError:
-                    due_at = None
-            task = await tasks_service.create_task(
-                user,
-                title=candidate.get("title") or (thread.subject or "Письмо"),
-                priority=candidate.get("priority", "medium"),
-                due_at=due_at,
-                source="email",
-                created_by="agent",
-                actor="user",
-            )
-            thread.metadata_ = {**thread.metadata_, "task_created": str(task.id)}
-            created.append(task.title)
-    await callback.answer(f"Создано задач: {len(created)}")
-    if created:
-        await _answer_callback_message(
-            callback,
-            "Создал задачи из почты:\n" + "\n".join(f"• {t}" for t in created)
-        )
-    else:
-        await _answer_callback_message(callback, "Новых задач из почты не нашлось — всё уже создано.")
-
-
 @router.callback_query(F.data.startswith("access_grant:") | F.data.startswith("access_deny:"))
 async def on_access_decision(callback: CallbackQuery) -> None:
     if callback.from_user is None or not _is_owner(callback.from_user.id):
@@ -1210,39 +1138,3 @@ async def on_access_decision(callback: CallbackQuery) -> None:
             "Доступ открыт — добро пожаловать в Lumi! 🎉\n"
             "Начни с /intro (короткое знакомство) или сразу пиши, что нужно сделать.",
         )
-
-
-@router.callback_query(F.data.startswith("run:"))
-async def on_run_automation(callback: CallbackQuery) -> None:
-    if not await _check_allowed(callback):
-        await callback.answer()
-        return
-    data = callback.data
-    if data is None:
-        await callback.answer("Неизвестный тип")
-        return
-    automation_type = data.split(":", 1)[1]
-    if automation_type not in JOB_BY_AUTOMATION_TYPE:
-        await callback.answer("Неизвестный тип")
-        return
-    async with session_scope() as session:
-        user = await UserService(session).ensure_user(callback.from_user.id)
-        run = await RunService(session).create(
-            user_id=user.id,
-            type_=AGENT_RUN_TYPE_BY_AUTOMATION[automation_type],
-            trigger="telegram_callback",
-        )
-        user_id, run_id = str(user.id), str(run.id)
-    job_id = await enqueue_job(
-        JOB_BY_AUTOMATION_TYPE[automation_type], user_id,
-        agent_run_id=run_id, trigger="telegram_callback",
-    )
-    await callback.answer("Запустил" if job_id else "Очередь недоступна")
-    if job_id:
-        names = {
-            "news_digest": "Собираю дайджест…",
-            "email_triage": "Разбираю почту…",
-            "daily_planning": "Собираю план дня…",
-            "calendar_sync": "Синхронизирую календарь…",
-        }
-        await _answer_callback_message(callback, names.get(automation_type, "Запустил…"))
