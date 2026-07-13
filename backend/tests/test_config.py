@@ -57,3 +57,29 @@ def test_telegram_progress_thresholds_allow_equal_values():
 
     assert settings.telegram_progress_stale_after_seconds == 12
     assert settings.telegram_progress_long_after_seconds == 12
+
+
+def test_default_google_scopes_are_calendar_only():
+    settings = Settings(_env_file=None)
+
+    assert settings.google_scopes == [
+        "https://www.googleapis.com/auth/calendar.readonly",
+        "https://www.googleapis.com/auth/calendar.events",
+    ]
+    assert all("gmail" not in scope for scope in settings.google_scopes)
+
+
+def test_legacy_gmail_scope_is_discarded_from_environment_config():
+    settings = Settings(
+        _env_file=None,
+        google_scopes=[
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/calendar.readonly",
+            "https://www.googleapis.com/auth/calendar.events",
+        ],
+    )
+
+    assert settings.google_scopes == [
+        "https://www.googleapis.com/auth/calendar.readonly",
+        "https://www.googleapis.com/auth/calendar.events",
+    ]

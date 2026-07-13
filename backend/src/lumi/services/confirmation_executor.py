@@ -7,11 +7,10 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lumi.assistant.memory_service import MemoryService
-from lumi.assistant.schemas import AutomationRequest, CalendarRequest, ExtractedTask, MemoryCandidate
+from lumi.assistant.schemas import CalendarRequest, ExtractedTask, MemoryCandidate
 from lumi.db.models import PendingConfirmation, TaskStatus, User
 from lumi.i18n import normalize_app_locale
 from lumi.logging import get_logger
-from lumi.services.automations import AutomationService
 from lumi.services.calendar import CalendarService
 from lumi.services.task_update_fields import resolve_task_update_fields
 from lumi.services.task_update_replies import format_task_bulk_update_reply, format_task_update_reply
@@ -19,6 +18,12 @@ from lumi.services.tasks import TaskService
 from lumi.utils.time import fmt_local, local_to_utc
 
 log = get_logger(__name__)
+REMOVED_CONFIRMATION_ACTIONS = frozenset({
+    "create_automation",
+    "send_email",
+    "delete_email",
+    "archive_email",
+})
 
 
 class ConfirmationExecutor:
@@ -29,7 +34,6 @@ class ConfirmationExecutor:
         self.tasks = TaskService(session)
         self.memory = MemoryService(session)
         self.calendar = CalendarService(session)
-        self.automations = AutomationService(session)
 
     async def execute(self, user: User, confirmation: PendingConfirmation) -> str:
         locale = normalize_app_locale(user.locale)
@@ -160,23 +164,6 @@ class ConfirmationExecutor:
                     tags_add=tags_add,
                     tags_remove=tags_remove,
                     language=str(payload.get("language") or locale),
-                )
-
-            if action == "create_automation":
-                automation_request = AutomationRequest.model_validate(payload)
-                automation = await self.automations.create(
-                    user,
-                    type_=automation_request.type,
-                    title=automation_request.title,
-                    cron_expression=automation_request.cron_expression or "30 8 * * 1-5",
-                    timezone=automation_request.timezone,
-                    config=automation_request.config,
-                    enabled=True,
-                )
-                return _text(
-                    locale,
-                    f"Automation \"{automation.title}\" is enabled ({automation.cron_expression}).",
-                    f"Автоматизация «{automation.title}» включена ({automation.cron_expression}).",
                 )
 
             if action == "create_google_calendar_event":

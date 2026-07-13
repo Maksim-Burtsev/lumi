@@ -22,19 +22,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lumi.assistant.action_reply_renderer import ActionOutcome, ActionReplyRenderer
 from lumi.assistant.context_builder import ContextBuilder, PlannerContext, PlannerContextBuilder
 from lumi.assistant.media import ImageInput, MediaCandidate, media_candidate_id
-from lumi.assistant.media_understanding import (
-    FocusedVisionService,
-    MediaReferenceService,
-    MediaUnderstandingService,
-)
 from lumi.assistant.memory_service import MemoryService
 from lumi.assistant.planner import AgentPlanner
 from lumi.assistant.schemas import (
     AgentPlan,
-    AutomationReadRequest,
-    AutomationRequest,
-    AutomationRunRequest,
-    AutomationUpdateRequest,
     BulkTaskPatchRequest,
     CalendarEventCancelRequest,
     CalendarEventsRequest,
@@ -42,29 +33,20 @@ from lumi.assistant.schemas import (
     CalendarPrivateNoteRequest,
     CalendarRequest,
     ConnectorsReadRequest,
-    EmailRequest,
-    EmailTaskCreateRequest,
-    EmailThreadReadRequest,
     EntityResolveRequest,
     ExtractedTask,
-    FocusedVisionRequest,
-    InboxReadRequest,
     MediaUnderstanding,
     MemoryCandidate,
     MemoryDeleteRequest,
     MemoryReadRequest,
     MemoryUpdateRequest,
-    NewsDigestRunRequest,
-    NewsRequest,
-    NewsTopicCreateRequest,
-    NewsTopicReadRequest,
-    NewsTopicUpdateRequest,
     PlannedToolCall,
     SettingsReadRequest,
     SettingsUpdateRequest,
     TaskPatchRequest,
     TaskUpdate,
 )
+from lumi.assistant.tool_registry import TOOL_NAMES
 from lumi.bot.schedule_messages import (
     render_schedule_message,
     schedule_items_from_calendar_events,
@@ -75,8 +57,6 @@ from lumi.db.models import (
     CalendarEvent,
     CalendarEventStatus,
     Connector,
-    EmailMessage,
-    EmailThread,
     MemoryKind,
     Message,
     MessageRole,
@@ -92,7 +72,6 @@ from lumi.i18n import (
 )
 from lumi.llm.gateway import LLMGateway
 from lumi.logging import agent_run_id_var, get_logger
-from lumi.services.automations import AutomationService
 from lumi.services.calendar import (
     CalendarConflictError,
     CalendarService,
@@ -102,10 +81,8 @@ from lumi.services.calendar import (
     private_note_needs_summary,
 )
 from lumi.services.confirmations import ConfirmationService
-from lumi.services.email import EmailService
-from lumi.services.news import NewsService
 from lumi.services.planning import CalendarSyncService, PlanningService
-from lumi.services.realtime import RealtimeEventService, commit_with_realtime
+from lumi.services.realtime import RealtimeEventService
 from lumi.services.runs import RunService
 from lumi.services.task_update_fields import resolve_task_update_fields
 from lumi.services.task_update_replies import (
@@ -152,13 +129,6 @@ IMAGE_SOURCED_CONFIRM_TOOLS = {
     "update_calendar_private_note",
     "delete_calendar_private_note",
     "create_external_calendar_event",
-    "create_automation",
-    "update_automation",
-    "run_automation",
-    "create_news_topic",
-    "update_news_topic",
-    "run_news_digest",
-    "create_task_from_email",
     "update_settings",
 }
 AGENT_LOOP_MAX_MODEL_STEPS = 4
@@ -171,10 +141,6 @@ READ_ONLY_LOOP_TOOLS = {
     "read_calendar_events",
     "resolve_entity",
     "read_memories",
-    "read_automations",
-    "read_news_topics",
-    "read_inbox",
-    "read_email_thread",
     "read_settings",
     "read_connectors",
 }
@@ -886,6 +852,48 @@ def _text_for_language(language: str | None, *, en: str, ru: str, it: str | None
     return en
 
 
+def _boundary_language(user: User, text: str, planner_language: str | None = None) -> str:
+    if planner_language:
+        return normalize_reply_language(planner_language)
+    if re.search(r"[А-Яа-яЁё]", text):
+        return "ru"
+    return normalize_reply_language(user.language_code or user.locale)
+
+
+def _product_scope_boundary_text(language: str | None, *, image: bool = False) -> str:
+    if image:
+        return _text_for_language(
+            language,
+            en=(
+                "I can't analyze images. Lumi is focused on tasks, reminders, calendar planning, "
+                "focus sessions, and your saved work context."
+            ),
+            ru=(
+                "Я не анализирую изображения. Lumi работает с задачами, напоминаниями, "
+                "планированием календаря, фокус-сессиями и сохранённым рабочим контекстом."
+            ),
+            it=(
+                "Non posso analizzare immagini. Lumi gestisce attività, promemoria, pianificazione "
+                "del calendario, sessioni di concentrazione e contesto di lavoro salvato."
+            ),
+        )
+    return _text_for_language(
+        language,
+        en=(
+            "That is outside Lumi's scope. I can help with tasks, reminders, calendar planning, "
+            "focus sessions, daily planning, and your saved work context."
+        ),
+        ru=(
+            "Это вне возможностей Lumi. Я могу помочь с задачами, напоминаниями, "
+            "планированием календаря, фокус-сессиями, планом дня и сохранённым рабочим контекстом."
+        ),
+        it=(
+            "Questa richiesta non rientra nelle funzioni di Lumi. Posso aiutarti con attività, "
+            "promemoria, calendario, sessioni di concentrazione, piano giornaliero e contesto salvato."
+        ),
+    )
+
+
 def _accept_block_button_text(language: str | None) -> str:
     return _text_for_language(
         language,
@@ -1111,9 +1119,6 @@ def _entity_button_text(candidate: dict[str, Any]) -> str:
         "task": "Task",
         "calendar": "Calendar",
         "memory": "Memory",
-        "automation": "Automation",
-        "news": "News",
-        "email": "Email",
         "settings": "Settings",
         "connector": "Connector",
     }.get(str(candidate.get("type")), "Item")
@@ -1130,17 +1135,11 @@ def _entity_choice_text(language: str | None, *, query: str, candidates: list[di
             "task": "задача",
             "calendar": "блок в расписании",
             "memory": "память",
-            "automation": "автоматизация",
-            "news": "новости",
-            "email": "email",
         },
         "it": {
             "task": "attivita",
             "calendar": "blocco calendario",
             "memory": "memoria",
-            "automation": "automazione",
-            "news": "notizie",
-            "email": "email",
         },
     }.get(lang, {})
     type_text = ", ".join(labels.get(item, item) for item in types) if types else "items"
@@ -1292,9 +1291,6 @@ def _tool_observation(
             "update_calendar_event",
             "cancel_calendar_event",
             "update_memory",
-            "update_automation",
-            "update_news_topic",
-            "read_email_thread",
             "final_answer",
             "ask_user",
         ]
@@ -1309,12 +1305,6 @@ def _tool_observation(
         ]
     elif call.name == "read_memories":
         next_valid_actions = ["update_memory", "delete_memory", "read_memories", "final_answer", "ask_user"]
-    elif call.name == "read_automations":
-        next_valid_actions = ["update_automation", "run_automation", "read_automations", "final_answer", "ask_user"]
-    elif call.name == "read_news_topics":
-        next_valid_actions = ["create_news_topic", "update_news_topic", "run_news_digest", "final_answer", "ask_user"]
-    elif call.name in {"read_inbox", "read_email_thread"}:
-        next_valid_actions = ["read_email_thread", "create_task_from_email", "final_answer", "ask_user"]
     elif call.name in {"read_settings", "read_connectors"}:
         next_valid_actions = ["update_settings", "final_answer", "ask_user"]
     return {
@@ -1447,15 +1437,9 @@ class AssistantOrchestrator:
         self.tasks = TaskService(session)
         self.memory = MemoryService(session)
         self.calendar = CalendarService(session)
-        self.automations = AutomationService(session)
-        self.email = EmailService(session)
-        self.news = NewsService(session, llm=self.llm)
         self.confirmations = ConfirmationService(session)
         self.runs = RunService(session)
         self.planner = AgentPlanner(self.llm)
-        self.media_understanding = MediaUnderstandingService(self.llm)
-        self.media_reference = MediaReferenceService(self.llm)
-        self.focused_vision = FocusedVisionService(self.llm)
         self.action_reply_renderer = ActionReplyRenderer(self.llm)
         self.context_builder = ContextBuilder(session)
         self.planner_context_builder = PlannerContextBuilder(session)
@@ -1587,50 +1571,21 @@ class AssistantOrchestrator:
         agent_run_id_var.set(str(run.id))
         await progress(_initial_progress_status(user))
 
-        # 4. Image understanding must happen before planner/final-answer short-circuits.
-        media_context: MediaUnderstanding | None = None
-        current_media: MediaCandidate | None = None
-        selected_image = image
+        # 4. Images are outside the product scope. Preserve the inbound message/run audit,
+        # but do not invoke vision or the planner.
         if image:
-            await progress("Inspecting image...")
-            media_started_at = perf_counter()
-            media_context = await self.media_understanding.analyze(
-                user_id=user.id,
-                timezone=user.timezone,
-                text=trusted_text,
-                image=image,
-                agent_run_id=run.id,
-                session=self.session,
-            )
-            record_timing("media_understanding_ms", media_started_at)
-            media_json = media_context.to_audit_json()
-            inbound.content_json = {
-                **(inbound.content_json or {"text": text}),
-                "images": image_metadata,
-                "media_context": media_json,
-            }
-            inbound.metadata_ = {
-                **(inbound.metadata_ or {}),
-                "images": image_metadata,
-                "media_context": media_json,
-            }
-            current_media = MediaCandidate(
-                id=media_candidate_id(image.source, image_metadata[0]),
-                source=image.source,
-                metadata=image_metadata[0],
-                media_context=media_context,
-                image=image,
+            return await self._finish_product_scope_boundary(
+                conversation=conversation,
+                user=user,
+                run=run,
+                telegram_chat_id=telegram_chat_id,
+                language=_boundary_language(user, trusted_text),
+                reason="image_analysis",
+                image=True,
             )
 
-        recent_media = []
-        if not ignored_attachment_metadata:
-            recent_media = await self._recent_media_candidates(
-                conversation.id,
-                exclude_message_id=inbound.id,
-            )
-        available_media = _dedupe_media_candidates(
-            ([current_media] if current_media is not None else []) + recent_media
-        )
+        media_context: MediaUnderstanding | None = None
+        available_media: list[MediaCandidate] = []
 
         # 5. Planner call (separate small call — reliable and predictable;
         # a combined signals+reply call made M3 reason for minutes, parked for now)
@@ -1648,8 +1603,6 @@ class AssistantOrchestrator:
             user=user,
             text=planner_text,
             known_context=planner_context.to_prompt_text(),
-            media_context=media_context,
-            available_media=available_media,
             agent_run_id=run.id,
             session=self.session,
         )
@@ -1667,343 +1620,40 @@ class AssistantOrchestrator:
             plan,
             allow_implicit_date=schedule_followup_context,
         )
-        selected_media = _selected_or_current_media(plan, available_media, current_media)
-        focused_question_override: str | None = None
-        planner_requested_media = bool(
-            plan.referenced_media_id
-            or plan.mode == "needs_media_understanding"
+        if plan.mode == "out_of_scope":
+            for call in plan.tool_calls:
+                await self.runs.log_tool_call(
+                    run=run,
+                    tool_name=call.name,
+                    status="skipped",
+                    args={**call.args, **_call_source_payload(call)},
+                    result={"reason": "unsupported_product_scope"},
+                )
+            return await self._finish_product_scope_boundary(
+                conversation=conversation,
+                user=user,
+                run=run,
+                telegram_chat_id=telegram_chat_id,
+                language=_boundary_language(user, language_text, plan.language),
+                reason="planner_boundary",
+            )
+        if (
+            plan.mode in {"needs_media_understanding", "needs_focused_vision"}
+            or plan.referenced_media_id is not None
             or plan.needs_media_understanding
             or plan.visual_intent != "none"
-            or plan.focused_vision
-        )
-        needs_media_reference_lookup = (
-            planner_requested_media
-            or (
-                selected_media is None
-                and plan.final_answer is None
-                and plan.should_answer_normally
-                and not plan.tool_calls
-            )
-        )
-        if (
-            selected_media is not None
-            and selected_media.source == "recent"
-            and (plan.mode == "ask_user" or plan.final_answer is None)
-            and not plan.needs_media_understanding
-            and not plan.tool_calls
-            and planner_requested_media
+            or plan.focused_vision is not None
+            or any(call.source != "text" for call in plan.tool_calls)
         ):
-            focused_question_override = (
-                plan.focused_vision.question if plan.focused_vision is not None else trusted_text.strip()
-            )
-            plan = plan.model_copy(update={
-                "mode": "needs_focused_vision",
-                "visual_intent": "read_only" if plan.visual_intent == "none" else plan.visual_intent,
-                "focused_vision": plan.focused_vision
-                or FocusedVisionRequest(
-                    question=focused_question_override,
-                    reason="The planner selected a recent image for this turn.",
-                    confidence=0.8,
-                ),
-            })
-        has_text_reply_context = bool(
-            clean_message_context.get("forwarded_messages")
-            or clean_message_context.get("reply_context")
-        )
-        if (
-            selected_media is None
-            and available_media
-            and trusted_text
-            and not has_text_reply_context
-            and needs_media_reference_lookup
-        ):
-            await progress("Checking recent image...")
-            media_reference_started_at = perf_counter()
-            media_reference = await self.media_reference.resolve(
-                user_id=user.id,
-                timezone=user.timezone,
-                text=trusted_text,
-                available_media=available_media,
-                agent_run_id=run.id,
-                session=self.session,
-            )
-            record_timing("media_reference_ms", media_reference_started_at)
-            if media_reference.references_media:
-                referenced_media = _find_media_candidate(media_reference.media_id, available_media)
-                if referenced_media is not None:
-                    selected_media = referenced_media
-                    focused_question_override = media_reference.question or text.strip()
-                    if plan.visual_intent == "none" and media_reference.visual_intent != "none":
-                        plan = plan.model_copy(update={"visual_intent": media_reference.visual_intent})
-                    if selected_media.source == "recent" and plan.mode in {"final_answer", "ask_user"} and not plan.tool_calls:
-                        plan = plan.model_copy(update={
-                            "mode": "needs_focused_vision",
-                            "focused_vision": FocusedVisionRequest(
-                                question=focused_question_override,
-                                reason=media_reference.reason,
-                                confidence=media_reference.confidence,
-                            ),
-                        })
-
-        if selected_media is not None:
-            selected_image = selected_media.image
-            media_context = selected_media.media_context or media_context
-            self._store_selected_media_audit(inbound, text, selected_media, media_context)
-
-        if plan.mode == "needs_media_understanding" or plan.needs_media_understanding:
-            if selected_media is None:
-                reply_text = MEDIA_REQUIRED_REPLY
-                outbound = Message(
-                    conversation_id=conversation.id,
-                    user_id=user.id,
-                    role=MessageRole.ASSISTANT,
-                    content=reply_text,
-                    char_count=len(reply_text),
-                    telegram_chat_id=telegram_chat_id,
-                )
-                self.session.add(outbound)
-                await self.runs.mark_completed(run, result_summary="media_required")
-                needs_compaction = await self._needs_compaction(conversation)
-                return _reply_result(reply_text, run_id=run.id, needs_compaction=needs_compaction)
-
-            selected_image = await self._ensure_candidate_image(selected_media, image_loader)
-            if selected_image is None:
-                reply_text = MEDIA_REQUIRED_REPLY
-                outbound = Message(
-                    conversation_id=conversation.id,
-                    user_id=user.id,
-                    role=MessageRole.ASSISTANT,
-                    content=reply_text,
-                    char_count=len(reply_text),
-                    telegram_chat_id=telegram_chat_id,
-                )
-                self.session.add(outbound)
-                await self.runs.mark_completed(run, result_summary="media_load_failed")
-                needs_compaction = await self._needs_compaction(conversation)
-                return _reply_result(reply_text, run_id=run.id, needs_compaction=needs_compaction)
-
-            await progress("Inspecting image...")
-            media_started_at = perf_counter()
-            media_context = await self.media_understanding.analyze(
-                user_id=user.id,
-                timezone=user.timezone,
-                text=trusted_text,
-                image=selected_image,
-                agent_run_id=run.id,
-                session=self.session,
-            )
-            record_timing("media_understanding_ms", media_started_at)
-            selected_media.media_context = media_context
-            self._store_selected_media_audit(inbound, text, selected_media, media_context)
-            planner_started_at = perf_counter()
-            plan = await self.planner.plan(
+            return await self._finish_product_scope_boundary(
+                conversation=conversation,
                 user=user,
-                text=planner_text,
-                known_context=planner_context.to_prompt_text(),
-                media_context=media_context,
-                available_media=available_media,
-                agent_run_id=run.id,
-                session=self.session,
-            )
-            record_timing("planner_ms", planner_started_at)
-            _store_planner_trace(
-                run,
-                self.planner.last_trace,
-                stage="after_media_understanding",
-                planner_context=planner_context,
-            )
-            plan = _with_reply_language(user, language_text, plan)
-            plan = _with_schedule_read_guard(
-                user,
-                text,
-                plan,
-                allow_implicit_date=schedule_followup_context,
-            )
-            selected_media = _selected_or_current_media(plan, available_media, selected_media)
-            if selected_media is not None:
-                selected_image = selected_media.image or selected_image
-                media_context = selected_media.media_context or media_context
-                self._store_selected_media_audit(inbound, text, selected_media, media_context)
-
-        if image and not text.strip() and plan.tool_calls:
-            log.warning(
-                "suppressing image-only planner tool calls",
-                fields={"tool_names": [call.name for call in plan.tool_calls]},
-            )
-            plan = plan.model_copy(update={
-                "mode": "final_answer",
-                "tool_calls": [],
-                "should_answer_normally": True,
-            })
-
-        if plan.visual_intent == "read_only" and plan.tool_calls:
-            log.warning(
-                "suppressing read-only visual planner tool calls",
-                fields={"tool_names": [call.name for call in plan.tool_calls]},
-            )
-            plan = plan.model_copy(update={
-                "mode": "final_answer" if plan.final_answer else plan.mode,
-                "tool_calls": [],
-                "should_answer_normally": True,
-            })
-
-        policy_violations = _image_write_policy_violations(plan)
-        if policy_violations:
-            log.warning(
-                "suppressing image-sourced write calls without action_evidence intent",
-                fields={"tool_names": [call.name for call in policy_violations]},
-            )
-            remaining_calls = [call for call in plan.tool_calls if call not in policy_violations]
-            plan = plan.model_copy(update={"tool_calls": remaining_calls})
-            if not remaining_calls:
-                if plan.tool_calls:
-                    plan = plan.model_copy(update={"tool_calls": []})
-                reply_text = plan.final_answer or (
-                    "I will not perform image-based actions without an explicit user command."
-                )
-                outbound = Message(
-                    conversation_id=conversation.id,
-                    user_id=user.id,
-                    role=MessageRole.ASSISTANT,
-                    content=reply_text,
-                    char_count=len(reply_text),
-                    telegram_chat_id=telegram_chat_id,
-                )
-                self.session.add(outbound)
-                await self.runs.mark_completed(run, result_summary=reply_text[:2000])
-                needs_compaction = await self._needs_compaction(conversation)
-                return _reply_result(reply_text, run_id=run.id, needs_compaction=needs_compaction)
-
-        if (
-            selected_media is not None
-            and media_context is not None
-            and not plan.tool_calls
-            and not plan.final_answer
-            and plan.visual_intent != "action_evidence"
-            and plan.mode not in ("needs_media_understanding", "needs_focused_vision")
-            and (trusted_text or plan.visual_intent == "read_only")
-        ):
-            question = (
-                focused_question_override
-                or trusted_text
-                or "Describe the image and answer the read-only visual request."
-            )
-            plan = plan.model_copy(update={
-                "mode": "needs_focused_vision",
-                "focused_vision": FocusedVisionRequest(
-                    question=question,
-                    reason="planner selected media but did not provide a read-only answer",
-                    confidence=0.5,
-                ),
-                "should_answer_normally": False,
-            })
-
-        if (
-            selected_media is not None
-            and media_context is not None
-            and not text.strip()
-            and not plan.tool_calls
-        ):
-            reply_text = media_context.summary or plan.final_answer or "I could not confidently describe the image."
-            outbound = Message(
-                conversation_id=conversation.id,
-                user_id=user.id,
-                role=MessageRole.ASSISTANT,
-                content=reply_text,
-                char_count=len(reply_text),
+                run=run,
                 telegram_chat_id=telegram_chat_id,
+                language=_boundary_language(user, language_text, plan.language),
+                reason="image_analysis",
+                image=True,
             )
-            self.session.add(outbound)
-            await self.runs.mark_completed(run, result_summary=reply_text[:2000])
-            needs_compaction = await self._needs_compaction(conversation)
-            return AssistantResult(
-                reply_text=reply_text,
-                agent_run_id=run.id,
-                needs_compaction=needs_compaction,
-            )
-
-        if plan.mode == "needs_focused_vision":
-            if selected_media is not None and selected_image is None:
-                selected_image = await self._ensure_candidate_image(selected_media, image_loader)
-            if selected_media is not None and media_context is None and selected_image is not None:
-                await progress("Inspecting image...")
-                media_started_at = perf_counter()
-                media_context = await self.media_understanding.analyze(
-                    user_id=user.id,
-                    timezone=user.timezone,
-                    text=trusted_text,
-                    image=selected_image,
-                    agent_run_id=run.id,
-                    session=self.session,
-                )
-                record_timing("media_understanding_ms", media_started_at)
-                selected_media.media_context = media_context
-                self._store_selected_media_audit(inbound, text, selected_media, media_context)
-
-            if selected_image is None or media_context is None or plan.tool_calls or plan.focused_vision is None:
-                reply_text = FOCUSED_VISION_UNSAFE_REPLY
-                outbound = Message(
-                    conversation_id=conversation.id,
-                    user_id=user.id,
-                    role=MessageRole.ASSISTANT,
-                    content=reply_text,
-                    char_count=len(reply_text),
-                    telegram_chat_id=telegram_chat_id,
-                )
-                self.session.add(outbound)
-                await self.runs.mark_completed(run, result_summary="focused_vision_rejected")
-                needs_compaction = await self._needs_compaction(conversation)
-                return AssistantResult(
-                    reply_text=reply_text,
-                    agent_run_id=run.id,
-                    needs_compaction=needs_compaction,
-                )
-
-            await progress("Checking image detail...")
-            focused_started_at = perf_counter()
-            focused_result = await self.focused_vision.analyze(
-                user_id=user.id,
-                timezone=user.timezone,
-                text=trusted_text,
-                question=plan.focused_vision.question,
-                image=selected_image,
-                media_context=media_context,
-                agent_run_id=run.id,
-                session=self.session,
-            )
-            record_timing("focused_vision_ms", focused_started_at)
-            focused_json = {
-                "request": plan.focused_vision.model_dump(mode="json"),
-                "result": focused_result.to_audit_json(),
-            }
-            inbound.content_json = {
-                **(inbound.content_json or {"text": text}),
-                "focused_vision": focused_json,
-            }
-            inbound.metadata_ = {
-                **(inbound.metadata_ or {}),
-                "focused_vision": focused_json,
-            }
-            reply_text = focused_result.answer or (
-                "I could not confidently inspect that image detail."
-            )
-            outbound = Message(
-                conversation_id=conversation.id,
-                user_id=user.id,
-                role=MessageRole.ASSISTANT,
-                content=reply_text,
-                char_count=len(reply_text),
-                telegram_chat_id=telegram_chat_id,
-            )
-            self.session.add(outbound)
-            await self.runs.mark_completed(run, result_summary=reply_text[:2000])
-            needs_compaction = await self._needs_compaction(conversation)
-            return AssistantResult(
-                reply_text=reply_text,
-                agent_run_id=run.id,
-                needs_compaction=needs_compaction,
-            )
-
         if plan.tool_calls and _untrusted_context_without_user_comment(clean_message_context):
             reply_text = _untrusted_context_needs_comment_reply(plan.language)
             outbound = Message(
@@ -2042,6 +1692,16 @@ class AssistantOrchestrator:
         reply_rich_html = loop_result.reply_rich_html
         open_app_button = loop_result.open_app_button
         open_app_button_label = _mini_app_button_text(plan.language) if open_app_button else None
+
+        if loop_result.stop_reason == "unsupported_product_scope" or plan.mode == "out_of_scope":
+            return await self._finish_product_scope_boundary(
+                conversation=conversation,
+                user=user,
+                run=run,
+                telegram_chat_id=telegram_chat_id,
+                language=_boundary_language(user, language_text, plan.language),
+                reason="unsupported_tool" if plan.tool_calls else "planner_boundary",
+            )
 
         if not action_results and plan.mode == "tool_calls":
             reason = (
@@ -2183,7 +1843,6 @@ class AssistantOrchestrator:
                 user=user,
                 conversation=conversation,
                 current_text=planner_text if clean_message_context else final_text,
-                media_context=media_context,
                 action_results=action_results,
             )
             stream_callback = (
@@ -2278,6 +1937,32 @@ class AssistantOrchestrator:
             open_app_button_label=open_app_button_label,
             reply_rich_html=reply_rich_html if len(action_results) == 1 else None,
         )
+
+    # ------------------------------------------------------------------
+
+    async def _finish_product_scope_boundary(
+        self,
+        *,
+        conversation,
+        user: User,
+        run,
+        telegram_chat_id: int,
+        language: str,
+        reason: str,
+        image: bool = False,
+    ) -> AssistantResult:
+        reply_text = _product_scope_boundary_text(language, image=image)
+        self.session.add(Message(
+            conversation_id=conversation.id,
+            user_id=user.id,
+            role=MessageRole.ASSISTANT,
+            content=reply_text,
+            char_count=len(reply_text),
+            telegram_chat_id=telegram_chat_id,
+        ))
+        await self.runs.mark_completed(run, result_summary=f"out_of_scope:{reason}")
+        needs_compaction = await self._needs_compaction(conversation)
+        return _reply_result(reply_text, run_id=run.id, needs_compaction=needs_compaction)
 
     # ------------------------------------------------------------------
 
@@ -2431,13 +2116,20 @@ class AssistantOrchestrator:
 
         for step_index in range(AGENT_LOOP_MAX_MODEL_STEPS):
             if not plan.tool_calls:
-                stop_reason = "planner_final" if plan.mode in {"final_answer", "ask_user"} else "no_tool_calls"
+                stop_reason = (
+                    "unsupported_product_scope"
+                    if plan.mode == "out_of_scope"
+                    else "planner_final" if plan.mode in {"final_answer", "ask_user"} else "no_tool_calls"
+                )
                 break
 
             if tool_call_count + len(plan.tool_calls) > AGENT_LOOP_MAX_TOOL_CALLS:
                 stop_reason = "tool_call_limit_reached"
                 break
 
+            has_unsupported_tool_calls = plan.mode == "out_of_scope" or any(
+                call.name not in TOOL_NAMES for call in plan.tool_calls
+            )
             step_has_mutating_tool_calls = any(
                 call.name not in READ_ONLY_LOOP_TOOLS for call in plan.tool_calls
             )
@@ -2496,6 +2188,10 @@ class AssistantOrchestrator:
                 "observation_count": len(step_observations),
                 "requires_confirmation": has_confirmation,
             })
+
+            if has_unsupported_tool_calls:
+                stop_reason = "unsupported_product_scope"
+                break
 
             if has_confirmation:
                 stop_reason = "approval_required"
@@ -2590,6 +2286,35 @@ class AssistantOrchestrator:
             and _looks_like_multi_step_request(text)
             and not _is_user_visible_schedule_read_plan(plan, text, user)
         )
+
+        unsupported_calls = (
+            list(plan.tool_calls)
+            if plan.mode == "out_of_scope"
+            else [call for call in plan.tool_calls if call.name not in TOOL_NAMES]
+        )
+        if unsupported_calls:
+            boundary_text = _product_scope_boundary_text(plan.language)
+            for call in unsupported_calls:
+                await self.runs.log_tool_call(
+                    run=run,
+                    tool_name=call.name,
+                    status="skipped",
+                    args={**call.args, **_call_source_payload(call)},
+                    result={"reason": "unsupported_product_scope"},
+                )
+                observations.append(_tool_observation(
+                    call,
+                    status="skipped",
+                    summaries=[boundary_text],
+                ))
+            results.append(boundary_text)
+            outcomes.append(ActionOutcome(
+                action_type="unsupported_product_scope",
+                status="skipped",
+                fallback_text=boundary_text,
+                reason="unsupported_product_scope",
+            ))
+            return results, outcomes, buttons, rich_html, observations, open_app_button, False
 
         for planned_call in plan.tool_calls:
             call = _coerce_snooze_time_move_to_update(planned_call, text)
@@ -2774,83 +2499,6 @@ class AssistantOrchestrator:
                     results=results,
                     language=plan.language,
                 )
-            elif call.name == "create_automation":
-                automation = AutomationRequest.model_validate(_args_with_call_defaults(call))
-                await self._apply_create_automation_tool(user=user, run=run,
-                                                         call=call,
-                                                         automation=automation,
-                                                         results=results, buttons=buttons)
-            elif call.name == "read_automations":
-                automation_read_request = AutomationReadRequest.model_validate(_args_with_call_defaults(call))
-                await self._apply_read_automations_tool(
-                    user=user, run=run, call=call, request=automation_read_request, results=results
-                )
-            elif call.name == "update_automation":
-                automation_update_request = AutomationUpdateRequest.model_validate(_args_with_call_defaults(call))
-                await self._apply_update_automation_tool(
-                    user=user, run=run, call=call, request=automation_update_request, results=results
-                )
-            elif call.name == "run_automation":
-                automation_run_request = AutomationRunRequest.model_validate(_args_with_call_defaults(call))
-                await self._apply_run_automation_tool(
-                    user=user, run=run, call=call, request=automation_run_request, results=results
-                )
-            elif call.name == "email_triage":
-                email_request = EmailRequest.model_validate({"kind": "triage", **call.args})
-                if email_request.confidence >= 0.0:
-                    buttons.append([Button(text="📬 Triage email", callback_data="run:email_triage")])
-            elif call.name == "read_inbox":
-                inbox_request = InboxReadRequest.model_validate(_args_with_call_defaults(call))
-                await self._apply_read_inbox_tool(
-                    user=user, run=run, call=call, request=inbox_request, results=results
-                )
-            elif call.name == "read_email_thread":
-                email_thread_request = EmailThreadReadRequest.model_validate(_args_with_call_defaults(call))
-                await self._apply_read_email_thread_tool(
-                    user=user, run=run, call=call, request=email_thread_request, results=results
-                )
-            elif call.name == "create_task_from_email":
-                email_task_request = EmailTaskCreateRequest.model_validate(_args_with_call_defaults(call))
-                await self._apply_create_task_from_email_tool(
-                    user=user,
-                    run=run,
-                    call=call,
-                    request=email_task_request,
-                    source_message_id=source_message_id,
-                    results=results,
-                )
-            elif call.name == "news_digest":
-                news_request = NewsRequest.model_validate({
-                    "kind": "digest",
-                    **call.args,
-                    "confidence": call.confidence,
-                })
-                await self._apply_news_digest_tool(
-                    user=user,
-                    run=run,
-                    request=news_request,
-                    results=results,
-                )
-            elif call.name == "read_news_topics":
-                news_topics_request = NewsTopicReadRequest.model_validate(_args_with_call_defaults(call))
-                await self._apply_read_news_topics_tool(
-                    user=user, run=run, call=call, request=news_topics_request, results=results
-                )
-            elif call.name == "create_news_topic":
-                news_topic_create_request = NewsTopicCreateRequest.model_validate(_args_with_call_defaults(call))
-                await self._apply_create_news_topic_tool(
-                    user=user, run=run, call=call, request=news_topic_create_request, results=results
-                )
-            elif call.name == "update_news_topic":
-                news_topic_update_request = NewsTopicUpdateRequest.model_validate(_args_with_call_defaults(call))
-                await self._apply_update_news_topic_tool(
-                    user=user, run=run, call=call, request=news_topic_update_request, results=results
-                )
-            elif call.name == "run_news_digest":
-                news_digest_run_request = NewsDigestRunRequest.model_validate(_args_with_call_defaults(call))
-                await self._apply_run_news_digest_tool(
-                    user=user, run=run, call=call, request=news_digest_run_request, results=results
-                )
             elif call.name == "read_settings":
                 settings_read_request = SettingsReadRequest.model_validate(_args_with_call_defaults(call))
                 await self._apply_read_settings_tool(
@@ -2866,15 +2514,23 @@ class AssistantOrchestrator:
                 await self._apply_read_connectors_tool(
                     user=user, run=run, call=call, request=connectors_request, results=results
                 )
-            elif call.name == "set_language":
-                await self._apply_set_language_tool(
-                    user=user,
+            else:
+                boundary_text = _product_scope_boundary_text(plan.language)
+                await self.runs.log_tool_call(
                     run=run,
-                    call=call,
-                    language=plan.language,
-                    results=results,
-                    outcomes=outcomes,
+                    tool_name=call.name,
+                    status="skipped",
+                    args={**call.args, **_call_source_payload(call)},
+                    result={"reason": "unsupported_product_scope"},
                 )
+                results.append(boundary_text)
+                outcomes.append(ActionOutcome(
+                    action_type=call.name,
+                    status="skipped",
+                    fallback_text=boundary_text,
+                    reason="unsupported_product_scope",
+                ))
+                use_action_reply_renderer = False
             new_results = results[before_result_count:]
             new_outcomes = outcomes[before_outcome_count:]
             new_buttons = buttons[before_button_count:]
@@ -3008,9 +2664,8 @@ class AssistantOrchestrator:
             "tasks",
             "calendar",
             "memories",
-            "automations",
-            "news",
-            "email",
+            "settings",
+            "connectors",
         ])
         candidates: list[dict[str, Any]] = []
         if "tasks" in domains:
@@ -3023,12 +2678,6 @@ class AssistantOrchestrator:
             ))
         if "memories" in domains:
             candidates.extend(await self._memory_entity_candidates(user, request.query))
-        if "automations" in domains:
-            candidates.extend(await self._automation_entity_candidates(user, request.query))
-        if "news" in domains:
-            candidates.extend(await self._news_entity_candidates(user, request.query))
-        if "email" in domains:
-            candidates.extend(await self._email_entity_candidates(user, request.query))
         if "settings" in domains and _entity_match(request.query, "settings", "настройки", "timezone", "language"):
             candidates.append({"type": "settings", "id": str(user.id), "title": "Settings", "score": 0.7})
         if "connectors" in domains and _entity_match(request.query, "connectors", "google", "yandex", "интеграции"):
@@ -3096,67 +2745,6 @@ class AssistantOrchestrator:
                 "source": "memories",
                 "score": score,
                 "next_valid_actions": ["update_memory", "delete_memory"],
-            })
-        return out
-
-    async def _automation_entity_candidates(self, user: User, query: str) -> list[dict[str, Any]]:
-        automations = await self.automations.list_for_user(user, include_system=True)
-        out: list[dict[str, Any]] = []
-        for automation in automations:
-            score = _entity_match_score(query, automation.title, automation.type.value)
-            if score < 0.52:
-                continue
-            out.append({
-                "type": "automation",
-                "id": str(automation.id),
-                "title": automation.title,
-                "status": "enabled" if automation.enabled else "disabled",
-                "local_time": fmt_local(automation.next_run_at, user.timezone, "%d.%m %H:%M") if automation.next_run_at else None,
-                "source": "automations",
-                "score": score,
-                "next_valid_actions": ["update_automation", "run_automation"],
-            })
-        return out
-
-    async def _news_entity_candidates(self, user: User, query: str) -> list[dict[str, Any]]:
-        topics = await self.news.list_topics(user)
-        out: list[dict[str, Any]] = []
-        for topic in topics:
-            score = _entity_match_score(query, topic.title, topic.query)
-            if score < 0.52:
-                continue
-            out.append({
-                "type": "news",
-                "id": str(topic.id),
-                "title": topic.title,
-                "status": "enabled" if topic.enabled else "disabled",
-                "source": "news_topics",
-                "score": score,
-                "next_valid_actions": ["update_news_topic", "run_news_digest"],
-            })
-        return out
-
-    async def _email_entity_candidates(self, user: User, query: str) -> list[dict[str, Any]]:
-        result = await self.session.execute(
-            select(EmailThread)
-            .where(EmailThread.user_id == user.id)
-            .order_by(EmailThread.last_message_at.desc().nulls_last())
-            .limit(50)
-        )
-        out: list[dict[str, Any]] = []
-        for thread in result.scalars():
-            score = _entity_match_score(query, thread.subject, thread.snippet, thread.summary)
-            if score < 0.52:
-                continue
-            out.append({
-                "type": "email",
-                "id": str(thread.id),
-                "title": thread.subject or "(no subject)",
-                "status": thread.category.value if hasattr(thread.category, "value") else str(thread.category),
-                "local_time": fmt_local(thread.last_message_at, user.timezone, "%d.%m %H:%M") if thread.last_message_at else None,
-                "source": "email_threads",
-                "score": score,
-                "next_valid_actions": ["read_email_thread", "create_task_from_email"],
             })
         return out
 
@@ -3557,372 +3145,6 @@ class AssistantOrchestrator:
             result={"memory_id": str(request.memory_id)},
         )
         results.append(f"Deleted memory: {title}")
-
-    async def _apply_read_automations_tool(
-        self,
-        *,
-        user: User,
-        run,
-        call: PlannedToolCall,
-        request: AutomationReadRequest,
-        results: list[str],
-    ) -> None:
-        automations = await self.automations.list_for_user(user, include_system=request.include_system)
-        await self.runs.log_tool_call(
-            run=run,
-            tool_name="read_automations",
-            status="completed",
-            args={**request.model_dump(mode="json"), **_call_source_payload(call)},
-            result={"count": len(automations), "automation_ids": [str(item.id) for item in automations[:10]]},
-        )
-        if not automations:
-            results.append("No automations found.")
-            return
-        lines = ["Automations:"]
-        for item in automations[:10]:
-            next_run = fmt_local(item.next_run_at, user.timezone, "%d.%m %H:%M") if item.next_run_at else "off"
-            lines.append(f"- {item.title} · {item.type.value} · {next_run}")
-        results.append("\n".join(lines))
-
-    async def _apply_update_automation_tool(
-        self,
-        *,
-        user: User,
-        run,
-        call: PlannedToolCall,
-        request: AutomationUpdateRequest,
-        results: list[str],
-    ) -> None:
-        automation = await self.automations.get(user, request.automation_id)
-        args = {**request.model_dump(mode="json"), **_call_source_payload(call)}
-        if automation is None:
-            await self.runs.log_tool_call(
-                run=run, tool_name="update_automation", status="skipped",
-                args=args, result={"reason": "not_found"},
-            )
-            results.append("Automation not found.")
-            return
-        updates = {
-            key: value
-            for key, value in request.model_dump().items()
-            if key not in {"automation_id", "confidence"} and value is not None
-        }
-        if not updates:
-            await self.runs.log_tool_call(
-                run=run, tool_name="update_automation", status="skipped",
-                args=args, result={"reason": "no_updates"},
-            )
-            results.append("No automation updates provided.")
-            return
-        automation = await self.automations.update(user, automation, updates, actor="agent")
-        await self.runs.log_tool_call(
-            run=run,
-            tool_name="update_automation",
-            status="completed",
-            args=args,
-            result={"automation_id": str(automation.id), "updated_fields": sorted(updates)},
-        )
-        results.append(f"Updated automation “{automation.title}”.")
-
-    async def _apply_run_automation_tool(
-        self,
-        *,
-        user: User,
-        run,
-        call: PlannedToolCall,
-        request: AutomationRunRequest,
-        results: list[str],
-    ) -> None:
-        automation = await self.automations.get(user, request.automation_id)
-        args = {**request.model_dump(mode="json"), **_call_source_payload(call)}
-        if automation is None:
-            await self.runs.log_tool_call(
-                run=run, tool_name="run_automation", status="skipped",
-                args=args, result={"reason": "not_found"},
-            )
-            results.append("Automation not found.")
-            return
-        from lumi.worker.jobs import AGENT_RUN_TYPE_BY_AUTOMATION, JOB_BY_AUTOMATION_TYPE
-
-        automation_type = automation.type.value
-        job_name = JOB_BY_AUTOMATION_TYPE.get(automation_type)
-        if job_name is None:
-            await self.runs.log_tool_call(
-                run=run, tool_name="run_automation", status="skipped",
-                args=args, result={"automation_id": str(automation.id), "reason": "unsupported_type"},
-            )
-            results.append(f"Automation “{automation.title}” cannot be run manually yet.")
-            return
-        child_run = await self.runs.create(
-            user_id=user.id,
-            type_=AGENT_RUN_TYPE_BY_AUTOMATION.get(automation_type, AgentRunType.CUSTOM),
-            trigger="agent_tool",
-            scheduled_task_id=automation.id,
-        )
-        job_id = await enqueue_job(
-            job_name,
-            str(user.id),
-            agent_run_id=str(child_run.id),
-            trigger="agent_tool",
-        )
-        await self.runs.log_tool_call(
-            run=run,
-            tool_name="run_automation",
-            status="completed" if job_id else "skipped",
-            args=args,
-            result={"automation_id": str(automation.id), "job_id": job_id},
-        )
-        results.append(
-            f"Started automation “{automation.title}”."
-            if job_id else f"Could not queue automation “{automation.title}”."
-        )
-
-    async def _apply_read_news_topics_tool(
-        self,
-        *,
-        user: User,
-        run,
-        call: PlannedToolCall,
-        request: NewsTopicReadRequest,
-        results: list[str],
-    ) -> None:
-        topics = await self.news.list_topics(user)
-        if not request.include_disabled:
-            topics = [topic for topic in topics if topic.enabled]
-        await self.runs.log_tool_call(
-            run=run,
-            tool_name="read_news_topics",
-            status="completed",
-            args={**request.model_dump(mode="json"), **_call_source_payload(call)},
-            result={"count": len(topics), "topic_ids": [str(topic.id) for topic in topics[:10]]},
-        )
-        if not topics:
-            results.append("No news topics found.")
-            return
-        lines = ["News topics:"]
-        for topic in topics[:10]:
-            state = "on" if topic.enabled else "off"
-            lines.append(f"- {topic.title} · {state} · {truncate(topic.query, 80)}")
-        results.append("\n".join(lines))
-
-    async def _apply_create_news_topic_tool(
-        self,
-        *,
-        user: User,
-        run,
-        call: PlannedToolCall,
-        request: NewsTopicCreateRequest,
-        results: list[str],
-    ) -> None:
-        topic = await self.news.create_topic(
-            user,
-            title=request.title,
-            query=request.query,
-            language=request.language,
-            config=request.config,
-        )
-        await self.runs.log_tool_call(
-            run=run,
-            tool_name="create_news_topic",
-            status="completed",
-            args={**request.model_dump(mode="json"), **_call_source_payload(call)},
-            result={"topic_id": str(topic.id)},
-        )
-        results.append(f"Created news topic “{topic.title}”.")
-
-    async def _apply_update_news_topic_tool(
-        self,
-        *,
-        user: User,
-        run,
-        call: PlannedToolCall,
-        request: NewsTopicUpdateRequest,
-        results: list[str],
-    ) -> None:
-        topic = await self.news.get_topic(user, request.topic_id)
-        args = {**request.model_dump(mode="json"), **_call_source_payload(call)}
-        if topic is None:
-            await self.runs.log_tool_call(
-                run=run, tool_name="update_news_topic", status="skipped",
-                args=args, result={"reason": "not_found"},
-            )
-            results.append("News topic not found.")
-            return
-        updates = {
-            key: value
-            for key, value in request.model_dump().items()
-            if key not in {"topic_id", "confidence"} and value is not None
-        }
-        if "title" in updates:
-            topic.title = str(updates["title"]).strip()[:200]
-        if "query" in updates:
-            topic.query = str(updates["query"]).strip()[:500]
-        if "language" in updates:
-            topic.language = str(updates["language"]).strip()[:20] or topic.language
-        if "enabled" in updates:
-            topic.enabled = bool(updates["enabled"])
-        if "config" in updates and isinstance(updates["config"], dict):
-            topic.config = updates["config"]
-        await RealtimeEventService(self.session).emit(
-            user_id=user.id,
-            topics=["news"],
-            event_type="news_topic.updated",
-            payload={"topic_id": str(topic.id)},
-        )
-        await self.runs.log_tool_call(
-            run=run,
-            tool_name="update_news_topic",
-            status="completed",
-            args=args,
-            result={"topic_id": str(topic.id), "updated_fields": sorted(updates)},
-        )
-        results.append(f"Updated news topic “{topic.title}”.")
-
-    async def _apply_run_news_digest_tool(
-        self,
-        *,
-        user: User,
-        run,
-        call: PlannedToolCall,
-        request: NewsDigestRunRequest,
-        results: list[str],
-    ) -> None:
-        from lumi.worker.jobs import JOB_BY_AUTOMATION_TYPE
-
-        child_run = await self.runs.create(
-            user_id=user.id,
-            type_=AgentRunType.NEWS_DIGEST,
-            trigger="agent_tool",
-        )
-        job_id = await enqueue_job(
-            JOB_BY_AUTOMATION_TYPE["news_digest"],
-            str(user.id),
-            agent_run_id=str(child_run.id),
-            trigger="agent_tool",
-        )
-        await self.runs.log_tool_call(
-            run=run,
-            tool_name="run_news_digest",
-            status="completed" if job_id else "skipped",
-            args={**request.model_dump(mode="json"), **_call_source_payload(call)},
-            result={"job_id": job_id},
-        )
-        results.append("Started news digest." if job_id else "Could not queue news digest.")
-
-    async def _apply_read_inbox_tool(
-        self,
-        *,
-        user: User,
-        run,
-        call: PlannedToolCall,
-        request: InboxReadRequest,
-        results: list[str],
-    ) -> None:
-        limit = max(1, min(request.limit, 20))
-        summary = await self.email.inbox_summary(user, limit=limit)
-        threads = list(summary.get("threads") or [])
-        await self.runs.log_tool_call(
-            run=run,
-            tool_name="read_inbox",
-            status="completed",
-            args={**request.model_dump(mode="json"), **_call_source_payload(call)},
-            result={
-                "counts": summary.get("counts") or {},
-                "thread_ids": [str(thread.id) for thread in threads[:10]],
-            },
-        )
-        if not threads:
-            results.append("Inbox is empty.")
-            return
-        counts = summary.get("counts") or {}
-        lines = [f"Inbox: {sum(int(v or 0) for v in counts.values())} threads"]
-        for thread in threads[:limit]:
-            subject = thread.subject or "(no subject)"
-            label = thread.category.value if hasattr(thread.category, "value") else str(thread.category)
-            lines.append(f"- {truncate(subject, 80)} · {label}")
-        results.append("\n".join(lines))
-
-    async def _apply_read_email_thread_tool(
-        self,
-        *,
-        user: User,
-        run,
-        call: PlannedToolCall,
-        request: EmailThreadReadRequest,
-        results: list[str],
-    ) -> None:
-        thread = await self.email.get_thread(user, request.thread_id)
-        args = {**request.model_dump(mode="json"), **_call_source_payload(call)}
-        if thread is None:
-            await self.runs.log_tool_call(
-                run=run, tool_name="read_email_thread", status="skipped",
-                args=args, result={"reason": "not_found"},
-            )
-            results.append("Email thread not found.")
-            return
-        messages_result = await self.session.execute(
-            select(EmailMessage)
-            .where(EmailMessage.thread_id == thread.id, EmailMessage.user_id == user.id)
-            .order_by(EmailMessage.date_at.desc().nulls_last())
-            .limit(5)
-        )
-        messages = list(messages_result.scalars())
-        await self.runs.log_tool_call(
-            run=run,
-            tool_name="read_email_thread",
-            status="completed",
-            args=args,
-            result={"thread_id": str(thread.id), "message_count": len(messages)},
-        )
-        lines = [f"Email: {thread.subject or '(no subject)'}"]
-        if thread.summary:
-            lines.append(truncate(thread.summary, 240))
-        elif thread.snippet:
-            lines.append(truncate(thread.snippet, 240))
-        for message in messages[:3]:
-            sender = message.sender or "unknown"
-            lines.append(f"- {sender}: {truncate(message.snippet or message.body_text or '', 160)}")
-        results.append("\n".join(lines))
-
-    async def _apply_create_task_from_email_tool(
-        self,
-        *,
-        user: User,
-        run,
-        call: PlannedToolCall,
-        request: EmailTaskCreateRequest,
-        source_message_id: uuid.UUID,
-        results: list[str],
-    ) -> None:
-        thread = await self.email.get_thread(user, request.thread_id)
-        args = {**request.model_dump(mode="json"), **_call_source_payload(call)}
-        if thread is None:
-            await self.runs.log_tool_call(
-                run=run, tool_name="create_task_from_email", status="skipped",
-                args=args, result={"reason": "not_found"},
-            )
-            results.append("Email thread not found.")
-            return
-        title = request.title or thread.subject or "Follow up on email"
-        description = thread.summary or thread.snippet
-        task = await self.tasks.create_task(
-            user,
-            title=title,
-            description=description,
-            source="email",
-            source_message_id=source_message_id,
-            created_by="agent",
-            actor="agent",
-            agent_run_id=run.id,
-        )
-        await self.runs.log_tool_call(
-            run=run,
-            tool_name="create_task_from_email",
-            status="completed",
-            args=args,
-            result={"thread_id": str(thread.id), "task_id": str(task.id)},
-        )
-        results.append(f"Created task from email: “{task.title}”.")
 
     async def _apply_read_settings_tool(
         self,
@@ -4835,59 +4057,6 @@ class AssistantOrchestrator:
             "Found several matching tasks. Please clarify which one to snooze."
         )
 
-    async def _apply_news_digest_tool(
-        self,
-        *,
-        user: User,
-        run,
-        request: NewsRequest,
-        results: list[str],
-    ) -> None:
-        from lumi.services.news import NewsService
-
-        service = NewsService(self.session, llm=self.llm)
-        topics = [topic for topic in await service.list_topics(user) if topic.enabled]
-        if not topics:
-            await self.runs.log_tool_call(
-                run=run,
-                tool_name="news_digest",
-                status="skipped",
-                args=request.model_dump(mode="json"),
-                result={"reason": "no_topics"},
-            )
-            results.append("No news topics yet — add a topic or RSS source in the Mini App.")
-            return
-
-        digest_run = await self.runs.create(
-            user_id=user.id,
-            type_=AgentRunType.NEWS_DIGEST,
-            trigger="telegram_message",
-            conversation_id=run.conversation_id,
-            source_message_id=run.source_message_id,
-            input_summary=", ".join(request.topics)[:300] if request.topics else "news_digest",
-        )
-        digest_run_id = str(digest_run.id)
-        await commit_with_realtime(self.session)
-        job_id = await enqueue_job(
-            "run_news_digest",
-            str(user.id),
-            agent_run_id=digest_run_id,
-            trigger="telegram_message",
-            notify=True,
-        )
-        status = "completed" if job_id else "failed"
-        await self.runs.log_tool_call(
-            run=run,
-            tool_name="news_digest",
-            status=status,
-            args=request.model_dump(mode="json"),
-            result={"run_id": digest_run_id, "job_id": job_id},
-        )
-        if job_id:
-            results.append("Started digest collection — I will send the result in a separate message.")
-        else:
-            results.append("The job queue is unavailable — digest collection did not start.")
-
     async def _apply_store_memory_tool(
         self,
         *,
@@ -4950,42 +4119,6 @@ class AssistantOrchestrator:
                 args=candidate.model_dump(mode="json"),
                 result={"reason": "memory_auto_only"},
             )
-
-    async def _apply_create_automation_tool(
-        self,
-        *,
-        user: User,
-        run,
-        call: PlannedToolCall,
-        automation: AutomationRequest,
-        results: list[str],
-        buttons: list[list[Button]],
-    ) -> None:
-        if automation.confidence < 0.6 or not automation.cron_expression:
-            return
-        payload = {
-            **automation.model_dump(mode="json"),
-            **_call_source_payload(call),
-        }
-        confirmation = await self.confirmations.create(
-            user,
-            action_type="create_automation",
-            action_payload=payload,
-            prompt=_prompt_with_evidence(
-                f"Enable automation “{automation.title}” ({automation.cron_expression})?",
-                call,
-            ),
-        )
-        await self.runs.log_tool_call(
-            run=run, tool_name="create_scheduled_task", status="requires_confirmation",
-            args=payload,
-            requires_confirmation=True, confirmation_id=confirmation.id,
-        )
-        results.append(f"Automation “{automation.title}” is prepared — confirmation required")
-        buttons.append([
-            Button(text="✓ Enable", callback_data=f"confirm:{confirmation.id}", key="confirm"),
-            Button(text="✗ No", callback_data=f"reject:{confirmation.id}", key="reject"),
-        ])
 
     async def _resolve_calendar_event_for_private_note(
         self,

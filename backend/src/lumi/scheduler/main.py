@@ -35,11 +35,20 @@ async def tick() -> int:
         for task in due:
             if not automations.try_lock(task, settings.scheduler_lock_seconds):
                 continue
+            is_system_calendar_sync = (
+                task.type.value == "calendar_sync" and (task.config or {}).get("system") is True
+            )
             job_name = JOB_BY_AUTOMATION_TYPE.get(task.type.value)
             run_type = AGENT_RUN_TYPE_BY_AUTOMATION.get(task.type.value)
-            if not job_name or not run_type:
-                log.warning("unknown automation type", fields={"type": task.type.value})
-                automations.advance_schedule(task)
+            if not is_system_calendar_sync or not job_name or not run_type:
+                task.enabled = False
+                task.next_run_at = None
+                task.locked_until = None
+                task.last_error = "disabled: removed from product scope"
+                log.warning(
+                    "scheduled task disabled outside product scope",
+                    fields={"type": task.type.value, "task_id": str(task.id)},
+                )
                 continue
             run = await runs.create(
                 user_id=task.user_id,

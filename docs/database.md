@@ -61,15 +61,14 @@ erDiagram
 | `focus_sessions` | status, task_id, project_id, project_snapshot, planned/duration seconds, start/target/end, reflection, score | one active row per user; snapshot preserves history across project rename/delete; demo rows use `seed_batch_id` |
 | `memories` | kind, importance 1-5, confidence, tags[], normalized_text | dedupe by keyword-overlap >= 0.75; conflict marked as `potential_conflict` |
 | `calendar_events` | source (internal/google), status (confirmed/tentative/cancelled/proposed), busy | unique (user, source, ext_calendar, ext_event) where ext_event is not null |
-| `email_threads` | category (8 types), importance, triage_status, summary | `metadata.task_candidate` is the task suggestion from triage |
-| `email_messages` | snippet always; body_text only with `STORE_EMAIL_BODIES=true` | privacy by default |
-| `news_topics` / `news_items` / `news_digest_runs` | item dedupe by `unique(user_id, hash)` (sha256 URL) | digest stores text + items_json |
+| `email_threads` / `email_messages` | historical schema only | retained to avoid destructive migration; no runtime/API/model surface |
+| `news_topics` / `news_items` / `news_digest_runs` | historical schema only | retained to avoid destructive migration; no runtime/API/model surface |
 
 ### Automations and observability
 
 | Table | Purpose |
 |---|---|
-| `scheduled_tasks` | cron + user TZ, `next_run_at` (partial index where enabled), `locked_until` double-run guard, failure_count |
+| `scheduled_tasks` | system Calendar sync plus retained legacy history; unsupported due rows are disabled without deletion |
 | `agent_runs` | every agent run: type, status, trigger, summaries, error; `metadata.context_snapshot` for chat runs (debug) |
 | `llm_calls` | provider/model/request_kind/latency/char+token estimates; raw prompts are NOT stored except with `STORE_LLM_DEBUG_PAYLOADS=true` |
 | `tool_calls` | tool name, args/result JSON, requires_confirmation, confirmation link |
@@ -104,5 +103,4 @@ make revision m="add_something"   # autogenerate a new migration
 
 Safe bootstrap data (`make seed`): user from `ALLOWED_TELEGRAM_USER_IDS` and main
 conversation only. `make seed-focus-demo` is an explicit local-only Focus dataset;
-it replaces only rows marked with its stable batch id. News topics and automations
-are user-created in the Mini App.
+it replaces only rows marked with its stable batch id.

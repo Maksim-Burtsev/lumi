@@ -11,7 +11,10 @@ from lumi.api.deps import get_current_user, get_db
 from lumi.api.serializers import confirmation_to_dict
 from lumi.db.models import ConfirmationStatus, User
 from lumi.i18n import normalize_app_locale
-from lumi.services.confirmation_executor import ConfirmationExecutor
+from lumi.services.confirmation_executor import (
+    REMOVED_CONFIRMATION_ACTIONS,
+    ConfirmationExecutor,
+)
 from lumi.services.confirmations import ConfirmationService
 
 router = APIRouter()
@@ -49,6 +52,16 @@ async def accept_confirmation(
         return {
             "confirmation": confirmation_to_dict(confirmation, locale=locale),
             "result_text": _text(locale, "This suggestion has expired.", "Это предложение уже истекло."),
+            "executed": False,
+        }
+    if confirmation.action_type in REMOVED_CONFIRMATION_ACTIONS:
+        return {
+            "confirmation": confirmation_to_dict(confirmation, locale=locale),
+            "result_text": _text(
+                locale,
+                "This action is no longer available in Lumi's productivity scope.",
+                "Это действие больше не входит в продуктивный контур Lumi.",
+            ),
             "executed": False,
         }
 

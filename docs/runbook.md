@@ -100,7 +100,7 @@ For non-trivial bot, Mini App, planner/tools, or observability changes, the agen
 | MiniMax error in replies | `docker compose logs worker api \| grep -i minimax`; check key/quota/timeout. Retries and fallbacks are already built in. |
 | "Task queue unavailable" | Redis is down: `docker compose ps redis`, `docker compose up -d redis`. |
 | Run is stuck in queued | Worker is not alive: `docker compose logs worker`; restart with `docker compose restart worker`. |
-| Automation does not run | Is it enabled in Mini App -> Automations? Is `next_run_at` in the future? Scheduler logs should show `scheduled job enqueued`. |
+| Google Calendar does not auto-sync | Check the hidden system `calendar_sync` row and scheduler logs. Legacy user-created scheduled rows are intentionally disabled. |
 | Google: needs_reauth | Token expired without refresh; rerun `make google-auth-local`. |
 | Migration fails | `docker compose logs postgres`; last resort: `make reset-local-db && make migrate && make seed`. |
 | Reminder did not arrive | Worker cron runs every minute; check `reminder_at` (UTC in DB) and worker logs for `cron:send_due_reminders`. |

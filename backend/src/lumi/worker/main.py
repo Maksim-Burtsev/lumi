@@ -18,12 +18,7 @@ from lumi.worker.jobs import (
     process_due_opportunity_jobs,
     recover_pending_calendar_private_note_summaries,
     run_calendar_sync,
-    run_custom_prompt,
     run_daily_planning,
-    run_email_triage,
-    run_morning_brief,
-    run_news_digest,
-    run_task_review,
     send_due_reminders,
     summarize_calendar_private_note,
 )
@@ -46,13 +41,8 @@ async def shutdown(ctx: dict[str, Any]) -> None:
 
 class WorkerSettings:
     functions = [
-        run_morning_brief,
-        run_news_digest,
-        run_email_triage,
         run_daily_planning,
         run_calendar_sync,
-        run_task_review,
-        run_custom_prompt,
         summarize_calendar_private_note,
         compact_conversation,
         process_assistant_turn,

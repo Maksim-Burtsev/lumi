@@ -3,7 +3,16 @@ from datetime import timedelta
 from lumi.assistant.context_builder import ContextBuilder, PlannerContextBuilder
 from lumi.assistant.memory_service import MemoryService
 from lumi.assistant.schemas import MemoryCandidate
-from lumi.db.models import AgentRunType, Message, MessageRole, TaskStatus
+from lumi.db.models import (
+    AgentRunType,
+    EmailThread,
+    Message,
+    MessageRole,
+    NewsTopic,
+    ScheduledTask,
+    ScheduledTaskType,
+    TaskStatus,
+)
 from lumi.db.session import session_scope
 from lumi.services.calendar import CalendarService
 from lumi.services.confirmations import ConfirmationService
@@ -81,6 +90,50 @@ async def test_context_contains_all_sections(user):
     # Last message is the current user text.
     assert context.messages[-1].content == "Когда присылать дайджест?"
     assert context.messages[-1].role == "user"
+
+
+async def test_context_excludes_tombstoned_product_domains(user):
+    async with session_scope() as session:
+        users = UserService(session)
+        u = await users.ensure_user(TEST_TELEGRAM_ID)
+        conversation = await users.ensure_main_conversation(u)
+        session.add_all(
+            [
+                EmailThread(
+                    user_id=u.id,
+                    external_thread_id="legacy-thread",
+                    subject="LEGACY EMAIL SECRET",
+                ),
+                NewsTopic(
+                    user_id=u.id,
+                    title="LEGACY NEWS SECRET",
+                    query="legacy-news-secret",
+                ),
+                ScheduledTask(
+                    user_id=u.id,
+                    type=ScheduledTaskType.CUSTOM_PROMPT,
+                    title="LEGACY AUTOMATION SECRET",
+                    cron_expression="0 9 * * *",
+                    timezone=u.timezone,
+                    enabled=False,
+                ),
+            ]
+        )
+
+    async with session_scope() as session:
+        users = UserService(session)
+        u = await users.ensure_user(TEST_TELEGRAM_ID)
+        conversation = await users.ensure_main_conversation(u)
+        context = await ContextBuilder(session).build(
+            user=u,
+            conversation=conversation,
+            current_text="What should I work on next?",
+        )
+
+    snapshot = "\n".join(context.debug_snapshot["sections"])
+    assert "LEGACY EMAIL SECRET" not in snapshot
+    assert "LEGACY NEWS SECRET" not in snapshot
+    assert "LEGACY AUTOMATION SECRET" not in snapshot
 
 
 async def test_context_respects_char_budget(user, monkeypatch):

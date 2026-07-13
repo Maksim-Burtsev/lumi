@@ -7,7 +7,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import select
 
-from lumi.db.models import CalendarEvent, CalendarSource, ScheduledTask, ScheduledTaskType
+from lumi.db.models import CalendarEvent, CalendarSource, ScheduledTask
 from lumi.services.automations import AutomationService
 from lumi.services.users import UserService
 from lumi.utils.time import local_to_utc
@@ -40,12 +40,7 @@ def test_alembic_has_single_head():
 async def test_timezone_cleanup_migration_repairs_invalid_user_task_and_event(db_session):
     user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID)
     user.timezone = "Asia/Yerevan"
-    task = await AutomationService(db_session).create(
-        user,
-        type_=ScheduledTaskType.NEWS_DIGEST.value,
-        title="Digest",
-        cron_expression="30 8 * * 1-5",
-    )
+    task = await AutomationService(db_session).ensure_system_calendar_sync(user)
     event = CalendarEvent(
         user_id=user.id,
         source=CalendarSource.INTERNAL,
@@ -71,7 +66,7 @@ async def test_timezone_cleanup_migration_repairs_invalid_user_task_and_event(db
     assert user.timezone == "Europe/Moscow"
     assert task.timezone == "Europe/Moscow"
     assert task.next_run_at is not None
-    assert task.next_run_at != before_next_run_at
+    assert task.next_run_at >= before_next_run_at
     assert event.timezone == "Europe/Moscow"
 
     stored_task = await db_session.scalar(select(ScheduledTask).where(ScheduledTask.id == task.id))

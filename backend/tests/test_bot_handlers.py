@@ -1,4 +1,3 @@
-import asyncio
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from uuid import UUID
@@ -6,9 +5,18 @@ from uuid import UUID
 from sqlalchemy import select
 
 from lumi.bot import handlers
-from lumi.db.models import AgentRun, AssistantTurn, CalendarEventStatus, Message, MessageRole
+from lumi.db.models import (
+    AgentRun,
+    AssistantTurn,
+    CalendarEventStatus,
+    ConfirmationStatus,
+    Message,
+    MessageRole,
+    ScheduledTask,
+)
 from lumi.db.session import session_scope
 from lumi.services.calendar import CalendarService
+from lumi.services.confirmations import ConfirmationService
 from lumi.services.users import UserService
 from lumi.utils.time import local_now, local_to_utc
 
@@ -89,6 +97,48 @@ class FakeCallback:
         self.answers.append(text)
 
 
+async def test_legacy_removed_confirmation_cannot_report_fake_success(monkeypatch):
+    async def fake_check_allowed(*args, **kwargs):
+        return True
+
+    async def fail_execute(*args, **kwargs):
+        raise AssertionError("removed confirmation reached executor")
+
+    monkeypatch.setattr(handlers, "_check_allowed", fake_check_allowed)
+    monkeypatch.setattr(handlers.ConfirmationExecutor, "execute", fail_execute)
+
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID, language_code="ru")
+        confirmation = await ConfirmationService(session).create(
+            user,
+            action_type="create_automation",
+            action_payload={
+                "type": "custom_prompt",
+                "title": "Legacy research",
+                "cron_expression": "0 9 * * *",
+            },
+            prompt="Enable legacy automation?",
+        )
+        confirmation_id = confirmation.id
+
+    callback = FakeCallback(f"confirm:{confirmation_id}", language_code="ru")
+
+    await handlers.on_confirmation(callback)
+
+    assert callback.answers == ["Недоступно"]
+    assert callback.message.answers == [
+        "Это действие больше не входит в продуктивный контур Lumi."
+    ]
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        confirmation = await ConfirmationService(session).get(user, confirmation_id)
+        scheduled = list((await session.execute(select(ScheduledTask))).scalars())
+
+    assert confirmation is not None
+    assert confirmation.status == ConfirmationStatus.ACCEPTED
+    assert scheduled == []
+
+
 async def test_rejected_unsupported_attachment_with_caption_does_not_call_llm_or_download(monkeypatch):
     orchestrator_called = False
     download_called = False
@@ -130,7 +180,7 @@ async def test_rejected_unsupported_attachment_with_caption_does_not_call_llm_or
         ).scalars().one()
 
     assert inbound.content == "создай задачу из документа"
-    assert inbound.content_json["attachment_rejection"]["reason"] == "unsupported_attachment"
+    assert inbound.content_json["attachment_rejection"]["reason"] == "unsupported_product_attachment"
     assert inbound.content_json["unsupported_attachments"][0]["file_name"] == "scan.pdf"
     assert "images" not in inbound.content_json
     assert outbound.content == handlers.REJECTED_ATTACHMENT_REPLY
@@ -235,71 +285,34 @@ async def test_reply_to_message_id_is_stored_even_without_text(monkeypatch):
     assert turn.payload["reply_context"] == {"message_id": 602}
 
 
-async def test_rejected_multiple_supported_images_does_not_download_first_image(monkeypatch):
-    download_called = False
+async def test_rejected_image_does_not_enqueue_or_download(monkeypatch):
+    enqueued: list[str] = []
 
     async def fake_check_allowed(*args, **kwargs):
         return True
 
-    monkeypatch.setattr(handlers, "_check_allowed", fake_check_allowed)
+    async def fake_enqueue(job_name, *args, **kwargs):
+        enqueued.append(job_name)
+        return "job-id"
 
+    monkeypatch.setattr(handlers, "_check_allowed", fake_check_allowed)
+    monkeypatch.setattr(handlers, "enqueue_job", fake_enqueue)
     message = FakeTelegramMessage(
         message_id=502,
-        media_group_id="album-multi",
-        photo=[SimpleNamespace(file_id="first", file_unique_id="img-1", file_size=100, width=1, height=1)],
-    )
-    second = FakeTelegramMessage(
-        message_id=503,
-        media_group_id="album-multi",
-        photo=[SimpleNamespace(file_id="second", file_unique_id="img-2", file_size=100, width=1, height=1)],
-    )
-
-    class FakeRedis:
-        def __init__(self) -> None:
-            self.values: list[str] = []
-            self.locked = False
-
-        async def rpush(self, key: str, value: str) -> None:
-            self.values.append(value)
-
-        async def expire(self, key: str, seconds: int) -> None:
-            return None
-
-        async def set(self, key: str, value: str, *, nx: bool = False, ex: int | None = None) -> bool:
-            if self.locked:
-                return False
-            self.locked = True
-            return True
-
-        async def lrange(self, key: str, start: int, end: int) -> list[str]:
-            return self.values
-
-        async def delete(self, *keys: str) -> None:
-            return None
-
-    redis = FakeRedis()
-
-    async def fake_get_queue():
-        return redis
-
-    def fake_buffer_init(self, redis):
-        self.redis = redis
-        self.window_seconds = 0
-        self.ttl_seconds = 30
-        self.key_prefix = "test"
-
-    monkeypatch.setattr(handlers, "get_queue", fake_get_queue)
-    monkeypatch.setattr(handlers.AttachmentBatchBuffer, "__init__", fake_buffer_init)
-
-    await asyncio.gather(
-        handlers.on_chat_message(message, FakeBot()),
-        handlers.on_chat_message(second, FakeBot()),
+        caption="извлеки текст",
+        photo=[SimpleNamespace(
+            file_id="photo",
+            file_unique_id="img-1",
+            file_size=100,
+            width=1,
+            height=1,
+        )],
     )
 
-    answers = message.answers + second.answers
-    assert answers == [handlers.REJECTED_ATTACHMENT_REPLY]
-    assert download_called is False
+    await handlers.on_chat_message(message, FakeBot())
 
+    assert message.answers == [handlers.REJECTED_ATTACHMENT_REPLY]
+    assert enqueued == []
     async with session_scope() as session:
         inbound = (
             await session.execute(
@@ -309,10 +322,13 @@ async def test_rejected_multiple_supported_images_does_not_download_first_image(
                 )
             )
         ).scalars().one()
+        runs = list((await session.execute(select(AgentRun))).scalars())
 
-    assert inbound.content_json["attachment_rejection"]["reason"] == "multiple_supported_images"
-    assert [item["file_id"] for item in inbound.content_json["rejected_supported_images"]] == ["first", "second"]
+    assert inbound.content == "извлеки текст"
+    assert inbound.content_json["attachment_rejection"]["reason"] == "unsupported_product_attachment"
+    assert inbound.content_json["rejected_supported_images"][0]["file_id"] == "photo"
     assert "images" not in inbound.content_json
+    assert runs == []
 
 
 async def test_chat_message_enqueues_turn_without_inline_orchestrator(monkeypatch):

@@ -101,14 +101,11 @@ async def smoke() -> int:
         users = UserService(session)
         user = await users.ensure_user(SMOKE_TELEGRAM_ID)
         automations = AutomationService(session)
-        automation = await automations.create(
-            user, type_="news_digest", title="smoke digest",
-            cron_expression="* * * * *", enabled=True, actor="system",
-        )
+        automation = await automations.ensure_system_calendar_sync(user)
         automation.next_run_at = utc_now()
         await session.flush()
         due = await automations.find_due_tasks()
-        ok &= check("scheduler finds due automation",
+        ok &= check("scheduler finds due calendar sync",
                     any(t.id == automation.id for t in due))
         automation.enabled = False
 
