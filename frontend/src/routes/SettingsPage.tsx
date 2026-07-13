@@ -196,11 +196,11 @@ const COPY = {
     error: 'Error',
     needsReauth: 'Reconnect required',
     lastSync: 'Last sync',
-    googleInfo: 'Lumi will get read-only mail access and calendar access. One tap opens Google; allow access and return here.',
+    googleInfo: 'One tap opens Google. Review the requested access, allow it, and return here.',
     waitingGoogle: 'Waiting for Google confirmation; status updates automatically.',
-    connectGoogle: 'Connect Google',
-    disconnectGoogle: 'Disconnect Google?',
-    googleDisconnected: 'Google disconnected',
+    connectGoogle: 'Connect Google Calendar',
+    disconnectGoogle: 'Disconnect Google Calendar?',
+    googleDisconnected: 'Google Calendar disconnected',
     googleDisconnectFailed: 'Could not disconnect',
     cancel: 'Cancel',
     disconnect: 'Disconnect',
@@ -268,11 +268,11 @@ const COPY = {
     error: 'Ошибка',
     needsReauth: 'Нужна повторная авторизация',
     lastSync: 'Последняя синхронизация',
-    googleInfo: 'Lumi получит доступ к почте (только чтение) и календарю. Один тап — откроется Google, разреши доступ и вернись сюда.',
+    googleInfo: 'Откроется Google. Проверь запрашиваемый доступ, разреши его и вернись сюда.',
     waitingGoogle: 'Жду подтверждения в Google… статус обновится сам.',
-    connectGoogle: 'Подключить Google',
-    disconnectGoogle: 'Отключить Google?',
-    googleDisconnected: 'Google отключен',
+    connectGoogle: 'Подключить Google Calendar',
+    disconnectGoogle: 'Отключить Google Calendar?',
+    googleDisconnected: 'Google Calendar отключен',
     googleDisconnectFailed: 'Не удалось отключить',
     cancel: 'Отмена',
     disconnect: 'Отключить',
@@ -291,10 +291,6 @@ const COPY = {
     userFallback: 'Пользователь',
   },
 };
-
-function shortScope(scope: string): string {
-  return scope.replace('https://www.googleapis.com/auth/', '');
-}
 
 export default function SettingsPage() {
   const settingsQuery = useSettings();
@@ -678,9 +674,9 @@ export default function SettingsPage() {
         </Card>
       </Rise>
 
-      {/* Google */}
+      {/* Google Calendar */}
       <Rise>
-        <SectionHeader title="Google" />
+        <SectionHeader title="Google Calendar" />
         <Card className="card-strong !p-0">
           <div className="flex min-h-[48px] items-center justify-between gap-3 px-4 py-2.5">
             <span className="text-[13.5px] text-ink">{copy.status}</span>
@@ -689,22 +685,12 @@ export default function SettingsPage() {
             </span>
           </div>
           <div className="divide-y divide-[var(--hairline)] border-t border-hairline">
-            <BoolRow label="Gmail" value={google.gmail_available} />
             <BoolRow label="Calendar" value={google.calendar_available} />
             <InfoRow
               label={copy.lastSync}
               value={google.last_sync_at ? formatRelative(google.last_sync_at, timeDisplay) : '—'}
             />
           </div>
-          {google.scopes.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 border-t border-hairline px-4 py-3">
-              {google.scopes.map((scope) => (
-                <span key={scope} className="rounded-full bg-[var(--secondary-bg)] px-2.5 py-1 font-mono text-[11px] text-hint">
-                  {shortScope(scope)}
-                </span>
-              ))}
-            </div>
-          )}
           {google.last_error && (
             <p className="border-t border-hairline px-4 py-3 text-[12.5px] leading-snug text-danger">{google.last_error}</p>
           )}

@@ -1,5 +1,5 @@
 import { useLocation, useNavigate } from 'react-router-dom';
-import { CalendarDays, LayoutGrid, ListChecks, Sunrise, Timer } from 'lucide-react';
+import { CalendarDays, ListChecks, Sunrise, Timer } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { haptic } from '../../telegram/webapp';
 import { useAppLocale } from '../../lib/useAppLocale';
@@ -17,7 +17,6 @@ const ITEMS: NavItem[] = [
   { to: '/tasks', label: { en: 'Tasks', ru: 'Задачи' }, icon: ListChecks },
   { to: '/sessions', label: { en: 'Sessions', ru: 'Сессии' }, icon: Timer, also: ['/focus'] },
   { to: '/calendar', label: { en: 'Calendar', ru: 'Календарь' }, icon: CalendarDays },
-  { to: '/more', label: { en: 'More', ru: 'Ещё' }, icon: LayoutGrid, also: ['/inbox', '/news', '/automations', '/settings', '/runs'] },
 ];
 
 /** Floating pill bottom navigation with safe-area padding. */

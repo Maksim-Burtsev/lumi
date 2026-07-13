@@ -1,28 +1,17 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
 import type {
-  AgentRunsResponse,
-  AutomationsResponse,
   CalendarEventsResponse,
-  InboxSummaryResponse,
-  MemoriesResponse,
-  NewsDigestsResponse,
-  NewsTopicsResponse,
   SettingsResponse,
   TasksResponse,
   User,
 } from '../api/types';
 import { ToastProvider } from '../components/ui/Toast';
-import AgentRunsPage from './AgentRunsPage';
-import AutomationsPage from './AutomationsPage';
 import CalendarPage from './CalendarPage';
-import InboxPage from './InboxPage';
-import MemoryPage from './MemoryPage';
-import NewsPage from './NewsPage';
 import TasksPage from './TasksPage';
 
 function makeUser(locale = 'en'): User {
@@ -94,62 +83,6 @@ describe('Mini App English UI smoke', () => {
     expect(screen.queryByText('Сегодня')).not.toBeInTheDocument();
   });
 
-  it('localizes News page static UI', async () => {
-    vi.spyOn(api, 'listNewsTopics').mockResolvedValue({ items: [] } satisfies NewsTopicsResponse);
-    vi.spyOn(api, 'listNewsDigests').mockResolvedValue({ items: [] } satisfies NewsDigestsResponse);
-
-    renderWithProviders(<NewsPage />);
-
-    expect(await screen.findByText('Build digest')).toBeInTheDocument();
-    expect(screen.getAllByText('Add topic')).not.toHaveLength(0);
-    expect(await screen.findByText('No topics yet')).toBeInTheDocument();
-    expect(screen.queryByText('Собрать дайджест')).not.toBeInTheDocument();
-  });
-
-  it('localizes Inbox page static UI', async () => {
-    vi.spyOn(api, 'getInboxSummary').mockResolvedValue({
-      connected: false,
-      last_triage_at: null,
-      counts: { needs_reply: 0, waiting_for_me: 0, decision_needed: 0, fyi: 0, newsletter: 0, invoice_document: 0, ignore: 0, unknown: 0 },
-      threads: [],
-    } satisfies InboxSummaryResponse);
-
-    renderWithProviders(<InboxPage />);
-
-    expect(await screen.findByText('Gmail is not connected')).toBeInTheDocument();
-    expect(screen.getByText('Open settings')).toBeInTheDocument();
-    expect(screen.queryByText('Gmail не подключен')).not.toBeInTheDocument();
-  });
-
-  it('localizes Memory page static UI', async () => {
-    vi.spyOn(api, 'listMemories').mockResolvedValue({ items: [] } satisfies MemoriesResponse);
-
-    renderWithProviders(<MemoryPage />);
-
-    expect(await screen.findByText('All')).toBeInTheDocument();
-    expect(await screen.findByText('Lumi has not remembered anything yet')).toBeInTheDocument();
-    expect(screen.queryByText('Все')).not.toBeInTheDocument();
-  });
-
-  it('localizes Automations page static UI', async () => {
-    vi.spyOn(api, 'listAutomations').mockResolvedValue({ items: [] } satisfies AutomationsResponse);
-
-    renderWithProviders(<AutomationsPage />);
-
-    expect(await screen.findByText('New automation')).toBeInTheDocument();
-    expect(await screen.findByText('No automations yet')).toBeInTheDocument();
-    expect(screen.queryByText('Новая автоматизация')).not.toBeInTheDocument();
-  });
-
-  it('localizes Agent runs page static UI', async () => {
-    vi.spyOn(api, 'listAgentRuns').mockResolvedValue({ items: [] } satisfies AgentRunsResponse);
-
-    renderWithProviders(<AgentRunsPage />);
-
-    expect(await screen.findByText('No agent runs yet')).toBeInTheDocument();
-    expect(screen.queryByText('Запусков пока не было')).not.toBeInTheDocument();
-  });
-
   it('localizes Calendar page static UI', async () => {
     vi.spyOn(api, 'listCalendarEvents').mockResolvedValue({
       items: [],
@@ -181,15 +114,4 @@ describe('Mini App English UI smoke', () => {
     expect(screen.queryByText('Нет запланированных встреч')).not.toBeInTheDocument();
   });
 
-  it('opens English automation sheet', async () => {
-    vi.spyOn(api, 'listAutomations').mockResolvedValue({ items: [] } satisfies AutomationsResponse);
-
-    renderWithProviders(<AutomationsPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'New automation' }));
-
-    expect(await screen.findByRole('dialog', { name: 'New automation' })).toBeInTheDocument();
-    expect(screen.getByText('Type')).toBeInTheDocument();
-    expect(screen.getByText('When to run')).toBeInTheDocument();
-    expect(screen.queryByText('Тип')).not.toBeInTheDocument();
-  });
 });

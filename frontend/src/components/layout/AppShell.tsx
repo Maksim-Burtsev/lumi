@@ -13,12 +13,7 @@ const TITLES = {
     '/sessions': 'Sessions',
     '/focus': 'Sessions',
     '/calendar': 'Calendar',
-    '/inbox': 'Inbox',
-    '/more': 'More',
-    '/news': 'News',
-    '/automations': 'Automations',
     '/settings': 'Settings',
-    '/runs': 'Agent runs',
   },
   ru: {
     '/': 'Сегодня',
@@ -26,12 +21,7 @@ const TITLES = {
     '/sessions': 'Сессии',
     '/focus': 'Сессии',
     '/calendar': 'Календарь',
-    '/inbox': 'Почта',
-    '/more': 'Ещё',
-    '/news': 'Новости',
-    '/automations': 'Автоматизации',
     '/settings': 'Настройки',
-    '/runs': 'Запуски агента',
   },
 };
 
