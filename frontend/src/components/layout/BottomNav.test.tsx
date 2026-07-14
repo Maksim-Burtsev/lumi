@@ -33,5 +33,19 @@ describe('BottomNav product navigation', () => {
     expect(screen.queryByRole('button', { name: 'Inbox' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'More' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument();
+    expect(screen.getByRole('navigation')).not.toHaveClass('lg:hidden');
+  });
+
+  it('hides the mobile navigation at desktop width only for standalone web', () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/']}>
+          <BottomNav standalone />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByRole('navigation')).toHaveClass('lg:hidden');
   });
 });

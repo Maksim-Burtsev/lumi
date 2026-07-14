@@ -1,10 +1,17 @@
 import { useEffect, useState } from 'react';
-import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { clearUnauthorizedResponse, hasUnauthorizedResponse, UNAUTHORIZED_EVENT } from './api/client';
 import { useRealtimeInvalidation, useSettings } from './api/hooks';
 import { AppShell } from './components/layout/AppShell';
+import { LogoutScreen } from './components/layout/LogoutScreen';
 import { UnauthorizedScreen } from './components/layout/UnauthorizedScreen';
+import { WebLoginScreen } from './components/layout/WebLoginScreen';
+import {
+  clearWebIdentityState,
+  hasPendingWebLogout,
+  markPendingWebLogout,
+} from './api/webAuth';
 import { TimezoneMismatchPrompt } from './components/settings/TimezoneMismatchPrompt';
 import { ToastProvider } from './components/ui/Toast';
 import { normalizeThemeMode } from './lib/theme';
@@ -46,22 +53,39 @@ export function ProductRoutes() {
   );
 }
 
-function AppRoutes() {
+function AuthenticatedProduct({ onLogout }: { onLogout: () => Promise<void> }) {
   useRealtimeInvalidation();
   const settings = useSettings();
-  const [unauthorized, setUnauthorized] = useState(hasUnauthorizedResponse);
-  const client = useQueryClient();
-
-  useEffect(() => {
-    const handler = () => setUnauthorized(true);
-    window.addEventListener(UNAUTHORIZED_EVENT, handler);
-    return () => window.removeEventListener(UNAUTHORIZED_EVENT, handler);
-  }, []);
 
   useEffect(() => {
     if (!settings.data) return;
     setThemeMode(normalizeThemeMode(settings.data.user.settings.theme_mode));
   }, [settings.data]);
+
+  return (
+    <AppShell
+      onLogout={onLogout}
+      showLogout={settings.data?.flags.dev_auth === false}
+    >
+      <TimezoneMismatchPrompt />
+      <ProductRoutes />
+    </AppShell>
+  );
+}
+
+function AuthenticatedRoutes() {
+  const [unauthorized, setUnauthorized] = useState(hasUnauthorizedResponse);
+  const client = useQueryClient();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const handler = () => {
+      setUnauthorized(true);
+      clearWebIdentityState(client);
+    };
+    window.addEventListener(UNAUTHORIZED_EVENT, handler);
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, handler);
+  }, [client]);
 
   if (unauthorized) {
     return (
@@ -76,11 +100,21 @@ function AppRoutes() {
   }
 
   return (
-    <AppShell>
-      <TimezoneMismatchPrompt />
-      <ProductRoutes />
-    </AppShell>
+    <AuthenticatedProduct
+      onLogout={async () => {
+        markPendingWebLogout();
+        clearWebIdentityState(client);
+        navigate('/logout', { replace: true });
+      }}
+    />
   );
+}
+
+export function RouteGate() {
+  const location = useLocation();
+  if (location.pathname === '/logout' || hasPendingWebLogout()) return <LogoutScreen />;
+  if (location.pathname === '/web-login') return <WebLoginScreen />;
+  return <AuthenticatedRoutes />;
 }
 
 export default function App() {
@@ -88,7 +122,7 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
         <HashRouter>
-          <AppRoutes />
+          <RouteGate />
         </HashRouter>
       </ToastProvider>
     </QueryClientProvider>

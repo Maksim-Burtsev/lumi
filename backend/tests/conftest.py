@@ -10,8 +10,10 @@ _base_db_name = _base_url.rsplit("/", 1)[1].split("?")[0]
 TEST_DATABASE_URL = _base_url.rsplit("/", 1)[0] + "/lumi_test"
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 os.environ["LLM_PROVIDER"] = "mock"
-os.environ.setdefault("TELEGRAM_BOT_TOKEN", "123456789:TEST-TOKEN-for-tests-only")
-os.environ.setdefault("ALLOWED_TELEGRAM_USER_IDS", "777000")
+os.environ["TELEGRAM_BOT_TOKEN"] = "123456789:TEST-TOKEN-for-tests-only"
+os.environ["ALLOWED_TELEGRAM_USER_IDS"] = "777000"
+os.environ["APP_PUBLIC_URL"] = "https://app.example"
+os.environ["WEB_SESSION_SECRET"] = "web-session-secret-for-tests-only-32chars"
 os.environ["APP_ENV"] = "local"
 os.environ["DEV_AUTH_ENABLED"] = "false"
 os.environ["AUTO_MIGRATE"] = "false"

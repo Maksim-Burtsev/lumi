@@ -140,8 +140,9 @@ planning-check:
 auth-check:
 	docker compose run --rm --build -e LLM_PROVIDER=mock api pytest -q \
 		tests/test_telegram_auth.py \
+		tests/test_web_auth.py \
 		tests/test_api.py::test_api_requires_auth \
-		tests/test_realtime.py::test_realtime_endpoint_requires_auth
+		tests/test_realtime.py
 
 analytics-check: focus-check
 

@@ -81,6 +81,14 @@ const REALTIME_BATCH_MS = 250;
 const REALTIME_RETRY_INITIAL_MS = 1000;
 const REALTIME_RETRY_MAX_MS = 15000;
 
+export function clearRealtimeCursor(): void {
+  try {
+    sessionStorage.removeItem(REALTIME_LAST_ID_KEY);
+  } catch {
+    /* Storage can be unavailable in embedded clients. */
+  }
+}
+
 function readLastRealtimeId(): number {
   const raw = sessionStorage.getItem(REALTIME_LAST_ID_KEY);
   const parsed = raw ? Number(raw) : 0;

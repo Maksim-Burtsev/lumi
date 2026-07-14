@@ -1784,11 +1784,7 @@ export default function TasksPage() {
           haptic('light');
           setCreating(true);
         }}
-        className="fixed z-[55] flex h-14 w-14 items-center justify-center rounded-full bg-accent text-white shadow-card active:scale-95"
-        style={{
-          right: 'max(20px, calc((100vw - 860px) / 2 + 20px))',
-          bottom: 'calc(env(safe-area-inset-bottom) + 96px)',
-        }}
+        className="shell-fab tasks-fab fixed z-[55] flex h-14 w-14 items-center justify-center rounded-full bg-accent text-white shadow-card active:scale-95"
       >
         <Plus size={24} strokeWidth={2.2} />
       </button>

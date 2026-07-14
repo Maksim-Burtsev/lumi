@@ -7,6 +7,7 @@ from fastapi import APIRouter
 from lumi.api.routes import (
     agent_runs,
     assistant_suggestions,
+    auth,
     calendar,
     confirmations,
     connectors,
@@ -22,6 +23,7 @@ from lumi.api.routes import (
 )
 
 api_router = APIRouter(prefix="/api")
+api_router.include_router(auth.router, tags=["auth"])
 api_router.include_router(me.router, tags=["me"])
 api_router.include_router(today.router, tags=["today"])
 api_router.include_router(tasks.router, tags=["tasks"])

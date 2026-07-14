@@ -101,6 +101,18 @@ export interface FocusRangeQuery {
 interface RequestOptions {
   query?: Record<string, string | number | undefined>;
   body?: unknown;
+  suppressUnauthorized?: boolean;
+}
+
+const CSRF_COOKIE = 'lumi_web_csrf';
+
+function readCookie(name: string): string | null {
+  const prefix = `${encodeURIComponent(name)}=`;
+  for (const part of document.cookie.split(';')) {
+    const cookie = part.trim();
+    if (cookie.startsWith(prefix)) return decodeURIComponent(cookie.slice(prefix.length));
+  }
+  return null;
 }
 
 async function request<T>(method: Method, path: string, options: RequestOptions = {}): Promise<T> {
@@ -117,6 +129,10 @@ async function request<T>(method: Method, path: string, options: RequestOptions 
   const headers: Record<string, string> = {};
   const initData = getInitData();
   if (initData) headers['X-Telegram-Init-Data'] = initData;
+  if (method !== 'GET' && !initData) {
+    const csrf = readCookie(CSRF_COOKIE);
+    if (csrf) headers['X-CSRF-Token'] = csrf;
+  }
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
 
   let response: Response;
@@ -124,6 +140,8 @@ async function request<T>(method: Method, path: string, options: RequestOptions 
     response = await fetch(url, {
       method,
       headers,
+      credentials: 'same-origin',
+      cache: 'no-store',
       body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
     });
   } catch {
@@ -140,7 +158,7 @@ async function request<T>(method: Method, path: string, options: RequestOptions 
     } catch {
       /* non-JSON error body */
     }
-    if (response.status === 401) {
+    if (response.status === 401 && !options.suppressUnauthorized) {
       markUnauthorizedResponse();
     }
     throw new ApiError(response.status, code, detail);
@@ -151,6 +169,18 @@ async function request<T>(method: Method, path: string, options: RequestOptions 
 }
 
 export class LumiApiClient {
+  // -------------------------------------------------- Standalone web auth
+  exchangeWebLogin(nonce: string): Promise<{ authenticated: true }> {
+    return request('POST', '/api/auth/web/exchange', {
+      body: { nonce },
+      suppressUnauthorized: true,
+    });
+  }
+
+  logoutWebSession(): Promise<{ authenticated: false }> {
+    return request('POST', '/api/auth/web/logout');
+  }
+
   // -------------------------------------------------- Health
   health(): Promise<HealthResponse> {
     return request('GET', '/health');
