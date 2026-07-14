@@ -1,16 +1,20 @@
-from datetime import datetime, time
+from datetime import UTC, datetime, time
 
 import httpx
 import pytest
 from sqlalchemy import select
 
 from lumi.api.deps import get_current_user
+from lumi.api.routes import tasks as task_routes
 from lumi.api.routes import telegram
 from lumi.db.models import ScheduledTask, ScheduledTaskType
 from lumi.db.session import session_scope
 from lumi.main import app
+from lumi.services import tasks as task_service_module
 from lumi.services.calendar import CalendarService
 from lumi.services.confirmations import ConfirmationService
+from lumi.services.projects import ProjectService
+from lumi.services.tasks import TaskService
 from lumi.services.users import UserService
 from lumi.utils.time import local_now, local_to_utc
 
@@ -253,14 +257,153 @@ async def test_tasks_crud(client):
     assert create.status_code == 201
     task = create.json()["task"]
     assert task["title"] == "Тест из API"
+    assert task["status"] == "inbox"
+    assert task["bucket"] == "inbox"
+    assert task["planned_for"] is None
+    assert task["target_at"] is None
 
     listing = await client.get("/api/tasks")
     assert listing.status_code == 200
     assert len(listing.json()["items"]) == 1
+    assert listing.json()["has_more"] is False
+    assert listing.json()["next_offset"] is None
 
     complete = await client.post(f"/api/tasks/{task['id']}/complete")
     assert complete.status_code == 200
     assert complete.json()["task"]["status"] == "done"
+
+    undo = await client.patch(f"/api/tasks/{task['id']}", json={"status": "active"})
+    assert undo.status_code == 200
+    assert undo.json()["task"]["status"] == "inbox"
+    assert undo.json()["task"]["bucket"] == "inbox"
+    assert undo.json()["task"]["completed_at"] is None
+
+
+async def test_tasks_planned_for_alias_and_pagination(client):
+    planned_for = "2026-07-14T09:00:00+04:00"
+    created = await client.post(
+        "/api/tasks",
+        json={"title": "Planned", "planned_for": planned_for},
+    )
+    assert created.status_code == 201
+    task = created.json()["task"]
+    assert task["status"] == "active"
+    assert task["planned_for"] == task["target_at"]
+    await client.post("/api/tasks", json={"title": "Second"})
+    await client.post("/api/tasks", json={"title": "Third"})
+
+    first = await client.get("/api/tasks", params={"filter": "inbox", "limit": 1})
+    second = await client.get(
+        "/api/tasks",
+        params={"filter": "inbox", "limit": 1, "offset": first.json()["next_offset"]},
+    )
+    assert first.json()["has_more"] is True
+    assert first.json()["next_offset"] == 1
+    assert {first.json()["items"][0]["id"]} != {second.json()["items"][0]["id"]}
+
+    conflict = await client.post(
+        "/api/tasks",
+        json={
+            "title": "Conflict",
+            "planned_for": "2026-07-14T09:00:00Z",
+            "target_at": "2026-07-15T09:00:00Z",
+        },
+    )
+    assert conflict.status_code == 422
+
+
+async def test_tasks_list_uses_one_timezone_boundary_snapshot(client, monkeypatch):
+    before_local_monday = datetime(2026, 7, 12, 20, 59, tzinfo=UTC)
+    after_local_monday = datetime(2026, 7, 12, 21, 1, tzinfo=UTC)
+    monkeypatch.setattr(task_routes, "utc_now", lambda: before_local_monday)
+    monkeypatch.setattr(task_service_module, "utc_now", lambda: after_local_monday)
+    created = await client.post(
+        "/api/tasks",
+        json={"title": "Monday plan", "planned_for": "2026-07-13T09:00:00Z"},
+    )
+    assert created.status_code == 201
+
+    response = await client.get("/api/tasks", params={"filter": "later"})
+
+    assert response.status_code == 200
+    assert [task["title"] for task in response.json()["items"]] == ["Monday plan"]
+    assert response.json()["items"][0]["bucket"] == "later"
+
+
+async def test_tasks_reject_foreign_project_and_hide_foreign_task(client):
+    async with session_scope() as session:
+        other = await UserService(session).ensure_user(777001)
+        project = await ProjectService(session).get_or_create(other, "Private")
+        assert project is not None
+        foreign_task = await TaskService(session).create_task(other, title="Private task")
+        project_id = str(project.id)
+        foreign_task_id = str(foreign_task.id)
+
+    rejected = await client.post(
+        "/api/tasks",
+        json={"title": "Wrong owner", "project_id": project_id},
+    )
+    assert rejected.status_code == 422
+    assert rejected.json()["error"] == "project_not_found"
+
+    own = await client.post("/api/tasks", json={"title": "Own"})
+    patched = await client.patch(
+        f"/api/tasks/{own.json()['task']['id']}",
+        json={"project_id": project_id},
+    )
+    assert patched.status_code == 422
+    assert patched.json()["error"] == "project_not_found"
+    assert (await client.patch(f"/api/tasks/{foreign_task_id}", json={"title": "Leak"})).status_code == 404
+
+
+async def test_tasks_reject_mismatched_project_fields_without_creating_project(client):
+    alpha = await client.post(
+        "/api/tasks", json={"title": "Alpha task", "project": "Alpha"}
+    )
+    target = await client.post(
+        "/api/tasks", json={"title": "Target task", "project": "Beta"}
+    )
+
+    rejected = await client.patch(
+        f"/api/tasks/{target.json()['task']['id']}",
+        json={"project": "Unexpected", "project_id": alpha.json()["task"]["project_id"]},
+    )
+
+    assert rejected.status_code == 422
+    assert rejected.json()["error"] == "project_mismatch"
+
+    canonical = await client.patch(
+        f"/api/tasks/{target.json()['task']['id']}",
+        json={"project": "ALPHA", "project_id": alpha.json()["task"]["project_id"]},
+    )
+    assert canonical.status_code == 200
+    assert canonical.json()["task"]["project"] == "Alpha"
+
+    projects = (await client.get("/api/projects")).json()["items"]
+    assert {project["name"] for project in projects} == {"Alpha", "Beta"}
+
+    named = await client.patch(
+        f"/api/tasks/{target.json()['task']['id']}",
+        json={"project": "Named", "project_id": None},
+    )
+    assert named.status_code == 200
+    assert named.json()["task"]["project"] == "Named"
+    assert named.json()["task"]["project_id"] is not None
+
+
+async def test_legacy_review_filter_finds_inbox_after_many_optional_active_tasks(client):
+    inbox = await client.post("/api/tasks", json={"title": "Old inbox"})
+    assert inbox.status_code == 201
+    for index in range(105):
+        created = await client.post(
+            "/api/tasks",
+            json={"title": f"Optional active {index}", "planned_for": "2026-08-01T09:00:00Z"},
+        )
+        assert created.status_code == 201
+
+    response = await client.get("/api/tasks", params={"filter": "review", "limit": 1})
+    assert response.status_code == 200
+    assert [task["title"] for task in response.json()["items"]] == ["Old inbox"]
 
 
 async def test_memories_endpoint(client):

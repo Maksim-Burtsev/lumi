@@ -66,28 +66,25 @@ async def test_projects_list_groups_open_tasks_and_returns_next_action(client):
     assert alpha["health_reason"]
 
 
-async def test_projects_list_creates_system_backlog_project(client):
+async def test_projects_list_does_not_create_system_backlog_project(client):
     response = await client.get("/api/projects")
 
     assert response.status_code == 200
-    backlog = next(item for item in response.json()["items"] if item["system_key"] == "backlog")
-    assert backlog["name"] == "Backlog"
-    assert backlog["is_system"] is True
-    assert backlog["active_task_count"] == 0
+    assert response.json()["items"] == []
 
 
-async def test_default_unscheduled_task_lands_in_backlog(client):
+async def test_default_unscheduled_task_stays_unassigned_in_inbox(client):
     created = await client.post("/api/tasks", json={"title": "Raw idea"})
 
     assert created.status_code == 201
-    assert created.json()["task"]["project"] == "Backlog"
-    assert created.json()["task"]["project_id"] is not None
+    task = created.json()["task"]
+    assert task["status"] == "inbox"
+    assert task["bucket"] == "inbox"
+    assert task["project"] is None
+    assert task["project_id"] is None
 
     projects = (await client.get("/api/projects")).json()["items"]
-    backlog = next(item for item in projects if item["system_key"] == "backlog")
-    assert backlog["active_task_count"] == 1
-    tasks = (await client.get("/api/tasks", params={"project_id": backlog["id"], "filter": "all"})).json()["items"]
-    assert [task["title"] for task in tasks] == ["Raw idea"]
+    assert projects == []
 
 
 async def test_projects_list_sorts_attention_before_moving(client):
@@ -283,54 +280,24 @@ async def test_accepting_project_suggestion_updates_task_project(client):
     assert task["project_id"] is not None
 
 
-async def test_review_skips_are_stored_and_filter_only_their_review_reason(client):
-    due_at = (utc_now() + timedelta(days=1)).isoformat()
-    created = await client.post(
-        "/api/tasks",
-        json={"title": "No due but needs project", "due_at": due_at, "estimated_minutes": 15},
-    )
+async def test_legacy_review_filter_is_only_an_inbox_alias(client):
+    created = await client.post("/api/tasks", json={"title": "Inbox capture"})
     task_id = created.json()["task"]["id"]
 
     patched = await client.patch(f"/api/tasks/{task_id}", json={"review_skips": {"project": True}})
 
     assert patched.status_code == 200
     assert patched.json()["task"]["review_skips"] == {"project": True}
+    await client.post(
+        "/api/tasks",
+        json={
+            "title": "Planned without optional fields",
+            "planned_for": (utc_now() + timedelta(days=1)).isoformat(),
+        },
+    )
     response = await client.get("/api/tasks", params={"filter": "review"})
     titles = [item["title"] for item in response.json()["items"]]
-    assert "No due but needs project" not in titles
-
-    await client.patch(f"/api/tasks/{task_id}", json={"due_at": None, "review_skips": {"project": True}})
-    response = await client.get("/api/tasks", params={"filter": "review"})
-    titles = [item["title"] for item in response.json()["items"]]
-    assert "No due but needs project" in titles
-
-
-async def test_review_filter_ignores_tasks_skipped_for_estimate_only(client):
-    due_at = (utc_now() + timedelta(days=1)).isoformat()
-    await client.post("/api/tasks", json={
-        "title": "Backlog idea without estimate",
-        "project": "Backlog",
-        "due_at": due_at,
-        "estimate_source": "skipped",
-    })
-    await client.post("/api/tasks", json={
-        "title": "Needs estimate",
-        "project": "Backlog",
-        "due_at": due_at,
-    })
-    await client.post("/api/tasks", json={
-        "title": "Skipped estimate but missing deadline",
-        "project": "Backlog",
-        "estimate_source": "skipped",
-    })
-
-    response = await client.get("/api/tasks", params={"filter": "review"})
-
-    assert response.status_code == 200
-    titles = [item["title"] for item in response.json()["items"]]
-    assert "Needs estimate" in titles
-    assert "Skipped estimate but missing deadline" in titles
-    assert "Backlog idea without estimate" not in titles
+    assert titles == ["Inbox capture"]
 
 
 async def test_today_filters_past_proposed_blocks_and_does_not_duplicate_inline_suggestions(client, monkeypatch):

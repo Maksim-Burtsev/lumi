@@ -73,7 +73,11 @@ beforeEach(() => {
 
 describe('Mini App English UI smoke', () => {
   it('localizes Tasks page static UI', async () => {
-    vi.spyOn(api, 'listTasks').mockResolvedValue({ items: [] } satisfies TasksResponse);
+    vi.spyOn(api, 'listTasks').mockResolvedValue({
+      items: [],
+      has_more: false,
+      next_offset: null,
+    } satisfies TasksResponse);
 
     renderWithProviders(<TasksPage />);
 

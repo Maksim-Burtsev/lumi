@@ -66,7 +66,7 @@ async def test_task_changes_enqueue_cleanup_not_slot_refresh(user):
         assert job.payload["task_id"] == str(task.id)
 
 
-async def test_task_completion_requeues_cleanup(user):
+async def test_task_completion_does_not_requeue_cleanup(user):
     async with session_scope() as session:
         u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
         task = await TaskService(session).create_task(u, title="Done item")
@@ -80,8 +80,31 @@ async def test_task_completion_requeues_cleanup(user):
             )
         )
         job = result.scalar_one()
-        assert job.reason == "task.completed"
+        assert job.reason == "task.created"
         assert job.payload["task_id"] == str(task.id)
+
+
+async def test_planned_task_missing_optional_fields_needs_no_cleanup(user):
+    async with session_scope() as session:
+        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        await TaskService(session).create_task(
+            u,
+            title="Planned without project deadline or estimate",
+            target_at=datetime.now(UTC) + timedelta(days=1),
+        )
+        await AssistantSuggestionService(session).enqueue_opportunity(
+            u,
+            kind="task_cleanup",
+            scope_key="review",
+            reason="test",
+            delay_seconds=0,
+        )
+
+    assert await process_due_opportunity_jobs({}) == "processed 0"
+
+    async with session_scope() as session:
+        u = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        assert await AssistantSuggestionService(session).list_pending(u) == []
 
 
 async def test_task_cleanup_job_creates_structured_llm_decisions(user):

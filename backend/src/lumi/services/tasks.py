@@ -4,26 +4,28 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from difflib import SequenceMatcher
 from typing import Any, Literal
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lumi.assistant.schemas import ExtractedTask
-from lumi.db.models import Priority, Task, TaskEvent, TaskStatus, User
+from lumi.db.models import Priority, Project, Task, TaskEvent, TaskStatus, User
 from lumi.services.assistant_suggestions import AssistantSuggestionService
 from lumi.services.audit import AuditService
 from lumi.services.projects import ProjectService
 from lumi.services.realtime import RealtimeEventService
 from lumi.utils.text import keyword_overlap, normalize_for_match
-from lumi.utils.time import local_day_bounds, local_to_utc, utc_now
+from lumi.utils.time import get_zone, local_day_bounds, local_to_utc, utc_now
 
 SNOOZE_PRESETS = {"1h": timedelta(hours=1), "3h": timedelta(hours=3)}
 RENAME_FUZZY_MIN_SCORE = 0.58
 RENAME_FUZZY_CLEAR_MARGIN = 0.16
 RENAME_MAX_CANDIDATES = 5
+TaskBucket = Literal["inbox", "this_week", "later", "done"]
+COMPLETED_FROM_STATUS_KEY = "completed_from_status"
 
 
 @dataclass(slots=True)
@@ -45,6 +47,7 @@ class _ScoredRenameCandidate:
 def _task_snapshot(task: Task) -> dict[str, Any]:
     return {
         "title": task.title,
+        "description": task.description,
         "status": task.status.value if isinstance(task.status, TaskStatus) else task.status,
         "priority": task.priority.value if isinstance(task.priority, Priority) else task.priority,
         "project": task.project,
@@ -57,6 +60,7 @@ def _task_snapshot(task: Task) -> dict[str, Any]:
         "estimated_minutes": task.estimated_minutes,
         "estimate_source": task.estimate_source,
         "review_skips": _task_review_skips(task),
+        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
     }
 
 
@@ -65,17 +69,6 @@ def _task_review_skips(task: Task) -> dict[str, bool]:
     if not isinstance(skips, dict):
         return {}
     return {str(key): True for key, value in skips.items() if value is True}
-
-
-def _task_needs_review(task: Task) -> bool:
-    skips = _task_review_skips(task)
-    if task.status == TaskStatus.INBOX:
-        return True
-    if task.project_id is None and not skips.get("project"):
-        return True
-    if task.due_at is None and not skips.get("due_date"):
-        return True
-    return task.estimated_minutes is None and task.estimate_source != "skipped"
 
 
 def _merge_review_skips(task: Task, updates: dict[str, Any] | None) -> None:
@@ -94,6 +87,28 @@ def _merge_review_skips(task: Task, updates: dict[str, Any] | None) -> None:
     else:
         metadata.pop("review_skips", None)
     task.metadata_ = metadata
+
+
+def _remember_completed_from_status(task: Task) -> None:
+    if task.status == TaskStatus.DONE:
+        return
+    task.metadata_ = {
+        **(task.metadata_ or {}),
+        COMPLETED_FROM_STATUS_KEY: task.status.value,
+    }
+
+
+def _reopen_status(task: Task) -> TaskStatus:
+    previous = (task.metadata_ or {}).get(COMPLETED_FROM_STATUS_KEY)
+    return TaskStatus.INBOX if previous == TaskStatus.INBOX.value else TaskStatus.ACTIVE
+
+
+def _clear_completed_from_status(task: Task) -> None:
+    task.metadata_ = {
+        key: value
+        for key, value in (task.metadata_ or {}).items()
+        if key != COMPLETED_FROM_STATUS_KEY
+    }
 
 
 def _rename_score(wanted: str, title: str) -> float:
@@ -150,6 +165,32 @@ def _not_snoozed(now: datetime):
     return or_(Task.snoozed_until.is_(None), Task.snoozed_until <= now)
 
 
+def _next_local_week_start(now: datetime, timezone: str | None) -> datetime:
+    zone = get_zone(timezone)
+    local_now = now.astimezone(zone) if now.tzinfo else now.replace(tzinfo=zone)
+    next_monday = local_now.date() + timedelta(days=7 - local_now.weekday())
+    return datetime.combine(next_monday, time.min, tzinfo=zone).astimezone(UTC)
+
+
+def task_bucket(
+    task: Task,
+    *,
+    timezone: str | None,
+    now: datetime | None = None,
+) -> TaskBucket | None:
+    if task.status == TaskStatus.INBOX:
+        return "inbox"
+    if task.status == TaskStatus.DONE:
+        return "done"
+    if task.status != TaskStatus.ACTIVE:
+        return None
+    if task.target_at is not None and task.target_at < _next_local_week_start(
+        now or utc_now(), timezone
+    ):
+        return "this_week"
+    return "later"
+
+
 class TaskService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -178,24 +219,23 @@ class TaskService:
         actor: str = "user",
         agent_run_id: uuid.UUID | None = None,
     ) -> Task:
+        due_at = local_to_utc(due_at, user.timezone) if due_at else None
+        target_at = local_to_utc(target_at, user.timezone) if target_at else None
+        reminder_at = local_to_utc(reminder_at, user.timezone) if reminder_at else None
         project_service = ProjectService(self.session)
         project_row = await project_service.get(user, project_id) if project_id else None
-        if (
-            project_row is None
-            and project_id is None
-            and not (project or "").strip()
-            and due_at is None
-            and target_at is None
-            and reminder_at is None
-        ):
-            project_row = await project_service.ensure_backlog_project(user)
-        if project_row is None:
+        if project_id is not None and project_row is None:
+            raise ValueError("project_not_found")
+        if project_row is not None and (project or "").strip():
+            if project_row.name.casefold() != str(project).strip().casefold():
+                raise ValueError("project_mismatch")
+        if project_id is None:
             project_row = await project_service.get_or_create(user, project)
         task = Task(
             user_id=user.id,
             title=title.strip()[:300],
             description=description,
-            status=TaskStatus.ACTIVE,
+            status=TaskStatus.ACTIVE if target_at is not None else TaskStatus.INBOX,
             priority=Priority(priority),
             project=project_row.name if project_row else project,
             project_id=project_row.id if project_row else None,
@@ -446,49 +486,104 @@ class TaskService:
         filter_: str = "all",
         limit: int = 100,
         project_id: uuid.UUID | None = None,
+        q: str | None = None,
+        offset: int = 0,
+        now: datetime | None = None,
     ) -> list[Task]:
+        items, _, _ = await self.list_task_page(
+            user,
+            filter_=filter_,
+            limit=limit,
+            project_id=project_id,
+            q=q,
+            offset=offset,
+            now=now,
+        )
+        return items
+
+    async def list_task_page(
+        self,
+        user: User,
+        *,
+        filter_: str = "all",
+        limit: int = 100,
+        project_id: uuid.UUID | None = None,
+        q: str | None = None,
+        offset: int = 0,
+        now: datetime | None = None,
+    ) -> tuple[list[Task], bool, int | None]:
+        limit = max(1, min(limit, 500))
+        offset = max(0, offset)
         stmt = select(Task).where(Task.user_id == user.id)
         if project_id is not None:
             stmt = stmt.where(Task.project_id == project_id)
-        now = utc_now()
-        day_start, day_end = local_day_bounds(now, user.timezone)
+        now = now or utc_now()
+        _, day_end = local_day_bounds(now, user.timezone)
+        next_week_start = _next_local_week_start(now, user.timezone)
         active = Task.status.in_([TaskStatus.ACTIVE, TaskStatus.INBOX])
         visible_active = active & _not_snoozed(now)
 
-        if filter_ == "today":
+        if filter_ == "inbox":
+            stmt = stmt.where(Task.status == TaskStatus.INBOX, _not_snoozed(now))
+            stmt = stmt.order_by(Task.created_at.desc(), Task.id.desc())
+        elif filter_ == "this_week":
+            stmt = stmt.where(
+                Task.status == TaskStatus.ACTIVE,
+                _not_snoozed(now),
+                Task.target_at.is_not(None),
+                Task.target_at < next_week_start,
+            )
+            stmt = stmt.order_by(
+                Task.target_at.asc(),
+                Task.due_at.asc().nulls_last(),
+                Task.created_at.desc(),
+                Task.id.desc(),
+            )
+        elif filter_ == "later":
+            stmt = stmt.where(
+                Task.status == TaskStatus.ACTIVE,
+                _not_snoozed(now),
+                or_(Task.target_at.is_(None), Task.target_at >= next_week_start),
+            )
+            stmt = stmt.order_by(
+                Task.target_at.asc().nulls_last(),
+                Task.due_at.asc().nulls_last(),
+                Task.created_at.desc(),
+                Task.id.desc(),
+            )
+        elif filter_ == "done":
+            stmt = stmt.where(Task.status == TaskStatus.DONE)
+            stmt = stmt.order_by(Task.completed_at.desc(), Task.id.desc())
+        elif filter_ == "today":
             stmt = stmt.where(visible_active, Task.due_at.is_not(None), Task.due_at < day_end)
-            stmt = stmt.order_by(Task.due_at.asc())
+            stmt = stmt.order_by(Task.due_at.asc(), Task.id.desc())
         elif filter_ == "upcoming":
             stmt = stmt.where(visible_active, or_(Task.due_at.is_(None), Task.due_at >= day_end))
-            stmt = stmt.order_by(Task.due_at.asc().nulls_last(), Task.created_at.desc())
-        elif filter_ == "inbox":
-            stmt = stmt.where(
-                Task.status == TaskStatus.INBOX,
-                _not_snoozed(now),
-            ).order_by(Task.created_at.desc())
+            stmt = stmt.order_by(
+                Task.due_at.asc().nulls_last(), Task.created_at.desc(), Task.id.desc()
+            )
         elif filter_ == "review":
-            stmt = stmt.where(
-                visible_active,
-                or_(
-                    Task.status == TaskStatus.INBOX,
-                    Task.project_id.is_(None),
-                    Task.due_at.is_(None),
-                    and_(
-                        Task.estimated_minutes.is_(None),
-                        or_(Task.estimate_source.is_(None), Task.estimate_source != "skipped"),
-                    ),
-                ),
-            ).order_by(Task.created_at.desc())
-            result = await self.session.execute(stmt.limit(max(limit * 3, 100)))
-            return [task for task in result.scalars() if _task_needs_review(task)][:limit]
-        elif filter_ == "done":
-            stmt = stmt.where(Task.status == TaskStatus.DONE).order_by(Task.completed_at.desc())
+            stmt = stmt.where(Task.status == TaskStatus.INBOX, _not_snoozed(now))
+            stmt = stmt.order_by(Task.created_at.desc(), Task.id.desc())
         else:
             stmt = stmt.where(visible_active).order_by(
-                Task.due_at.asc().nulls_last(), Task.created_at.desc()
+                Task.due_at.asc().nulls_last(), Task.created_at.desc(), Task.id.desc()
             )
-        result = await self.session.execute(stmt.limit(limit))
-        return list(result.scalars())
+
+        search = " ".join((q or "").split()).strip()
+        if search:
+            stmt = stmt.where(or_(
+                Task.title.icontains(search, autoescape=True),
+                Task.description.icontains(search, autoescape=True),
+                Task.project.icontains(search, autoescape=True),
+                func.array_to_string(Task.tags, " ").icontains(search, autoescape=True),
+            ))
+
+        result = await self.session.execute(stmt.offset(offset).limit(limit + 1))
+        items = list(result.scalars())
+        has_more = len(items) > limit
+        page = items[:limit]
+        return page, has_more, offset + len(page) if has_more else None
 
     async def list_active(self, user: User, limit: int = 50) -> list[Task]:
         now = utc_now()
@@ -601,11 +696,58 @@ class TaskService:
         agent_run_id: uuid.UUID | None = None,
     ) -> Task:
         before = _task_snapshot(task)
+        normalized = dict(updates)
+        for key in ("due_at", "target_at", "reminder_at"):
+            value = normalized.get(key)
+            if isinstance(value, datetime):
+                normalized[key] = local_to_utc(value, user.timezone)
+
+        requested_status = None
+        if normalized.get("status") is not None:
+            requested_status = TaskStatus(normalized["status"])
+        target_supplied = "target_at" in normalized
+        target_at = normalized.get("target_at")
+        if requested_status == TaskStatus.INBOX and target_at is not None:
+            raise ValueError("inbox_cannot_have_planned_for")
+
+        project_by_id: Project | None = None
+        project_name = normalized.get("project")
+        raw_project_id = normalized.get("project_id")
+        if (
+            "project_id" in normalized
+            and raw_project_id is None
+            and isinstance(project_name, str)
+            and project_name.strip()
+        ):
+            # A supplied project name is authoritative, matching create semantics.
+            normalized.pop("project_id")
+        if raw_project_id is not None:
+            try:
+                project_id = (
+                    raw_project_id
+                    if isinstance(raw_project_id, uuid.UUID)
+                    else uuid.UUID(str(raw_project_id))
+                )
+            except (TypeError, ValueError, AttributeError):
+                raise ValueError("project_not_found") from None
+            normalized["project_id"] = project_id
+            project_by_id = await ProjectService(self.session).get(user, project_id)
+            if project_by_id is None:
+                raise ValueError("project_not_found")
+            if (
+                isinstance(project_name, str)
+                and project_name.strip()
+                and project_name.strip().casefold() != project_by_id.name.casefold()
+            ):
+                raise ValueError("project_mismatch")
+
         allowed = {"title", "description", "priority", "project", "project_id", "tags",
                    "due_at", "target_at", "reminder_at", "status", "estimated_minutes",
                    "estimate_source", "review_skips"}
-        for key, value in updates.items():
+        for key, value in normalized.items():
             if key not in allowed or value is None and key in ("title",):
+                continue
+            if key in {"status", "target_at"}:
                 continue
             if key == "review_skips":
                 _merge_review_skips(task, value)
@@ -613,26 +755,47 @@ class TaskService:
             if key == "priority" and value is not None:
                 value = Priority(value)
             if key == "project":
-                project_row = await ProjectService(self.session).get_or_create(user, value)
+                project_row = project_by_id or await ProjectService(self.session).get_or_create(
+                    user, value
+                )
                 task.project_id = project_row.id if project_row else None
                 value = project_row.name if project_row else value
             if key == "project_id":
-                project_row = await ProjectService(self.session).get(user, value) if value else None
+                project_row = project_by_id if value is not None else None
+                if value is not None and project_row is None:
+                    raise ValueError("project_not_found")
                 task.project = project_row.name if project_row else None
                 value = project_row.id if project_row else None
-            if key == "status" and value is not None:
-                value = TaskStatus(value)
-                if value == TaskStatus.DONE and task.completed_at is None:
-                    task.completed_at = utc_now()
-                elif value != TaskStatus.DONE:
-                    task.completed_at = None
             setattr(task, key, value)
+
+        if requested_status == TaskStatus.DONE:
+            if task.status != TaskStatus.DONE:
+                _remember_completed_from_status(task)
+                task.completed_at = utc_now()
+            task.status = TaskStatus.DONE
+        elif requested_status is not None:
+            if task.status == TaskStatus.DONE and requested_status == TaskStatus.ACTIVE:
+                requested_status = _reopen_status(task)
+            task.status = requested_status
+            task.completed_at = None
+            _clear_completed_from_status(task)
+
+        if target_supplied:
+            task.target_at = target_at
+            if target_at is not None and task.status == TaskStatus.INBOX:
+                task.status = TaskStatus.ACTIVE
+        if task.status == TaskStatus.INBOX:
+            task.target_at = None
+
+        after = _task_snapshot(task)
+        if after == before:
+            return task
         await self._record_event(
             task,
             "updated",
             actor=actor,
             before=before,
-            after=_task_snapshot(task),
+            after=after,
             agent_run_id=agent_run_id,
         )
         await self._emit_task_changed(task, "task.updated", actor=actor)
@@ -701,7 +864,10 @@ class TaskService:
         return updated
 
     async def complete_task(self, user: User, task: Task, *, actor: str = "user") -> Task:
+        if task.status == TaskStatus.DONE:
+            return task
         before = _task_snapshot(task)
+        _remember_completed_from_status(task)
         task.status = TaskStatus.DONE
         task.completed_at = utc_now()
         await self._record_event(task, "completed", actor=actor, before=before,
@@ -728,6 +894,8 @@ class TaskService:
                 until = day_start + timedelta(hours=9)
             else:
                 until = utc_now() + timedelta(hours=1)
+        else:
+            until = local_to_utc(until, user.timezone)
         task.snoozed_until = until
         task.reminder_at = until
         task.metadata_ = {k: v for k, v in task.metadata_.items() if k != "reminder_sent_at"}
@@ -789,6 +957,8 @@ class TaskService:
         )
 
     async def _queue_suggestion_refresh(self, user: User, *, task: Task, reason: str) -> None:
+        if task.status != TaskStatus.INBOX:
+            return
         await AssistantSuggestionService(self.session).enqueue_opportunity(
             user,
             kind="task_cleanup",

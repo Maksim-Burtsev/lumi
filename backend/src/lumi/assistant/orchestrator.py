@@ -3603,9 +3603,13 @@ class AssistantOrchestrator:
             args=args,
             result={"task_id": str(task.id), "updated_fields": sorted(updates)},
         )
+        reply_updates = {
+            **updates,
+            **({"status": task.status.value} if "status" in updates else {}),
+        }
         results.append(format_task_update_reply(
             task,
-            updates,
+            reply_updates,
             language=language,
             timezone=user.timezone,
         ))
@@ -3683,9 +3687,13 @@ class AssistantOrchestrator:
                     language=language,
                 ))
             else:
+                reply_updates = {
+                    **updates,
+                    **({"status": task.status.value} if "status" in updates else {}),
+                }
                 results.append(format_task_update_reply(
                     task,
-                    updates,
+                    reply_updates,
                     language=language,
                     timezone=user.timezone,
                 ))

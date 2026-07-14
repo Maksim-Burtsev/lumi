@@ -112,24 +112,56 @@ PendingConfirmation = {"id": uuid, "action_type": str, "title": str,
 
 ## Tasks
 
+Tasks V2 uses the existing `status + target_at` columns; no schema migration is
+required. Buckets are computed by the backend in the owning user's timezone:
+
+| Bucket | Stored contract |
+|---|---|
+| `inbox` | `status=inbox` |
+| `this_week` | `status=active` and `target_at` is before next Monday 00:00 local time |
+| `later` | `status=active` and `target_at` is null or on/after that boundary |
+| `done` | `status=done` |
+
+Past `target_at` values stay in `this_week` so unfinished planned work remains
+visible. `due_at` is a hard deadline and never changes the bucket. Project and
+estimate are optional.
+
 ```
 Task = {
   "id": uuid, "title": str, "description": str|null,
   "status": "inbox"|"active"|"done"|"cancelled",
   "priority": "low"|"medium"|"high"|"urgent",
   "project": str|null, "project_id": uuid|null, "tags": [str],
-  "due_at": ts|null, "target_at": ts|null, "reminder_at": ts|null,
+  "due_at": ts|null, "planned_for": ts|null, "target_at": ts|null,
+  "reminder_at": ts|null,
   "snoozed_until": ts|null, "estimated_minutes": int|null,
   "estimate_source": str|null, "review_skips": object,
-  "source": str, "created_at": ts, "completed_at": ts|null
+  "source": str, "created_at": ts, "completed_at": ts|null,
+  "bucket": "inbox"|"this_week"|"later"|"done"|null
 }
 
-GET  /api/tasks?filter=today|upcoming|inbox|review|done|all&limit=100&project_id=uuid → {"items": [Task]}
-POST /api/tasks  body: {"title": str, "description"?, "priority"?, "project"?, "project_id"?, "tags"?, "due_at"?, "reminder_at"?} → {"task": Task}  (201)
+GET  /api/tasks?filter=inbox|this_week|later|done|today|upcoming|review|all&q=str&limit=100&offset=0&project_id=uuid
+  → {"items": [Task], "has_more": bool, "next_offset": int|null}
+POST /api/tasks  body: {"title": str, "description"?, "priority"?, "project"?, "project_id"?, "tags"?, "due_at"?, "planned_for"?, "reminder_at"?} → {"task": Task}  (201)
 PATCH /api/tasks/{id}  body: any mutable subset → {"task": Task}
 POST /api/tasks/{id}/complete → {"task": Task}
 POST /api/tasks/{id}/snooze  body: {"preset": "1h"|"3h"|"tomorrow"|"next_week"} | {"until": ts} → {"task": Task}
 ```
+
+Compatibility and transitions:
+
+- `target_at` remains accepted and returned as a deprecated alias of
+  `planned_for`; conflicting values are rejected.
+- A capture without `planned_for` starts in Inbox. Setting a non-null
+  `planned_for` activates it; setting `status=inbox` clears `planned_for`.
+- Completing a task preserves its planning date and original open status.
+  Existing `PATCH {"status":"active"}` is the undo operation: it restores
+  Inbox versus Active and clears `completed_at`. Repeated completion is
+  idempotent.
+- Legacy `filter=review` is an alias for Inbox. Missing project, deadline, or
+  estimate does not create a Review requirement.
+- Existing `cancelled` rows remain compatible with explicit legacy status
+  transitions and serialize with `bucket=null`.
 
 ## Projects
 

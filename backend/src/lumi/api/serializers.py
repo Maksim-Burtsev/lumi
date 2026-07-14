@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from lumi.db.models import (
@@ -21,6 +22,7 @@ from lumi.db.models import (
 from lumi.i18n import ensure_language_settings, normalize_app_locale
 from lumi.services.action_policy import policy_for_action, policy_to_dict
 from lumi.services.planning_settings import normalize_planning_settings
+from lumi.services.tasks import task_bucket
 from lumi.utils.time import get_zone
 
 
@@ -45,7 +47,12 @@ def user_to_dict(user: User) -> dict[str, Any]:
     }
 
 
-def task_to_dict(task: Task) -> dict[str, Any]:
+def task_to_dict(
+    task: Task,
+    *,
+    timezone: str | None = "UTC",
+    now: datetime | None = None,
+) -> dict[str, Any]:
     review_skips = (task.metadata_ or {}).get("review_skips")
     if not isinstance(review_skips, dict):
         review_skips = {}
@@ -59,6 +66,8 @@ def task_to_dict(task: Task) -> dict[str, Any]:
         "project_id": str(task.project_id) if task.project_id else None,
         "tags": list(task.tags or []),
         "due_at": _iso(task.due_at),
+        "planned_for": _iso(task.target_at),
+        # Transitional alias for older clients. New code uses planned_for.
         "target_at": _iso(task.target_at),
         "reminder_at": _iso(task.reminder_at),
         "snoozed_until": _iso(task.snoozed_until),
@@ -68,6 +77,7 @@ def task_to_dict(task: Task) -> dict[str, Any]:
         "source": task.source,
         "created_at": _iso(task.created_at),
         "completed_at": _iso(task.completed_at),
+        "bucket": task_bucket(task, timezone=timezone, now=now),
     }
 
 
@@ -80,6 +90,7 @@ def project_to_dict(
     next_task: Task | None = None,
     health_status: str = "quiet",
     health_reason: str = "",
+    timezone: str | None = "UTC",
 ) -> dict[str, Any]:
     system_key = (project.metadata_ or {}).get("system_key")
     if not isinstance(system_key, str):
@@ -96,7 +107,7 @@ def project_to_dict(
         "estimated_minutes_total": estimated_minutes_total,
         "health_status": health_status,
         "health_reason": health_reason,
-        "next_task": task_to_dict(next_task) if next_task else None,
+        "next_task": task_to_dict(next_task, timezone=timezone) if next_task else None,
         "created_at": _iso(project.created_at),
     }
 
@@ -129,7 +140,7 @@ def focus_session_to_dict(
     return {
         "id": str(focus_session.id),
         "status": focus_session.status.value,
-        "task": task_to_dict(task) if task else None,
+        "task": task_to_dict(task, timezone=timezone) if task else None,
         "project_id": str(focus_session.project_id) if focus_session.project_id else None,
         "project_name": project_name,
         # Transitional alias for older Mini App builds. New code uses project_name.

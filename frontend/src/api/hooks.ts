@@ -24,6 +24,7 @@ import type {
   StartFocusSessionInput,
   Task,
   TaskFilter,
+  TaskListQuery,
   TasksResponse,
   TimezonesResponse,
   TodayResponse,
@@ -34,18 +35,31 @@ import { useToast } from '../components/ui/Toast';
 
 // ------------------------------------------------------------------ keys
 
+export function normalizeTaskListQuery(query: TaskListQuery = {}) {
+  return {
+    filter: query.filter ?? 'all',
+    q: query.q?.trim().replace(/\s+/g, ' ') || undefined,
+    limit: query.limit ?? 100,
+    offset: query.offset ?? 0,
+    project_id: query.project_id,
+  };
+}
+
 export const qk = {
   health: ['health'] as const,
   settings: ['settings'] as const,
   timezones: ['timezones'] as const,
   today: ['today'] as const,
   tasksAll: ['tasks'] as const,
-  tasks: (filter: TaskFilter) => ['tasks', filter] as const,
-  projectTasks: (projectId: string) => ['tasks', 'project', projectId] as const,
+  tasks: (query: TaskListQuery = {}) => ['tasks', normalizeTaskListQuery(query)] as const,
+  projectTasks: (projectId: string) => [
+    'tasks',
+    normalizeTaskListQuery({ filter: 'all', limit: 100, project_id: projectId }),
+  ] as const,
   projects: ['projects'] as const,
   assistantSuggestions: ['assistant-suggestions'] as const,
   focus: ['focus'] as const,
-  focusTasks: ['tasks', 'focus'] as const,
+  focusTasks: ['tasks', normalizeTaskListQuery({ filter: 'all', limit: 300 })] as const,
   focusSession: (id: string) => ['focus-session', id] as const,
   focusSummary: (query: FocusRangeQuery) => ['focus-summary', query] as const,
   focusSessions: (query: FocusRangeQuery) => ['focus-sessions', query] as const,
@@ -182,18 +196,24 @@ export function useToday() {
   return useQuery({ queryKey: qk.today, queryFn: () => api.getToday() });
 }
 
-export function useTasks(filter: TaskFilter) {
-  return useQuery({ queryKey: qk.tasks(filter), queryFn: () => api.listTasks(filter, 100) });
+export function useTasks(filterOrQuery: TaskFilter | TaskListQuery) {
+  const query = normalizeTaskListQuery(
+    typeof filterOrQuery === 'string' ? { filter: filterOrQuery } : filterOrQuery,
+  );
+  return useQuery({ queryKey: qk.tasks(query), queryFn: () => api.listTasks(query) });
 }
 
 export function useFocusTasks() {
-  return useQuery({ queryKey: qk.focusTasks, queryFn: () => api.listTasks('all', 300) });
+  return useQuery({
+    queryKey: qk.focusTasks,
+    queryFn: () => api.listTasks({ filter: 'all', limit: 300 }),
+  });
 }
 
 export function useProjectTasks(projectId: string | null) {
   return useQuery({
     queryKey: projectId ? qk.projectTasks(projectId) : qk.projectTasks('none'),
-    queryFn: () => api.listTasks('all', 100, projectId as string),
+    queryFn: () => api.listTasks({ filter: 'all', limit: 100, project_id: projectId as string }),
     enabled: projectId !== null,
   });
 }
@@ -332,7 +352,8 @@ function makeOptimisticTask(input: CreateTaskInput): Task {
     project_id: input.project_id ?? null,
     tags: input.tags ?? [],
     due_at: input.due_at ?? null,
-    target_at: input.target_at ?? null,
+    planned_for: null,
+    target_at: null,
     reminder_at: input.reminder_at ?? null,
     snoozed_until: null,
     estimated_minutes: input.estimated_minutes ?? null,
@@ -341,6 +362,7 @@ function makeOptimisticTask(input: CreateTaskInput): Task {
     source: 'mini_app',
     created_at: new Date().toISOString(),
     completed_at: null,
+    bucket: 'inbox',
   };
 }
 
@@ -356,11 +378,14 @@ export function useCreateTask(activeFilter: TaskFilter) {
   return useMutation({
     mutationFn: (input: CreateTaskInput) => api.createTask(input),
     onMutate: async (input) => {
-      const key = qk.tasks(activeFilter);
+      const key = qk.tasks({ filter: activeFilter });
       await queryClient.cancelQueries({ queryKey: qk.tasksAll });
       const previous = queryClient.getQueryData<TasksResponse>(key);
-      if (previous) {
+      const isUnplannedCapture = !input.planned_for && !input.target_at;
+      const acceptsInbox = ['all', 'inbox', 'review'].includes(activeFilter);
+      if (previous && isUnplannedCapture && acceptsInbox) {
         queryClient.setQueryData<TasksResponse>(key, {
+          ...previous,
           items: [makeOptimisticTask(input), ...previous.items],
         });
       }
@@ -377,6 +402,7 @@ function patchTaskInCache(queryClient: ReturnType<typeof useQueryClient>, key: Q
   const previous = queryClient.getQueryData<TasksResponse>(key);
   if (previous) {
     queryClient.setQueryData<TasksResponse>(key, {
+      ...previous,
       items: previous.items.map((t) => (t.id === id ? { ...t, ...patch } : t)),
     });
   }
@@ -388,11 +414,12 @@ export function useCompleteTask(activeFilter: TaskFilter) {
   return useMutation({
     mutationFn: (id: string) => api.completeTask(id),
     onMutate: async (id) => {
-      const key = qk.tasks(activeFilter);
+      const key = qk.tasks({ filter: activeFilter });
       await queryClient.cancelQueries({ queryKey: qk.tasksAll });
       const previous = patchTaskInCache(queryClient, key, id, {
         status: 'done',
         completed_at: new Date().toISOString(),
+        bucket: 'done',
       });
       return { previous, key };
     },
@@ -408,11 +435,12 @@ export function useSnoozeTask(activeFilter: TaskFilter) {
   return useMutation({
     mutationFn: ({ id, input }: { id: string; input: SnoozeInput }) => api.snoozeTask(id, input),
     onMutate: async ({ id }) => {
-      const key = qk.tasks(activeFilter);
+      const key = qk.tasks({ filter: activeFilter });
       await queryClient.cancelQueries({ queryKey: qk.tasksAll });
       const previous = queryClient.getQueryData<TasksResponse>(key);
       if (previous) {
         queryClient.setQueryData<TasksResponse>(key, {
+          ...previous,
           items: previous.items.filter((t) => t.id !== id),
         });
       }

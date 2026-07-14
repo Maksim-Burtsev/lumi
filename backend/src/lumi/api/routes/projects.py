@@ -29,6 +29,7 @@ async def list_projects(
                 health_status=summary.health_status,
                 health_reason=summary.health_reason,
                 next_task=summary.next_task,
+                timezone=user.timezone,
             )
             for summary in summaries
         ]

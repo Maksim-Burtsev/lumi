@@ -13,10 +13,12 @@ from lumi.db.models import (
     Message,
     MessageRole,
     ScheduledTask,
+    TaskStatus,
 )
 from lumi.db.session import session_scope
 from lumi.services.calendar import CalendarService
 from lumi.services.confirmations import ConfirmationService
+from lumi.services.tasks import TaskService
 from lumi.services.users import UserService
 from lumi.utils.time import local_now, local_to_utc
 
@@ -95,6 +97,38 @@ class FakeCallback:
 
     async def answer(self, text: str | None = None, **kwargs) -> None:
         self.answers.append(text)
+
+
+async def test_update_choice_reopen_reports_restored_inbox_status(monkeypatch):
+    async def fake_check_allowed(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(handlers, "_check_allowed", fake_check_allowed)
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        task = await TaskService(session).create_task(user, title="Inbox choice")
+        await TaskService(session).complete_task(user, task)
+        confirmation = await ConfirmationService(session).create(
+            user,
+            action_type="update_task_choice",
+            action_payload={
+                "candidate_task_ids": [str(task.id)],
+                "updates": {"status": "active"},
+                "language": "en",
+            },
+            prompt="Which task?",
+        )
+
+    callback = FakeCallback(f"update_pick:{confirmation.id.hex[:8]}:0", language_code="en")
+    await handlers.on_update_pick(callback)
+
+    assert callback.answers == ["Готово"]
+    assert callback.message.answers == ['Updated task “Inbox choice”: status inbox.']
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        reopened = await TaskService(session).get(user, task.id)
+        assert reopened is not None
+        assert reopened.status == TaskStatus.INBOX
 
 
 async def test_legacy_removed_confirmation_cannot_report_fake_success(monkeypatch):

@@ -34,6 +34,7 @@ from lumi.llm.gateway import LLMGateway
 from lumi.llm.mock import MockLLMProvider
 from lumi.services.calendar import CalendarService
 from lumi.services.confirmation_executor import ConfirmationExecutor
+from lumi.services.confirmations import ConfirmationService
 from lumi.services.runs import RunService
 from lumi.services.tasks import TaskService
 from lumi.services.users import UserService
@@ -3216,9 +3217,9 @@ async def test_update_task_reopens_recent_done_task_without_final_llm():
         await session.refresh(task)
 
     assert provider.final_chat_calls == 0
-    assert task.status == TaskStatus.ACTIVE
+    assert task.status == TaskStatus.INBOX
     assert task.completed_at is None
-    assert result.reply_text == "Обновил задачу «Добавить настройку начала недели»: статус — active."
+    assert result.reply_text == "Обновил задачу «Добавить настройку начала недели»: статус — inbox."
     assert "recent_task_refs" in provider.planner_prompts[1]
     assert str(task_id) in provider.planner_prompts[1]
     assert any(c.tool_name == "update_task" and c.status == "completed" for c in tool_calls)
@@ -3253,9 +3254,33 @@ async def test_update_task_reopens_done_task_by_query():
         await session.refresh(task)
 
     assert provider.final_chat_calls == 0
-    assert task.status == TaskStatus.ACTIVE
+    assert task.status == TaskStatus.INBOX
     assert task.completed_at is None
-    assert result.reply_text == f"Обновил задачу «{title}»: статус — active."
+    assert result.reply_text == f"Обновил задачу «{title}»: статус — inbox."
+
+
+async def test_confirmation_executor_reopens_done_task_and_reports_restored_status():
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        user.locale = "en"
+        task = await TaskService(session).create_task(user, title="Confirmed inbox")
+        await TaskService(session).complete_task(user, task)
+        confirmation = await ConfirmationService(session).create(
+            user,
+            action_type="update_task",
+            action_payload={
+                "task_id": str(task.id),
+                "updates": {"status": "active"},
+                "language": "en",
+            },
+            prompt="Reopen task?",
+        )
+
+        text = await ConfirmationExecutor(session).execute(user, confirmation)
+
+        assert task.status == TaskStatus.INBOX
+        assert task.completed_at is None
+        assert text == 'Updated task “Confirmed inbox”: status inbox.'
 
 
 async def test_update_task_does_not_edit_done_task_without_reopen_status():
@@ -3288,7 +3313,7 @@ async def test_update_task_does_not_edit_done_task_without_reopen_status():
 
     assert provider.final_chat_calls == 0
     assert task.status == TaskStatus.DONE
-    assert task.project == "Backlog"
+    assert task.project is None
     assert result.reply_text == f"Не нашёл активную задачу «{title}». Уточни название."
 
 
@@ -3318,7 +3343,7 @@ async def test_create_task_english_reply_without_final_llm():
         tool_calls = (await session.execute(select(ToolCall))).scalars().all()
 
     assert provider.final_chat_calls == 0
-    assert result.reply_text == f"Created task: “{title}” in project Backlog"
+    assert result.reply_text == f"Created task: “{title}”"
     assert [button.text for button in result.buttons[0]] == ["✓ Done", "⏰ Snooze"]
     assert any(c.tool_name == "create_task" and c.status == "completed" for c in tool_calls)
 

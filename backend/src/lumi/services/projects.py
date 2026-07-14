@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lumi.db.models import Priority, Project, ProjectStatus, Task, TaskStatus, User
@@ -128,9 +128,7 @@ class ProjectService:
         return result.scalar_one_or_none()
 
     async def list_summaries(self, user: User) -> list[ProjectSummary]:
-        await self.ensure_backlog_project(user)
         await self._backfill_missing_projects(user)
-        await self._backfill_backlog_tasks(user)
         counts = await self._counts(user)
         next_tasks = await self._next_tasks(user)
         last_updates = await self._last_updates(user)
@@ -188,23 +186,6 @@ class ProjectService:
                 )
                 .values(project_id=project.id)
             )
-        await self.session.flush()
-
-    async def _backfill_backlog_tasks(self, user: User) -> None:
-        backlog = await self.ensure_backlog_project(user)
-        await self.session.execute(
-            update(Task)
-            .where(
-                Task.user_id == user.id,
-                Task.project_id.is_(None),
-                or_(Task.project.is_(None), func.btrim(Task.project) == ""),
-                Task.due_at.is_(None),
-                Task.target_at.is_(None),
-                Task.reminder_at.is_(None),
-                Task.status.in_([TaskStatus.ACTIVE, TaskStatus.INBOX]),
-            )
-            .values(project_id=backlog.id, project=backlog.name)
-        )
         await self.session.flush()
 
     async def _counts(self, user: User) -> dict[uuid.UUID, dict[str, Any]]:
