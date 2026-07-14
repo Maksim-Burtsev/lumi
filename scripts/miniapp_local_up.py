@@ -173,6 +173,7 @@ def main() -> None:
 
     run(["make", "frontend-build"])
     run(["docker", "compose", "up", "-d", "--build"])
+    run(["docker", "compose", "run", "--rm", "api", "alembic", "upgrade", "head"])
     tunnel_url = start_tunnel()
     set_env_values({"APP_PUBLIC_URL": tunnel_url, "FRONTEND_PUBLIC_PATH": "/app/"})
     run(["docker", "compose", "up", "-d", "--force-recreate", "api", "bot"])

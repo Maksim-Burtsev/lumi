@@ -1,26 +1,10 @@
 import { useLocation, useNavigate } from 'react-router-dom';
-import { CalendarDays, ListChecks, Sunrise, Timer } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
 import { haptic } from '../../telegram/webapp';
 import { useAppLocale } from '../../lib/useAppLocale';
-
-interface NavItem {
-  to: string;
-  label: { en: string; ru: string };
-  icon: LucideIcon;
-  /** Extra paths that keep this item active. */
-  also?: string[];
-}
-
-const ITEMS: NavItem[] = [
-  { to: '/', label: { en: 'Today', ru: 'Сегодня' }, icon: Sunrise },
-  { to: '/tasks', label: { en: 'Tasks', ru: 'Задачи' }, icon: ListChecks },
-  { to: '/sessions', label: { en: 'Sessions', ru: 'Сессии' }, icon: Timer, also: ['/focus'] },
-  { to: '/calendar', label: { en: 'Calendar', ru: 'Календарь' }, icon: CalendarDays },
-];
+import { PRODUCT_NAV_ITEMS, isNavigationItemActive } from './navigation';
 
 /** Floating pill bottom navigation with safe-area padding. */
-export function BottomNav() {
+export function BottomNav({ standalone = false }: { standalone?: boolean }) {
   const location = useLocation();
   const navigate = useNavigate();
   const locale = useAppLocale();
@@ -28,19 +12,15 @@ export function BottomNav() {
   return (
     <nav
       aria-label={locale === 'en' ? 'Primary navigation' : 'Основная навигация'}
-      className="fixed left-1/2 z-50 w-[calc(100%-24px)] max-w-[420px] -translate-x-1/2"
+      className={`fixed left-1/2 z-50 w-[calc(100%-24px)] max-w-[420px] -translate-x-1/2 ${standalone ? 'lg:hidden' : ''}`}
       style={{ bottom: 'calc(env(safe-area-inset-bottom) + 12px)' }}
     >
       <div
         className="flex items-center justify-between rounded-full border border-hairline bg-surface px-1.5 py-1.5 shadow-nav"
         style={{ backdropFilter: 'blur(18px)', WebkitBackdropFilter: 'blur(18px)' }}
       >
-        {ITEMS.map((item) => {
-          const active =
-            item.to === '/'
-              ? location.pathname === '/'
-              : location.pathname.startsWith(item.to) ||
-                (item.also?.some((p) => location.pathname.startsWith(p)) ?? false);
+        {PRODUCT_NAV_ITEMS.map((item) => {
+          const active = isNavigationItemActive(location.pathname, item);
           const Icon = item.icon;
           const label = item.label[locale];
           return (

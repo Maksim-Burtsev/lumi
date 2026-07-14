@@ -38,6 +38,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        hide_input_in_errors=True,
     )
 
     # --- App ---
@@ -49,6 +50,7 @@ class Settings(BaseSettings):
     default_timezone: str = "Europe/Moscow"
     app_secret_key: str = "change-me-local-secret"
     encryption_key: str = "change-me-fernet-key"
+    web_session_secret: str | None = None
 
     # --- Database / Redis ---
     database_url: str = "postgresql+asyncpg://lumi:lumi@localhost:5432/lumi"
@@ -115,6 +117,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "app_public_url",
+        "web_session_secret",
         "minimax_api_key",
         "telegram_webhook_secret",
         "google_oauth_client_secret_file",
@@ -127,6 +130,13 @@ class Settings(BaseSettings):
         """Blank values in .env (`KEY=`) mean 'not set' for optional fields."""
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator("web_session_secret")
+    @classmethod
+    def _web_session_secret_is_strong(cls, value: str | None) -> str | None:
+        if value is not None and len(value) < 32:
+            raise ValueError("WEB_SESSION_SECRET must be at least 32 characters")
         return value
 
     @field_validator("google_scopes")

@@ -182,6 +182,7 @@ export async function consumeRealtimeEvents({
   const response = await fetch(`/api/realtime?after=${after}`, {
     method: 'GET',
     headers,
+    credentials: 'same-origin',
     cache: 'no-store',
     signal,
   });

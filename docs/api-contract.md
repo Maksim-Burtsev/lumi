@@ -1,11 +1,36 @@
 # Lumi API Contract (v1)
 
-Source of truth for both backend (FastAPI) and frontend (Mini App).
-All `/api/*` endpoints require header `X-Telegram-Init-Data` (Telegram WebApp initData).
-In local dev, when `DEV_AUTH_ENABLED=true`, requests without initData authenticate as `DEV_AUTH_TELEGRAM_USER_ID`.
+Source of truth for both backend (FastAPI) and the shared standalone/Mini App frontend.
+Authenticated `/api/*` endpoints accept validated `X-Telegram-Init-Data` or the
+server-side standalone web session described below. In local dev, when
+`DEV_AUTH_ENABLED=true`, requests without either credential authenticate as
+`DEV_AUTH_TELEGRAM_USER_ID`.
 
 Errors: non-2xx responses return `{"error": "<machine_code>", "detail": "<human text, optional>"}`.
 401 → `{"error": "unauthorized"}`. All timestamps are ISO-8601 with timezone offset.
+
+## Standalone web authentication
+
+The user sends `/web` to Lumi in a private Telegram chat. The bot returns an
+ordinary HTTPS link whose one-time nonce exists only in the fragment:
+`/app/#/web-login?nonce=<nonce>`. The frontend removes the nonce from the address
+bar before making a network request and never stores it.
+
+```
+POST /api/auth/web/exchange  body: {"nonce": str}
+  → 200 {"authenticated": true}
+
+POST /api/auth/web/logout
+  → 200 {"authenticated": false}
+```
+
+Exchange requires the exact `APP_PUBLIC_URL` origin and consumes the short-lived
+Redis nonce atomically. It sets host-only `lumi_web_session` (`HttpOnly; Secure;
+SameSite=Strict`) and readable `lumi_web_csrf` (`Secure; SameSite=Strict`) cookies.
+Unsafe requests authenticated by the session cookie require the same exact Origin
+and `X-CSRF-Token` matching `lumi_web_csrf`; Telegram initData requests do not.
+Logout requires those checks, revokes the Redis session, and clears both cookies.
+The session has a fixed expiry and never uses `localStorage`.
 
 ## Health
 

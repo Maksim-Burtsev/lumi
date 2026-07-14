@@ -1,31 +1,20 @@
 import { Send } from 'lucide-react';
 import { Button } from '../ui/Button';
-import { useAppLocale } from '../../lib/useAppLocale';
 
 interface UnauthorizedScreenProps {
   onRetry: () => void;
 }
 
-/** App-level 401 screen: the Mini App must be opened inside Telegram. */
+/** App-level signed-out screen for standalone web and invalid Mini App auth. */
 export function UnauthorizedScreen({ onRetry }: UnauthorizedScreenProps) {
-  const locale = useAppLocale();
-  const copy = locale === 'en'
-    ? {
-        title: 'Open Lumi inside Telegram',
-        body: 'The Mini App works only from the bot chat. Telegram passes the login data there.',
-        devTitle: 'Development hint',
-        devStart: 'Run the backend with',
-        devTail: 'then requests without initData are authorized as',
-        retry: 'Retry',
-      }
-    : {
-        title: 'Открой Lumi внутри Telegram',
-        body: 'Mini App работает только из чата с ботом — там Telegram передаёт данные для входа.',
-        devTitle: 'Подсказка для разработки',
-        devStart: 'Запусти backend с',
-        devTail: 'тогда запросы без initData будут авторизованы как',
-        retry: 'Повторить',
-      };
+  const copy = {
+    title: 'Sign in through Telegram',
+    body: 'Send /web to Lumi in Telegram to get a short-lived one-time sign-in link.',
+    devTitle: 'Development hint',
+    devStart: 'Run the backend with',
+    devTail: 'then requests without initData are authorized as',
+    retry: 'Retry',
+  };
 
   return (
     <div className="flex min-h-dvh flex-col items-center justify-center px-6 text-center">
@@ -47,7 +36,7 @@ export function UnauthorizedScreen({ onRetry }: UnauthorizedScreenProps) {
         <div className="card mt-6 max-w-[340px] px-4 py-3 text-left">
           <p className="text-[12px] font-medium text-accent-text">{copy.devTitle}</p>
           <p className="mt-1 text-[12.5px] leading-relaxed text-hint">
-            {copy.devStart} <code className="font-mono text-ink">DEV_AUTH_ENABLED=true</code> — {copy.devTail}{' '}
+            {copy.devStart} <code className="font-mono text-ink">DEV_AUTH_ENABLED=true</code>. {copy.devTail}{' '}
             <code className="font-mono text-ink">DEV_AUTH_TELEGRAM_USER_ID</code>.
           </p>
         </div>

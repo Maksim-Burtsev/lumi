@@ -4,7 +4,8 @@
 
 ```bash
 make setup              # .env from template + data/
-# .env: TELEGRAM_BOT_TOKEN, ALLOWED_TELEGRAM_USER_IDS, MINIMAX_API_KEY
+# .env: TELEGRAM_BOT_TOKEN, ALLOWED_TELEGRAM_USER_IDS, MINIMAX_API_KEY,
+#       WEB_SESSION_SECRET (separate random value for standalone login)
 make frontend-build
 make up-detached
 make migrate
@@ -13,6 +14,11 @@ make smoke              # SMOKE OK = core is alive (mock LLM, no external keys)
 ```
 
 Bot: send `/start` in Telegram. Mini App: see the checklist below.
+
+Standalone web: set a fresh `WEB_SESSION_SECRET` (`openssl rand -hex 32`) and a
+current HTTPS `APP_PUBLIC_URL`, send `/web` to the bot, then open the one-time link.
+The link expires after five minutes and cannot be reused. Use the app's logout
+action to revoke the browser session.
 
 ## Local Telegram Mini App
 
@@ -93,7 +99,9 @@ For non-trivial bot, Mini App, planner/tools, or observability changes, the agen
 | Bot is silent | 1) `docker compose logs bot`: check whether polling is running. 2) Your id is not in `ALLOWED_TELEGRAM_USER_IDS`; logs show `unauthorized telegram user` with the id when `LOG_UNAUTHORIZED_TELEGRAM_IDS` is enabled. 3) Token is wrong. |
 | `bot` is Restarting | `TELEGRAM_BOT_TOKEN` is empty; fill `.env`, then `docker compose restart bot`. |
 | Conflict: terminated by other getUpdates | A second bot instance is running somewhere OR a webhook is still set. The bot calls deleteWebhook on startup; manual fix: `curl https://api.telegram.org/bot<TOKEN>/deleteWebhook?drop_pending_updates=true`. |
-| Mini App says "Open Lumi inside Telegram" (401) | Mini App was opened outside Telegram. For browser checks use `make dev-auth-up` and `http://localhost:8001/app/`. |
+| Standalone app asks for Telegram login (401) | Send `/web` to Lumi in a private Telegram chat and open the fresh one-time link. For HTTP-only local browser checks use `make dev-auth-up`; Secure web sessions require the HTTPS public URL. |
+| `/web` says standalone login is unavailable | Set a separate `WEB_SESSION_SECRET` of at least 32 characters, ensure `APP_PUBLIC_URL` is current HTTPS, then recreate `api` and `bot`. |
+| A `/web` link is expired or already used | Send `/web` again. Nonces expire after five minutes and Redis consumes them exactly once. |
 | Mini App does not open from the button | URL must be **https** (tunnel), `APP_PUBLIC_URL` must be current, and after changing it you need `docker compose up -d --force-recreate api bot`. |
 | Mini App hangs on a blank page or robot icon | Old/dead tunnel, containers did not reread `.env`, or stale chat-specific menu. Run `make miniapp-local-up`; check `curl "$APP_PUBLIC_URL/health"`, `api/bot` logs, close the old Mini App window, and reopen the fresh `/app` button. |
 | Bot replies "Done, I recorded that" to everything | Mock LLM is active: `MINIMAX_API_KEY` is empty or `LLM_PROVIDER=mock`. API/worker logs show `falling back to mock`. |

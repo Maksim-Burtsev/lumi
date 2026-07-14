@@ -58,6 +58,7 @@ make setup                 # creates .env from the template and data/ directorie
 #    TELEGRAM_BOT_TOKEN        - from @BotFather
 #    ALLOWED_TELEGRAM_USER_IDS - your id (check with @userinfobot)
 #    MINIMAX_API_KEY           - MiniMax key (or LLM_PROVIDER=mock without a key)
+#    WEB_SESSION_SECRET        - separate random value (`openssl rand -hex 32`)
 
 # 3. Build and start
 make frontend-build        # builds the Mini App into frontend/dist
@@ -69,7 +70,9 @@ make seed                  # creates/checks the user and main conversation
 make smoke                 # end-to-end mock LLM check; should print SMOKE OK
 ```
 
-Now send `/start` to your bot in Telegram.
+Now send `/start` to your bot in Telegram. For the standalone HTTPS app, send
+`/web` and open the single-use link; the same frontend and data remain available
+after reload through a Secure server-side session.
 
 ### Mini App locally and in Telegram
 

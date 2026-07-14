@@ -8,7 +8,7 @@ Core principle: **the LLM is stateless, the backend is stateful**. The model pro
 |---|---|---|
 | `postgres` | postgres:16-alpine | source of truth: messages, tasks, memory, calendar, logs |
 | `redis` | redis:7-alpine | arq queue and coordination |
-| `api` | `uvicorn lumi.main:app` | Mini App REST API, initData validation, `/app` static files |
+| `api` | `uvicorn lumi.main:app` | shared web/Mini App REST API, initData and web-session validation, `/app` static files |
 | `bot` | `python -m lumi.bot.runner` | aiogram long polling, commands, callbacks |
 | `worker` | `python -m lumi.worker.main` | arq jobs: assistant turns, planning, calendar sync, reminders, compaction |
 | `scheduler` | `python -m lumi.scheduler.main` | every 30s: due system `calendar_sync` tasks -> queue |
@@ -32,9 +32,11 @@ flowchart TD
     SVCS --> PG[(Postgres)]
     CTX --> PG
 
-    MA[Mini App · React/Vite] -->|X-Telegram-Init-Data| API[api · FastAPI]
+    WEB[Standalone web · React/Vite] -->|Secure session cookie| API[api · FastAPI]
+    MA[Mini App · React/Vite] -->|X-Telegram-Init-Data| API
     API -->|SSE /api/realtime| MA
-    API --> AUTH[validate_init_data + allowlist]
+    API -->|SSE /api/realtime| WEB
+    API --> AUTH[initData or Redis web session + allowlist]
     API --> SVCS
     SVCS --> UIE[ui_events outbox]
     UIE --> PG
@@ -90,6 +92,32 @@ sequenceDiagram
     API->>DB: ensure_user + Today aggregation
     API-->>WA: JSON -> premium UI
 ```
+
+## Standalone web login flow
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant B as Telegram bot
+    participant W as Standalone web app
+    participant API as FastAPI
+    participant R as Redis
+
+    U->>B: /web in private chat
+    B->>R: SET hashed nonce -> user id, NX, 5 min
+    B-->>U: /app/#/web-login?nonce=...
+    U->>W: open ordinary HTTPS link
+    W->>W: remove nonce from address bar
+    W->>API: POST /api/auth/web/exchange
+    API->>R: GETDEL hashed nonce
+    API->>R: SET hashed session -> user id, fixed TTL
+    API-->>W: Secure HttpOnly session + CSRF cookies
+    W->>API: same-origin API/SSE requests
+```
+
+Telegram initData remains the first-priority credential. Standalone sessions are
+server-side and revocable; unsafe cookie-authenticated requests also require the
+exact public origin and the derived CSRF value.
 
 Explicit planning and calendar-sync endpoints create an `agent_run`, **commit**, and enqueue a Redis job. The Mini App keeps a `GET /api/realtime` SSE stream open: the backend writes small `ui_events` inside the same transaction, publishes them to Redis only after commit, and the frontend invalidates React Query and refetches current REST endpoints. `GET /api/agent-runs/{id}` remains available for observability and fallback polling.
 

@@ -1,10 +1,15 @@
+import asyncio
+from types import SimpleNamespace
+
 import httpx
 import pytest
 from sqlalchemy import select
 
+from lumi.api.routes import realtime as realtime_routes
 from lumi.db.models import AgentRunType, UiEvent
 from lumi.db.session import session_scope
 from lumi.main import app
+from lumi.security.web_auth import WEB_SESSION_COOKIE
 from lumi.services.realtime import RealtimeEventService
 from lumi.services.runs import RunService
 from lumi.services.tasks import TaskService
@@ -110,6 +115,45 @@ async def test_realtime_endpoint_requires_auth():
 
     assert response.status_code == 401
     assert response.json() == {"error": "unauthorized"}
+
+
+async def test_realtime_stream_closes_after_web_session_revalidation_fails(
+    user,
+    monkeypatch,
+):
+    checks = iter((True, False))
+
+    async def fake_authenticate(request):
+        return user
+
+    async def fake_revalidate(request, current_user):
+        assert current_user.id == user.id
+        return next(checks)
+
+    async def immediate_timeout(awaitable, **kwargs):
+        assert kwargs["timeout"] == realtime_routes.HEARTBEAT_SECONDS
+        awaitable.close()
+        raise TimeoutError
+
+    request = SimpleNamespace(
+        headers={},
+        cookies={WEB_SESSION_COOKIE: "revoked-session"},
+        is_disconnected=lambda: _false(),
+    )
+    monkeypatch.setattr(realtime_routes, "authenticate_realtime_user", fake_authenticate)
+    monkeypatch.setattr(realtime_routes, "revalidate_realtime_web_session", fake_revalidate)
+    monkeypatch.setattr(asyncio, "wait_for", immediate_timeout)
+
+    response = await realtime_routes.realtime_stream(request, after=0)
+    iterator = response.body_iterator
+    assert "event" not in await anext(iterator)
+    assert "connected" in await anext(iterator)
+    with pytest.raises(StopAsyncIteration):
+        await anext(iterator)
+
+
+async def _false() -> bool:
+    return False
 
 
 async def test_task_and_run_services_emit_ui_topics(user, monkeypatch):

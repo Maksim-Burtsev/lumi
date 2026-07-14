@@ -112,6 +112,31 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+.app-content {
+  padding-bottom: calc(env(safe-area-inset-bottom) + 88px + var(--timezone-prompt-reserve, 0px));
+}
+
+.tasks-fab {
+  right: max(20px, calc((100vw - 860px) / 2 + 20px));
+  bottom: calc(env(safe-area-inset-bottom) + 96px);
+}
+
+.calendar-fab {
+  right: 20px;
+  bottom: calc(env(safe-area-inset-bottom) + 92px);
+}
+
+@media (min-width: 1024px) {
+  .standalone-shell .app-content {
+    padding-bottom: calc(32px + var(--timezone-prompt-reserve, 0px));
+  }
+
+  .standalone-shell .shell-fab {
+    right: max(44px, calc((100vw - 1124px) / 2 + 44px));
+    bottom: 28px;
+  }
+}
+
 /* Ultra-subtle film grain on the page background */
 body::after {
   content: '';

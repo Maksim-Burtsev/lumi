@@ -81,6 +81,14 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def prevent_private_api_caching(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
 # --- Error shape ({"error": code}) -------------------------------------------
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:

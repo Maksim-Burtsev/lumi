@@ -51,11 +51,14 @@ declare global {
 type TelegramInitParams = Record<string, string>;
 
 const INIT_PARAMS_STORAGE_KEY = '__telegram__initParams';
+const INIT_PARENT_ORIGIN_STORAGE_KEY = '__telegram__parentOrigin';
 const THEME_PARAMS_STORAGE_KEY = '__telegram__themeParams';
 const THEME_SWAP_CLASS = 'theme-swap';
 
 let telegramSdkLoad: Promise<void> | null = null;
 let cachedInitParams: TelegramInitParams = {};
+let telegramLaunchCaptured = false;
+let standaloneWebAuth = false;
 let themeSwapFrame: number | null = null;
 
 export function getTelegramWebApp(): TelegramWebApp | null {
@@ -93,10 +96,57 @@ function readHashInitParams(): TelegramInitParams {
   return result;
 }
 
-function getTelegramInitParams(): TelegramInitParams {
-  if (typeof window === 'undefined') return {};
+function currentParentOrigin(): string {
+  if (window.parent === window) return '';
+  const ancestors = window.location.ancestorOrigins;
+  const candidate = ancestors?.length ? ancestors.item(0) : document.referrer;
+  if (!candidate) return '';
+  try {
+    const origin = new URL(candidate).origin;
+    return origin === 'null' ? '' : origin;
+  } catch {
+    return '';
+  }
+}
 
-  const params = { ...cachedInitParams, ...readStoredInitParams(), ...readHashInitParams() };
+function readStoredParentOrigin(): string {
+  try {
+    return window.sessionStorage.getItem(INIT_PARENT_ORIGIN_STORAGE_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function storeCurrentParentOrigin(): void {
+  try {
+    const origin = currentParentOrigin();
+    if (origin) window.sessionStorage.setItem(INIT_PARENT_ORIGIN_STORAGE_KEY, origin);
+    else window.sessionStorage.removeItem(INIT_PARENT_ORIGIN_STORAGE_KEY);
+  } catch {
+    /* sessionStorage can be unavailable in embedded clients */
+  }
+}
+
+function getTelegramInitParams(): TelegramInitParams {
+  if (typeof window === 'undefined' || standaloneWebAuth) return {};
+
+  const hashParams = readHashInitParams();
+  const storedParams = readStoredInitParams();
+  if (hashParams.tgWebAppData) {
+    telegramLaunchCaptured = true;
+    storeCurrentParentOrigin();
+  }
+  const parentOrigin = currentParentOrigin();
+  if (
+    !telegramLaunchCaptured
+    && Object.keys(storedParams).length > 0
+    && (
+      hasNativeTelegramBridge()
+      || (parentOrigin !== '' && parentOrigin === readStoredParentOrigin())
+    )
+  ) telegramLaunchCaptured = true;
+  if (!telegramLaunchCaptured) return {};
+  const params = { ...cachedInitParams, ...storedParams, ...hashParams };
   if (Object.keys(params).length > 0) {
     cachedInitParams = params;
     try {
@@ -112,14 +162,29 @@ export function captureTelegramInitParams(): void {
   void getTelegramInitParams();
 }
 
-function hasTelegramBridge(): boolean {
+export function beginStandaloneWebAuth(): void {
+  standaloneWebAuth = true;
+  telegramLaunchCaptured = false;
+  cachedInitParams = {};
+  try {
+    window.sessionStorage.removeItem(INIT_PARAMS_STORAGE_KEY);
+    window.sessionStorage.removeItem(INIT_PARENT_ORIGIN_STORAGE_KEY);
+  } catch {
+    /* Storage can be unavailable in embedded clients. */
+  }
+}
+
+function hasNativeTelegramBridge(): boolean {
   if (typeof window === 'undefined') return false;
   const external = window.external as { notify?: (payload: string) => void } | undefined;
   return Boolean(
     window.TelegramWebviewProxy ||
-      (external && typeof external.notify === 'function') ||
-      window.parent !== window,
+      (external && typeof external.notify === 'function'),
   );
+}
+
+function hasTelegramBridge(): boolean {
+  return hasNativeTelegramBridge() || window.parent !== window;
 }
 
 function hasTelegramLaunchParams(): boolean {
@@ -189,6 +254,7 @@ function scheduleReadyFallbacks(): void {
 }
 
 export function getInitData(): string {
+  if (standaloneWebAuth) return '';
   return getTelegramWebApp()?.initData ?? getTelegramInitParams().tgWebAppData ?? '';
 }
 
@@ -217,7 +283,7 @@ function getFallbackThemeParams(): TelegramThemeParams | undefined {
 export function loadTelegramSdk(): Promise<void> {
   if (typeof window === 'undefined') return Promise.resolve();
   if (getTelegramWebApp()) return Promise.resolve();
-  if (!hasTelegramLaunchParams() && !hasTelegramBridge()) return Promise.resolve();
+  if (!hasTelegramLaunchParams() && !hasNativeTelegramBridge()) return Promise.resolve();
   if (telegramSdkLoad) return telegramSdkLoad;
 
   telegramSdkLoad = new Promise((resolve) => {

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from urllib.parse import parse_qsl
 
 INIT_DATA_MAX_AGE_SECONDS = 24 * 3600
+INIT_DATA_CLOCK_SKEW_SECONDS = 30
 
 
 class InitDataError(Exception):
@@ -61,13 +62,17 @@ def validate_init_data(
         raise InitDataError("initData signature mismatch")
 
     auth_date = data.get("auth_date")
-    if auth_date:
-        now = _now if _now is not None else time.time()
-        try:
-            if now - int(auth_date) > max_age_seconds:
-                raise InitDataError("initData expired")
-        except ValueError as exc:
-            raise InitDataError("bad auth_date") from exc
+    if not auth_date:
+        raise InitDataError("initData has no auth_date")
+    now = _now if _now is not None else time.time()
+    try:
+        age = now - int(auth_date)
+    except ValueError as exc:
+        raise InitDataError("bad auth_date") from exc
+    if age < -INIT_DATA_CLOCK_SKEW_SECONDS:
+        raise InitDataError("initData auth_date is in the future")
+    if age > max_age_seconds:
+        raise InitDataError("initData expired")
 
     user_raw = data.get("user")
     if not user_raw:

@@ -1,13 +1,16 @@
-import { Settings } from 'lucide-react';
+import { LogOut, Settings } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { useHealth } from '../../api/hooks';
 import { useAppLocale } from '../../lib/useAppLocale';
 
 interface TopBarProps {
   title: string;
+  standalone?: boolean;
+  loggingOut?: boolean;
+  onLogout?: () => void;
 }
 
-export function TopBar({ title }: TopBarProps) {
+export function TopBar({ title, standalone = false, loggingOut = false, onLogout }: TopBarProps) {
   const health = useHealth();
   const locale = useAppLocale();
 
@@ -29,7 +32,7 @@ export function TopBar({ title }: TopBarProps) {
       <div className="bg-[var(--bg)]">
         <div className="mx-auto flex h-14 w-full max-w-content items-center justify-between px-5">
           <h1 className="text-[17px] font-semibold tracking-[-0.01em] text-ink">{title}</h1>
-          <div className="flex items-center gap-1">
+          <div className={`flex items-center gap-1 ${standalone ? 'lg:hidden' : ''}`}>
             <div className="flex items-center gap-1.5" title={dotTitle}>
               <span className="font-display text-[13px] font-normal tracking-[0.06em] text-ink">Lumi</span>
               <span className={`h-1.5 w-1.5 rounded-full ${dotColor}`} aria-hidden />
@@ -45,6 +48,17 @@ export function TopBar({ title }: TopBarProps) {
             >
               <Settings size={19} strokeWidth={1.9} aria-hidden />
             </NavLink>
+            {standalone && onLogout && (
+              <button
+                type="button"
+                aria-label={locale === 'en' ? 'Log out' : 'Выйти'}
+                disabled={loggingOut}
+                onClick={onLogout}
+                className="flex h-11 w-11 items-center justify-center rounded-full text-hint outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent-border)] disabled:opacity-55"
+              >
+                <LogOut size={19} strokeWidth={1.9} aria-hidden />
+              </button>
+            )}
           </div>
         </div>
       </div>

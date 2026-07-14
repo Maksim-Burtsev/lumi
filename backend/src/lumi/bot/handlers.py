@@ -480,6 +480,50 @@ async def cmd_app(message: TgMessage) -> None:
     )
 
 
+@router.message(Command("web"))
+async def cmd_web(message: TgMessage) -> None:
+    """Issue a one-time regular-browser login link after Telegram authentication."""
+    if not await _check_allowed(message):
+        return
+    tg_user = message.from_user
+    if tg_user is None:
+        return
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    from lumi.security.web_auth import (
+        WebAuthNotConfigured,
+        WebAuthUnavailable,
+        issue_web_login,
+    )
+
+    try:
+        async with session_scope() as session:
+            users = UserService(session)
+            user = await users.ensure_user(
+                tg_user.id,
+                telegram_chat_id=message.chat.id,
+                username=tg_user.username,
+                first_name=tg_user.first_name,
+                last_name=tg_user.last_name,
+                language_code=_language_code(message),
+            )
+            await users.ensure_main_conversation(user)
+            url = await issue_web_login(user.id)
+    except WebAuthNotConfigured:
+        await message.answer("Веб-вход пока не настроен.")
+        return
+    except WebAuthUnavailable:
+        await message.answer("Веб-вход временно недоступен. Попробуй ещё раз чуть позже.")
+        return
+
+    await message.answer(
+        "Одноразовая ссылка для входа в Lumi Web действует 5 минут:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="Открыть Lumi Web", url=url),
+        ]]),
+    )
+
+
 @router.message(Command("today"))
 async def cmd_today(message: TgMessage) -> None:
     if not await _check_allowed(message):

@@ -8,9 +8,10 @@ import json
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from lumi.api.deps import resolve_current_user
+from lumi.api.deps import INIT_DATA_HEADER, resolve_current_user
 from lumi.db.models import UiEvent, User
 from lumi.db.session import get_session_factory, session_scope
+from lumi.security.web_auth import WEB_SESSION_COOKIE
 from lumi.services.realtime import (
     RealtimeEventService,
     commit_with_realtime,
@@ -39,6 +40,17 @@ async def authenticate_realtime_user(request: Request) -> User:
             raise
 
 
+async def revalidate_realtime_web_session(request: Request, user: User) -> bool:
+    """Close an existing SSE stream after its standalone session is revoked."""
+    if request.headers.get(INIT_DATA_HEADER) or not request.cookies.get(WEB_SESSION_COOKIE):
+        return True
+    try:
+        current = await authenticate_realtime_user(request)
+    except HTTPException:
+        return False
+    return current.id == user.id
+
+
 def _sse(event_name: str, data: dict, *, event_id: int | None = None) -> str:
     payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     prefix = f"id: {event_id}\n" if event_id is not None else ""
@@ -64,12 +76,16 @@ async def realtime_stream(
 
     async def stream():
         last_sent = after
+        if not await revalidate_realtime_web_session(request, user):
+            return
         yield f": {' ' * SSE_OPEN_PADDING_BYTES}\n\n"
         yield ": connected\n\n"
 
         async with session_scope() as session:
             catchup = await RealtimeEventService(session).list_after(user.id, after=after)
         for event in catchup:
+            if not await revalidate_realtime_web_session(request, user):
+                return
             last_sent = max(last_sent, event.id)
             yield _sse("ui_event", _event_data(event), event_id=event.id)
 
@@ -80,9 +96,13 @@ async def realtime_stream(
                 try:
                     message = await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_SECONDS)
                 except TimeoutError:
+                    if not await revalidate_realtime_web_session(request, user):
+                        break
                     yield ": heartbeat\n\n"
                     continue
 
+                if not await revalidate_realtime_web_session(request, user):
+                    break
                 if message.get("event_type") == "resync":
                     yield _sse("resync", {
                         "topics": ["*"],

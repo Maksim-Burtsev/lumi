@@ -1021,8 +1021,7 @@ export default function CalendarPage() {
           setPrefill(null);
           setSheetOpen(true);
         }}
-        className="fixed right-5 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-[var(--accent-foreground)] shadow-[0_8px_24px_var(--accent-shadow)]"
-        style={{ bottom: 'calc(env(safe-area-inset-bottom) + 92px)' }}
+        className="shell-fab calendar-fab fixed z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-[var(--accent-foreground)] shadow-[0_8px_24px_var(--accent-shadow)]"
       >
         <Plus size={24} />
       </motion.button>
