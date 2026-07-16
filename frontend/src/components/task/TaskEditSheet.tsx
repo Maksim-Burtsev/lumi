@@ -1,129 +1,184 @@
-import { useEffect, useState } from 'react';
-import type { Task, TaskPriority } from '../../api/types';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { PatchTaskInput, Project, Task, TaskBucket, TaskPriority } from '../../api/types';
 import { usePatchTask } from '../../api/hooks';
+import { dateTimeInputParts, localPartsToDate } from '../../lib/focusTime';
 import { useAppLocale } from '../../lib/useAppLocale';
+import { useTimeDisplay } from '../../lib/useTimeDisplay';
 import { Button } from '../ui/Button';
 import { FieldLabel, Input, Select, Textarea } from '../ui/Field';
 import { Sheet } from '../ui/Sheet';
 import { useToast } from '../ui/Toast';
 
-/** Full task editor: title, priority, project, due date with quick chips. */
-
 const COPY = {
   en: {
-    task: 'Task',
+    task: 'Task details',
     title: 'Title',
     note: 'Note',
     notePlaceholder: 'Details, links...',
+    location: 'List',
+    inbox: 'Inbox',
+    thisWeek: 'This week',
+    later: 'Later',
     priority: 'Priority',
     project: 'Project',
-    due: 'Due date',
+    noProject: 'No project',
+    unavailableProject: 'current',
+    estimate: 'Estimate (minutes)',
+    estimatePlaceholder: '30',
+    hardDeadline: 'Hard deadline',
     remind: 'Remind at this time',
-    save: 'Save',
+    save: 'Save changes',
     close: 'Close',
-    saved: 'Saved',
-    saveFailed: 'Could not save',
+    saved: 'Task updated',
+    saveFailed: 'Could not save task',
     undoCompletion: 'Undo completion',
     reopened: 'Task reopened',
     reopenFailed: 'Could not reopen task',
-    todayEvening: 'Today 18:00',
-    tomorrowMorning: 'Tomorrow 09:00',
-    saturday: 'Saturday',
-    noDue: 'No due date',
     priorities: { low: 'Low', medium: 'Medium', high: 'High', urgent: 'Urgent' },
   },
   ru: {
-    task: 'Задача',
+    task: 'Детали задачи',
     title: 'Название',
     note: 'Заметка',
     notePlaceholder: 'Детали, ссылки...',
+    location: 'Список',
+    inbox: 'Входящие',
+    thisWeek: 'На этой неделе',
+    later: 'Позже',
     priority: 'Приоритет',
     project: 'Проект',
-    due: 'Срок',
+    noProject: 'Без проекта',
+    unavailableProject: 'текущий',
+    estimate: 'Оценка (минуты)',
+    estimatePlaceholder: '30',
+    hardDeadline: 'Жёсткий срок',
     remind: 'Напомнить в это время',
     save: 'Сохранить',
     close: 'Закрыть',
-    saved: 'Сохранено',
-    saveFailed: 'Не удалось сохранить',
+    saved: 'Задача обновлена',
+    saveFailed: 'Не удалось сохранить задачу',
     undoCompletion: 'Вернуть задачу',
     reopened: 'Задача возвращена',
     reopenFailed: 'Не удалось вернуть задачу',
-    todayEvening: 'Сегодня 18:00',
-    tomorrowMorning: 'Завтра 09:00',
-    saturday: 'Суббота',
-    noDue: 'Без срока',
     priorities: { low: 'Низкий', medium: 'Средний', high: 'Высокий', urgent: 'Срочно' },
   },
 };
 
-function toLocalInput(ts: string | null): string {
+function toLocalInput(ts: string | null, timezone?: string | null): string {
   if (!ts) return '';
-  const d = new Date(ts);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const parts = dateTimeInputParts(new Date(ts), timezone);
+  return `${parts.date}T${parts.time}`;
 }
 
-function quickDate(kind: 'today-evening' | 'tomorrow-morning' | 'weekend'): string {
-  const d = new Date();
-  if (kind === 'today-evening') {
-    d.setHours(18, 0, 0, 0);
-  } else if (kind === 'tomorrow-morning') {
-    d.setDate(d.getDate() + 1);
-    d.setHours(9, 0, 0, 0);
-  } else {
-    const day = d.getDay();
-    const toSaturday = (6 - day + 7) % 7 || 7;
-    d.setDate(d.getDate() + toSaturday);
-    d.setHours(11, 0, 0, 0);
-  }
-  return toLocalInput(d.toISOString());
+function defaultThisWeekPlan(): string {
+  return new Date().toISOString();
+}
+
+function openBucket(task: Task): Exclude<TaskBucket, 'done'> {
+  if (task.bucket === 'inbox' || task.bucket === 'this_week' || task.bucket === 'later') return task.bucket;
+  return task.planned_for ? 'this_week' : 'later';
 }
 
 export function TaskEditSheet({
   task,
+  projects,
   onClose,
 }: {
   task: Task | null;
+  projects: Project[];
   onClose: () => void;
 }) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  const [bucket, setBucket] = useState<Exclude<TaskBucket, 'done'>>('inbox');
   const [priority, setPriority] = useState<TaskPriority>('medium');
-  const [project, setProject] = useState('');
+  const [projectValue, setProjectValue] = useState('');
+  const [estimate, setEstimate] = useState('');
   const [due, setDue] = useState('');
   const [remind, setRemind] = useState(true);
+  const dueTouched = useRef(false);
   const patchTask = usePatchTask();
   const { show } = useToast();
   const locale = useAppLocale();
+  const timeDisplay = useTimeDisplay();
   const copy = COPY[locale];
 
   useEffect(() => {
-    if (task) {
-      setTitle(task.title);
-      setDescription(task.description ?? '');
-      setPriority(task.priority);
-      setProject(task.project ?? '');
-      setDue(toLocalInput(task.due_at));
-      setRemind(task.reminder_at !== null);
-    }
+    if (!task) return;
+    dueTouched.current = false;
+    setTitle(task.title);
+    setDescription(task.description ?? '');
+    setBucket(openBucket(task));
+    setPriority(task.priority);
+    setProjectValue(task.project_id ?? (task.project ? `legacy:${task.project}` : ''));
+    setEstimate(task.estimated_minutes === null ? '' : String(task.estimated_minutes));
+    setDue(toLocalInput(task.due_at));
+    setRemind(task.reminder_at !== null);
   }, [task]);
+
+  useEffect(() => {
+    if (!task || dueTouched.current) return;
+    setDue(toLocalInput(task.due_at, timeDisplay.timezone));
+  }, [task, timeDisplay.timezone]);
+
+  const projectOptions = useMemo(() => {
+    const options = [{ value: '', label: copy.noProject }];
+    for (const project of projects.filter((item) => item.status === 'active')) {
+      options.push({ value: project.id, label: project.name });
+    }
+    if (task?.project_id && !projects.some((project) => project.id === task.project_id)) {
+      options.push({ value: task.project_id, label: `${task.project ?? copy.project} (${copy.unavailableProject})` });
+    }
+    if (task?.project && !task.project_id) options.push({ value: `legacy:${task.project}`, label: task.project });
+    return options;
+  }, [copy.noProject, copy.project, copy.unavailableProject, projects, task]);
 
   if (task === null) return null;
 
   const save = () => {
-    const dueIso = due ? new Date(due).toISOString() : null;
+    const [dueDate = '', dueTime = ''] = due.split('T');
+    const parsedDue = due ? localPartsToDate(dueDate, dueTime, timeDisplay.timezone) : null;
+    if (parsedDue && Number.isNaN(parsedDue.getTime())) {
+      show(copy.saveFailed, 'error');
+      return;
+    }
+    const dueIso = parsedDue?.toISOString() ?? null;
+    const parsedEstimate = estimate.trim() === '' ? null : Number.parseInt(estimate, 10);
+    const normalizedEstimate = parsedEstimate === null || Number.isNaN(parsedEstimate)
+      ? null
+      : Math.max(1, Math.min(1440, parsedEstimate));
+    const project = projects.find((item) => item.id === projectValue);
+    const projectInput: PatchTaskInput = project
+      ? { project_id: project.id }
+      : projectValue === task.project_id
+        ? {}
+        : projectValue.startsWith('legacy:')
+          ? { project: projectValue.slice(7) }
+          : { project_id: null, project: null };
+    const input: PatchTaskInput = {
+      title: title.trim() || task.title,
+      description: description.trim() || null,
+      priority,
+      estimated_minutes: normalizedEstimate,
+      due_at: dueIso,
+      reminder_at: remind && dueIso ? dueIso : null,
+      ...projectInput,
+    };
+
+    if (task.status !== 'done') {
+      if (bucket === 'inbox') Object.assign(input, { status: 'inbox', planned_for: null });
+      if (bucket === 'this_week') Object.assign(input, {
+        status: 'active',
+        planned_for: task.bucket === 'this_week' && task.planned_for ? task.planned_for : defaultThisWeekPlan(),
+      });
+      if (bucket === 'later') Object.assign(input, {
+        status: 'active',
+        planned_for: task.bucket === 'later' ? task.planned_for : null,
+      });
+    }
+
     patchTask.mutate(
-      {
-        id: task.id,
-        input: {
-          title: title.trim() || task.title,
-          description: description.trim() || null,
-          priority,
-          project: project.trim() || null,
-          due_at: dueIso,
-          reminder_at: remind && dueIso ? dueIso : null,
-        },
-      },
+      { id: task.id, input },
       {
         onSuccess: () => {
           show(copy.saved, 'success');
@@ -133,6 +188,7 @@ export function TaskEditSheet({
       },
     );
   };
+
   const undoCompletion = () => {
     patchTask.mutate(
       { id: task.id, input: { status: 'active' } },
@@ -146,13 +202,12 @@ export function TaskEditSheet({
     );
   };
 
-  const CHIPS: { label: string; value: string }[] = [
-    { label: copy.todayEvening, value: quickDate('today-evening') },
-    { label: copy.tomorrowMorning, value: quickDate('tomorrow-morning') },
-    { label: copy.saturday, value: quickDate('weekend') },
-    { label: copy.noDue, value: '' },
+  const bucketOptions = [
+    { value: 'inbox', label: copy.inbox },
+    { value: 'this_week', label: copy.thisWeek },
+    { value: 'later', label: copy.later },
   ];
-  const priorityOptions: { value: TaskPriority; label: string }[] = [
+  const priorityOptions = [
     { value: 'low', label: copy.priorities.low },
     { value: 'medium', label: copy.priorities.medium },
     { value: 'high', label: copy.priorities.high },
@@ -163,62 +218,58 @@ export function TaskEditSheet({
     <Sheet open onClose={onClose} title={copy.task} closeLabel={copy.close}>
       <label className="block">
         <FieldLabel>{copy.title}</FieldLabel>
-        <Input value={title} onChange={setTitle} />
+        <Input value={title} onChange={setTitle} autoFocus />
       </label>
       <label className="mt-4 block">
         <FieldLabel>{copy.note}</FieldLabel>
-        <Textarea value={description} onChange={setDescription} rows={2} placeholder={copy.notePlaceholder} />
+        <Textarea value={description} onChange={setDescription} rows={3} placeholder={copy.notePlaceholder} />
       </label>
-      <div className="mt-4 grid grid-cols-2 gap-3">
-        <label className="block">
-          <FieldLabel>{copy.priority}</FieldLabel>
-          <Select
-            value={priority}
-            onChange={(v) => setPriority(v as TaskPriority)}
-            options={priorityOptions}
-          />
-        </label>
+
+      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {task.status !== 'done' && (
+          <label className="block">
+            <FieldLabel>{copy.location}</FieldLabel>
+            <Select value={bucket} onChange={(value) => setBucket(value as Exclude<TaskBucket, 'done'>)} options={bucketOptions} />
+          </label>
+        )}
         <label className="block">
           <FieldLabel>{copy.project}</FieldLabel>
-          <Input value={project} onChange={setProject} placeholder="lumi" />
+          <Select value={projectValue} onChange={setProjectValue} options={projectOptions} />
+        </label>
+        <label className="block">
+          <FieldLabel>{copy.estimate}</FieldLabel>
+          <Input value={estimate} onChange={setEstimate} type="number" placeholder={copy.estimatePlaceholder} />
+        </label>
+        <label className="block">
+          <FieldLabel>{copy.priority}</FieldLabel>
+          <Select value={priority} onChange={(value) => setPriority(value as TaskPriority)} options={priorityOptions} />
         </label>
       </div>
-      <div className="mt-4">
-        <FieldLabel>{copy.due}</FieldLabel>
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          {CHIPS.map((chip) => (
-            <button
-              key={chip.label}
-              type="button"
-              onClick={() => setDue(chip.value)}
-              className={`min-h-[34px] rounded-full border px-3 text-[12.5px] transition-colors ${
-                due === chip.value && (chip.value !== '' || due === '')
-                  ? 'border-[var(--accent-border)] bg-[var(--accent-soft)] text-ink'
-                  : 'border-hairline text-hint'
-              }`}
-            >
-              {chip.label}
-            </button>
-          ))}
-        </div>
+
+      <label className="mt-4 block">
+        <FieldLabel>{copy.hardDeadline}</FieldLabel>
         <input
           type="datetime-local"
           value={due}
-          onChange={(e) => setDue(e.target.value)}
-          className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3.5 text-[15px] text-ink outline-none"
+          onChange={(event) => {
+            dueTouched.current = true;
+            setDue(event.target.value);
+          }}
+          className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3.5 text-[15px] text-ink outline-none transition-shadow focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
         />
-        {due !== '' && (
-          <label className="mt-2.5 flex items-center gap-2 text-[13px] text-ink">
-            <input
-              type="checkbox"
-              checked={remind}
-              onChange={(e) => setRemind(e.target.checked)}
-              className="h-4 w-4 accent-[var(--accent)]"
-            />
-            {copy.remind}
-          </label>
-        )}
-      </div>
+      </label>
+      {due !== '' && (
+        <label className="mt-2.5 flex min-h-11 items-center gap-2 text-[13px] text-ink">
+          <input
+            type="checkbox"
+            checked={remind}
+            onChange={(event) => setRemind(event.target.checked)}
+            className="h-4 w-4 accent-[var(--accent)]"
+          />
+          {copy.remind}
+        </label>
+      )}
+
       <Button fullWidth className="mt-5" busy={patchTask.isPending} onClick={save}>
         {copy.save}
       </Button>

@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
-import type { AssistantSuggestion, AssistantSuggestionsResponse, Project, ProjectsResponse, SettingsResponse, Task, TasksResponse, User } from '../api/types';
+import type { Project, SettingsResponse, Task, TaskFilter, TasksResponse, User } from '../api/types';
+import { TaskEditSheet } from '../components/task/TaskEditSheet';
 import { ToastProvider } from '../components/ui/Toast';
 import TasksPage from './TasksPage';
 
@@ -17,7 +18,7 @@ function makeUser(locale: 'en' | 'ru' = 'en'): User {
     timezone: 'Asia/Yerevan',
     locale,
     settings: { reply_language_mode: 'auto', time_format: '24h' },
-    created_at: '2026-06-21T00:00:00Z',
+    created_at: '2026-07-15T00:00:00Z',
     last_seen_at: null,
   };
 }
@@ -40,18 +41,20 @@ function makeSettings(locale: 'en' | 'ru' = 'en'): SettingsResponse {
   };
 }
 
-function makeTask(overrides: Partial<Task>): Task {
+function makeTask(overrides: Partial<Task> = {}): Task {
+  const status = overrides.status ?? 'active';
+  const bucket = overrides.bucket ?? (status === 'done' ? 'done' : status === 'inbox' ? 'inbox' : 'later');
   return {
-    id: overrides.id ?? 'task-1',
-    title: overrides.title ?? 'Compare Mira design',
+    id: 'task-1',
+    title: 'Compare Mira design',
     description: null,
-    status: 'active',
+    status,
     priority: 'medium',
     project: null,
     project_id: null,
     tags: [],
     due_at: null,
-    planned_for: overrides.target_at ?? null,
+    planned_for: null,
     target_at: null,
     reminder_at: null,
     snoozed_until: null,
@@ -59,38 +62,48 @@ function makeTask(overrides: Partial<Task>): Task {
     estimate_source: null,
     review_skips: {},
     source: 'manual',
-    created_at: '2026-06-21T08:00:00Z',
-    completed_at: null,
-    bucket: overrides.status === 'done' ? 'done' : overrides.status === 'inbox' ? 'inbox' : 'later',
+    created_at: '2026-07-15T08:00:00Z',
+    completed_at: status === 'done' ? '2026-07-15T09:00:00Z' : null,
+    bucket,
     ...overrides,
   };
 }
 
-function makeTasksResponse(items: Task[] = []): TasksResponse {
-  return { items, has_more: false, next_offset: null };
+function makeTasksResponse(
+  items: Task[] = [],
+  pagination: Pick<TasksResponse, 'has_more' | 'next_offset'> = { has_more: false, next_offset: null },
+): TasksResponse {
+  return { items, ...pagination };
 }
 
-function makeProject(overrides: Partial<Project>): Project {
+function makeProject(overrides: Partial<Project> = {}): Project {
   return {
-    id: overrides.id ?? 'project-1',
-    name: overrides.name ?? 'Lumi',
+    id: 'project-lumi',
+    name: 'Lumi',
     status: 'active',
     color: null,
     system_key: null,
     is_system: false,
     active_task_count: 1,
     completed_task_count: 0,
-    estimated_minutes_total: 0,
+    estimated_minutes_total: 30,
     health_status: 'moving',
-    health_reason: 'Next move ready',
+    health_reason: 'Updated today',
     next_task: null,
-    created_at: '2026-06-21T08:00:00Z',
+    created_at: '2026-07-15T08:00:00Z',
     ...overrides,
   };
 }
 
-function renderTasksPage(locale: 'en' | 'ru' = 'en') {
+function mockBuckets(lists: Partial<Record<TaskFilter, Task[]>> = {}) {
+  return vi.spyOn(api, 'listTasks').mockImplementation(async (query) => (
+    makeTasksResponse(lists[query?.filter ?? 'all'] ?? [])
+  ));
+}
+
+function renderTasksPage(projects: Project[] = [], locale: 'en' | 'ru' = 'en') {
   vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettings(locale));
+  vi.spyOn(api, 'listProjects').mockResolvedValue({ items: projects });
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -105,706 +118,271 @@ function renderTasksPage(locale: 'en' | 'ru' = 'en') {
       </ToastProvider>
     </QueryClientProvider>,
   );
+}
 
-  return queryClient;
+function renderTaskEditor(task: Task, timezone = 'Asia/Yerevan') {
+  const settings = makeSettings();
+  settings.user.timezone = timezone;
+  vi.spyOn(api, 'getSettings').mockResolvedValue(settings);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ToastProvider>
+        <TaskEditSheet task={task} projects={[]} onClose={vi.fn()} />
+      </ToastProvider>
+    </QueryClientProvider>,
+  );
 }
 
 beforeEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('TasksPage Projects UX', () => {
-  it('completes a task when the task row itself is tapped', async () => {
-    const task = makeTask({ id: 'task-buy', title: 'Buy capsules' });
-    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([task]));
-    vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
-    vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({ items: [] });
+describe('TasksPage V2', () => {
+  it('shows the three open groups and weekly capacity without legacy tabs', async () => {
+    mockBuckets({
+      inbox: [makeTask({ id: 'inbox-1', title: 'Triage notes', status: 'inbox', bucket: 'inbox' })],
+      this_week: [
+        makeTask({ id: 'week-1', title: 'Write launch copy', bucket: 'this_week', estimated_minutes: 30 }),
+        makeTask({ id: 'week-2', title: 'Review release', bucket: 'this_week', estimated_minutes: 90 }),
+      ],
+      later: [makeTask({ id: 'later-1', title: 'Refresh archive', bucket: 'later' })],
+    });
+
+    renderTasksPage();
+
+    await waitFor(() => {
+      expect(screen.getByText('Triage notes')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Inbox' })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'This week' })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Later' })).toBeInTheDocument();
+      expect(screen.getByText('2 h estimated')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Today')).not.toBeInTheDocument();
+    expect(screen.queryByText('Projects')).not.toBeInTheDocument();
+    expect(screen.queryByText('Review')).not.toBeInTheDocument();
+  });
+
+  it('sends search and project filters to every open task query', async () => {
+    const listSpy = mockBuckets();
+    const user = userEvent.setup();
+    renderTasksPage([makeProject()]);
+
+    await screen.findByRole('option', { name: 'Lumi' });
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Filter by project' }), 'project-lumi');
+    await user.type(screen.getByRole('searchbox', { name: 'Search tasks' }), 'launch');
+
+    await waitFor(() => {
+      for (const filter of ['inbox', 'this_week', 'later'] as const) {
+        expect(listSpy).toHaveBeenCalledWith(expect.objectContaining({
+          filter,
+          q: 'launch',
+          project_id: 'project-lumi',
+          limit: 20,
+          offset: 0,
+        }));
+      }
+    });
+  });
+
+  it('creates from the inline field on Enter and preserves the title on failure', async () => {
+    mockBuckets();
+    const createSpy = vi.spyOn(api, 'createTask').mockRejectedValue(new Error('offline'));
+    const user = userEvent.setup();
+    renderTasksPage();
+
+    const input = await screen.findByRole('textbox', { name: 'Add a task to Inbox' });
+    await user.type(input, 'Keep this title{Enter}');
+
+    await waitFor(() => expect(createSpy).toHaveBeenCalledWith({ title: 'Keep this title' }));
+    expect(await screen.findByText('Could not create task')).toBeInTheDocument();
+    expect(input).toHaveValue('Keep this title');
+  });
+
+  it('loads the next server page into its group', async () => {
+    const listSpy = vi.spyOn(api, 'listTasks').mockImplementation(async (query) => {
+      if (query?.filter !== 'inbox') return makeTasksResponse();
+      if (query.offset === 20) return makeTasksResponse([makeTask({ id: 'inbox-2', title: 'Second page', status: 'inbox', bucket: 'inbox' })]);
+      return makeTasksResponse(
+        [makeTask({ id: 'inbox-1', title: 'First page', status: 'inbox', bucket: 'inbox' })],
+        { has_more: true, next_offset: 20 },
+      );
+    });
+    const user = userEvent.setup();
+    renderTasksPage();
+
+    await waitFor(() => expect(screen.getByText('First page')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Load more' }));
+
+    await waitFor(() => expect(screen.getByText('Second page')).toBeInTheDocument());
+    expect(listSpy).toHaveBeenCalledWith(expect.objectContaining({ filter: 'inbox', limit: 20, offset: 20 }));
+  });
+
+  it('opens details from the title and completes only from the checkbox', async () => {
+    const task = makeTask({ id: 'deep-work', title: 'Deep work', status: 'inbox', bucket: 'inbox' });
+    mockBuckets({ inbox: [task] });
     const completeSpy = vi.spyOn(api, 'completeTask').mockResolvedValue({
-      task: { ...task, status: 'done', completed_at: '2026-06-21T08:02:00Z' },
+      task: { ...task, status: 'done', bucket: 'done', completed_at: '2026-07-15T10:00:00Z' },
     });
-
+    const patchSpy = vi.spyOn(api, 'patchTask').mockResolvedValue({ task });
     const user = userEvent.setup();
-    renderTasksPage('en');
-    await user.click(await screen.findByRole('button', { name: /Buy capsules/i }));
+    renderTasksPage();
 
-    await waitFor(() => {
-      expect(completeSpy).toHaveBeenCalledWith('task-buy');
-    });
-    expect(screen.queryByRole('dialog', { name: 'Task' })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open details: Deep work' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Open details: Deep work' }));
+    expect(completeSpy).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Task details' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Task details' })).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Complete: Deep work' }));
+    await waitFor(() => expect(completeSpy).toHaveBeenCalledWith('deep-work'));
+    await waitFor(
+      () => expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument(),
+      { timeout: 3000 },
+    );
+    await user.click(screen.getByRole('button', { name: 'Undo' }));
+    await waitFor(
+      () => expect(patchSpy).toHaveBeenCalledWith('deep-work', { status: 'active' }),
+      { timeout: 3000 },
+    );
   });
 
-  it('uses the top field as search and opens task creation from the floating plus', async () => {
-    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([
-        makeTask({ id: 'task-1', title: 'Buy capsules' }),
-        makeTask({ id: 'task-2', title: 'Compare Mira design' }),
-    ]));
-    vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
-    vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({ items: [] });
-    const createSpy = vi.spyOn(api, 'createTask').mockResolvedValue({
-      task: makeTask({ id: 'task-new', title: 'Write launch notes' }),
-    });
+  it('restores the right row when concurrent completions settle out of order', async () => {
+    const first = makeTask({ id: 'first', title: 'First task', status: 'inbox', bucket: 'inbox' });
+    const second = makeTask({ id: 'second', title: 'Second task', status: 'inbox', bucket: 'inbox' });
+    mockBuckets({ inbox: [first, second] });
+    let rejectFirst: (reason: Error) => void = () => undefined;
+    const firstRequest = new Promise<{ task: Task }>((_resolve, reject) => { rejectFirst = reject; });
+    vi.spyOn(api, 'completeTask').mockImplementation((id) => (
+      id === first.id
+        ? firstRequest
+        : Promise.resolve({ task: { ...second, status: 'done', bucket: 'done', completed_at: '2026-07-15T10:00:00Z' } })
+    ));
+    renderTasksPage();
 
-    const user = userEvent.setup();
-    renderTasksPage('en');
+    fireEvent.click(await screen.findByRole('button', { name: 'Complete: First task' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Complete: Second task' }));
+    expect(screen.queryByRole('button', { name: 'Complete: First task' })).not.toBeInTheDocument();
 
-    await user.type(await screen.findByRole('searchbox', { name: 'Search tasks' }), 'capsules');
-    expect(screen.getByText('Buy capsules')).toBeInTheDocument();
-    expect(screen.queryByText('Compare Mira design')).not.toBeInTheDocument();
+    await act(async () => rejectFirst(new Error('offline')));
 
-    await user.click(screen.getByRole('button', { name: 'Add task' }));
-    expect(screen.getByRole('dialog', { name: 'New task' })).toBeInTheDocument();
-    await user.type(screen.getByRole('textbox', { name: 'Task title' }), 'Write launch notes');
-    await user.click(screen.getByRole('button', { name: 'Create' }));
-
-    await waitFor(() => {
-      expect(createSpy).toHaveBeenCalledWith({ title: 'Write launch notes' });
-    });
+    expect(await screen.findByRole('button', { name: 'Complete: First task' })).toBeInTheDocument();
+    expect(await screen.findByText('Could not complete task')).toBeInTheDocument();
   });
 
-  it('renders Health Stack projects without demotivating progress percentages', async () => {
-    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse());
-    vi.spyOn(api, 'listProjects').mockResolvedValue({
-      items: [
-        makeProject({
-          id: 'project-work',
-          name: 'Work',
-          active_task_count: 1,
-          estimated_minutes_total: 45,
-          health_status: 'needs_attention',
-          health_reason: 'Quiet 4 days',
-          next_task: makeTask({ id: 'task-work', title: 'Extend tool pool', project: 'Work', project_id: 'project-work' }),
-        }),
-        makeProject({
-          id: 'project-lumi',
-          name: 'Lumi',
-          active_task_count: 2,
-          completed_task_count: 1,
-          estimated_minutes_total: 90,
-          health_status: 'moving',
-          health_reason: 'Updated today',
-          next_task: makeTask({ id: 'task-lumi', title: 'Compare Mira design', project: 'Lumi', project_id: 'project-lumi' }),
-        }),
-      ],
-    } satisfies ProjectsResponse);
-    vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({ items: [] });
-
-    const user = userEvent.setup();
-    renderTasksPage('en');
-    await user.click(await screen.findByRole('button', { name: 'Projects' }));
-
-    expect(screen.getByText('Project Health')).toBeInTheDocument();
-    expect(screen.getAllByText('Needs attention').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Moving').length).toBeGreaterThan(0);
-    expect(screen.getByText('Next: Extend tool pool')).toBeInTheDocument();
-    expect(screen.getByText('Quiet 4 days')).toBeInTheDocument();
-    expect(screen.queryByText(/%/)).not.toBeInTheDocument();
-  });
-
-  it('opens an Attention First project detail when a project row is clicked', async () => {
-    vi.spyOn(api, 'listTasks').mockImplementation(async (query) => ({
-      items: query?.project_id === 'project-work'
-        ? [
-            makeTask({ id: 'task-work', title: 'Extend tool pool', project: 'Work', project_id: 'project-work', estimated_minutes: 45 }),
-            makeTask({ id: 'task-later', title: 'Write launch notes', project: 'Work', project_id: 'project-work' }),
-          ]
-        : [],
-      has_more: false,
-      next_offset: null,
-    }));
-    vi.spyOn(api, 'listProjects').mockResolvedValue({
-      items: [
-        makeProject({
-          id: 'project-work',
-          name: 'Work',
-          active_task_count: 2,
-          estimated_minutes_total: 45,
-          health_status: 'needs_attention',
-          health_reason: 'Quiet 4 days',
-          next_task: makeTask({ id: 'task-work', title: 'Extend tool pool', project: 'Work', project_id: 'project-work', estimated_minutes: 45 }),
-        }),
-      ],
-    } satisfies ProjectsResponse);
-    vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({ items: [] });
-
-    const user = userEvent.setup();
-    renderTasksPage('en');
-    await user.click(await screen.findByRole('button', { name: 'Projects' }));
-    await user.click(screen.getByRole('button', { name: /Open project Work/i }));
-
-    expect(await screen.findByText('Why it needs attention')).toBeInTheDocument();
-    expect(screen.getByText('Next move')).toBeInTheDocument();
-    expect(screen.getAllByText('Extend tool pool').length).toBeGreaterThan(0);
-    expect(screen.getByText('Next')).toBeInTheDocument();
-    expect(screen.getByText('Later')).toBeInTheDocument();
-  });
-});
-
-describe('TasksPage Review and estimates', () => {
-  it('opens a bulk estimate review from the Estimates category', async () => {
-    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([
-        makeTask({ id: 'task-1', title: 'Compare Mira design', project: 'Lumi' }),
-        makeTask({ id: 'task-2', title: 'Buy capsules', project: 'Shopping' }),
-    ]));
-    vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
-    const firstSuggestion = {
-      id: 'suggestion-1',
-      kind: 'task_estimate',
-      status: 'pending',
-      title: 'Estimate Compare Mira design',
-      description: 'Fits a focus block today',
-      start_at: null,
-      end_at: null,
-      affected_task_ids: ['task-1'],
-      payload: { task_id: 'task-1', estimated_minutes: 45, reason: 'Fits a focus block today' },
-      expires_at: null,
-      decided_at: null,
-      created_at: '2026-06-21T08:00:00Z',
-    } satisfies AssistantSuggestion;
-    const secondSuggestion = {
-      id: 'suggestion-2',
-      kind: 'task_estimate',
-      status: 'pending',
-      title: 'Estimate Buy capsules',
-      description: 'Quick errand',
-      start_at: null,
-      end_at: null,
-      affected_task_ids: ['task-2'],
-      payload: { task_id: 'task-2', estimated_minutes: 10, reason: 'Quick errand' },
-      expires_at: null,
-      decided_at: null,
-      created_at: '2026-06-21T08:01:00Z',
-    } satisfies AssistantSuggestion;
-    vi.spyOn(api, 'listAssistantSuggestions')
-      .mockResolvedValueOnce({ items: [firstSuggestion, secondSuggestion] } satisfies AssistantSuggestionsResponse)
-      .mockResolvedValue({ items: [secondSuggestion] } satisfies AssistantSuggestionsResponse);
-
-    const user = userEvent.setup();
-    renderTasksPage('en');
-    await user.click(await screen.findByRole('button', { name: 'Review' }));
-    await user.click(screen.getByRole('button', { name: /Review estimates/i }));
-
-    const dialog = screen.getByRole('dialog', { name: 'Estimate suggestions' });
-    expect(dialog).toBeInTheDocument();
-    expect(within(dialog).getByText('Compare Mira design')).toBeInTheDocument();
-    expect(within(dialog).getByText('Buy capsules')).toBeInTheDocument();
-    expect(within(dialog).getByText('45 min')).toBeInTheDocument();
-    expect(within(dialog).getByText('10 min')).toBeInTheDocument();
-  });
-
-  it('keeps the bulk estimate review open and removes an accepted row', async () => {
-    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([
-        makeTask({ id: 'task-1', title: 'Compare Mira design', project: 'Lumi' }),
-        makeTask({ id: 'task-2', title: 'Buy capsules', project: 'Shopping' }),
-    ]));
-    vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
-    const firstSuggestion = {
-      id: 'suggestion-1',
-      kind: 'task_estimate',
-      status: 'pending',
-      title: 'Estimate Compare Mira design',
-      description: 'Fits a focus block today',
-      start_at: null,
-      end_at: null,
-      affected_task_ids: ['task-1'],
-      payload: { task_id: 'task-1', estimated_minutes: 45, reason: 'Fits a focus block today' },
-      expires_at: null,
-      decided_at: null,
-      created_at: '2026-06-21T08:00:00Z',
-    } satisfies AssistantSuggestion;
-    const secondSuggestion = {
-      id: 'suggestion-2',
-      kind: 'task_estimate',
-      status: 'pending',
-      title: 'Estimate Buy capsules',
-      description: 'Quick errand',
-      start_at: null,
-      end_at: null,
-      affected_task_ids: ['task-2'],
-      payload: { task_id: 'task-2', estimated_minutes: 10, reason: 'Quick errand' },
-      expires_at: null,
-      decided_at: null,
-      created_at: '2026-06-21T08:01:00Z',
-    } satisfies AssistantSuggestion;
-    vi.spyOn(api, 'listAssistantSuggestions')
-      .mockResolvedValueOnce({ items: [firstSuggestion, secondSuggestion] } satisfies AssistantSuggestionsResponse)
-      .mockResolvedValue({ items: [secondSuggestion] } satisfies AssistantSuggestionsResponse);
-    vi.spyOn(api, 'acceptAssistantSuggestion').mockResolvedValue({
-      suggestion: {
-        id: 'suggestion-1',
-        kind: 'task_estimate',
-        status: 'accepted',
-        title: 'Estimate Compare Mira design',
-        description: 'Fits a focus block today',
-        start_at: null,
-        end_at: null,
-        affected_task_ids: ['task-1'],
-        payload: { task_id: 'task-1', estimated_minutes: 45 },
-        expires_at: null,
-        decided_at: '2026-06-21T08:01:00Z',
-        created_at: '2026-06-21T08:00:00Z',
-      },
-    });
-
-    const user = userEvent.setup();
-    renderTasksPage('en');
-    await user.click(await screen.findByRole('button', { name: 'Review' }));
-    await user.click(screen.getByRole('button', { name: /Review estimates/i }));
-    await user.click(screen.getByRole('button', { name: /Accept estimate for Compare Mira design/i }));
-
-    await waitFor(() => {
-      expect(screen.getByRole('dialog', { name: 'Estimate suggestions' })).toBeInTheDocument();
-      expect(screen.queryByText('Compare Mira design')).not.toBeInTheDocument();
-      expect(screen.getByText('Buy capsules')).toBeInTheDocument();
-    });
-  });
-
-  it('lets the user change or permanently skip a rejected estimate', async () => {
-    const task = makeTask({ id: 'task-1', title: 'Compare Mira design', project: 'Lumi' });
-    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([task]));
-    vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
-    vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({
-      items: [
-        {
-          id: 'suggestion-1',
-          kind: 'task_estimate',
-          status: 'pending',
-          title: 'Estimate Compare Mira design',
-          description: 'Fits a focus block today',
-          start_at: null,
-          end_at: null,
-          affected_task_ids: ['task-1'],
-          payload: { task_id: 'task-1', estimated_minutes: 45, reason: 'Fits a focus block today' },
-          expires_at: null,
-          decided_at: null,
-          created_at: '2026-06-21T08:00:00Z',
-        },
-      ],
-    } satisfies AssistantSuggestionsResponse);
+  it('edits estimate and hard deadline while moving a task to This week', async () => {
+    const task = makeTask({ id: 'move-me', title: 'Move me', status: 'inbox', bucket: 'inbox' });
     const patchSpy = vi.spyOn(api, 'patchTask').mockResolvedValue({
-      task: { ...task, estimate_source: 'skipped' },
+      task: { ...task, status: 'active', bucket: 'this_week' },
     });
-    const dismissSpy = vi.spyOn(api, 'dismissAssistantSuggestion').mockResolvedValue({
-      suggestion: {
-        id: 'suggestion-1',
-        kind: 'task_estimate',
-        status: 'dismissed',
-        title: 'Estimate Compare Mira design',
-        description: 'Fits a focus block today',
-        start_at: null,
-        end_at: null,
-        affected_task_ids: ['task-1'],
-        payload: { task_id: 'task-1', estimated_minutes: 45 },
-        expires_at: null,
-        decided_at: '2026-06-21T08:01:00Z',
-        created_at: '2026-06-21T08:00:00Z',
-      },
-    });
+    renderTaskEditor(task);
 
-    const user = userEvent.setup();
-    renderTasksPage('en');
-    await user.click(await screen.findByRole('button', { name: 'Review' }));
-    await user.click(screen.getByRole('button', { name: /Review estimates/i }));
-    await user.click(screen.getByRole('button', { name: /Change estimate for Compare Mira design/i }));
-    await user.click(screen.getByRole('button', { name: 'Do not estimate' }));
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Task details' }).closest('[inert]')).toBeNull());
+    fireEvent.change(screen.getByDisplayValue('Inbox'), { target: { value: 'this_week' } });
+    expect(screen.getByDisplayValue('This week')).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText('30'), { target: { value: '45' } });
+    expect(screen.getByPlaceholderText('30')).toHaveValue(45);
+    const deadline = '2035-07-17T18:00';
+    const deadlineInput = screen.getByRole('dialog', { name: 'Task details' })
+      .querySelector<HTMLInputElement>('input[type="datetime-local"]');
+    expect(deadlineInput).not.toBeNull();
+    fireEvent.change(deadlineInput as HTMLInputElement, { target: { value: deadline } });
+    expect(screen.getByDisplayValue(deadline)).toBeInTheDocument();
+    const saveButton = screen.getByRole('button', { name: 'Save changes' });
+    expect(saveButton).toBeEnabled();
+    saveButton.click();
 
     await waitFor(() => {
-      expect(patchSpy).toHaveBeenCalledWith('task-1', { estimated_minutes: null, estimate_source: 'skipped' });
-      expect(dismissSpy).toHaveBeenCalledWith('suggestion-1');
+      expect(patchSpy).toHaveBeenCalledWith('move-me', expect.objectContaining({
+        status: 'active',
+        planned_for: expect.any(String),
+        estimated_minutes: 45,
+        due_at: '2035-07-17T14:00:00.000Z',
+      }));
     });
   });
 
-  it('shows a prepared Review command center instead of raw task gaps', async () => {
-    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([
-        makeTask({ id: 'task-1', title: 'Compare Mira design', project: 'Lumi', project_id: 'project-lumi' }),
-        makeTask({ id: 'task-2', title: 'Need project', estimated_minutes: 15 }),
-    ]));
-    vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
-    vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({
-      items: [
-        {
-          id: 'suggestion-1',
-          kind: 'task_estimate',
-          status: 'pending',
-          title: 'Estimate Compare Mira design',
-          description: 'Fits a focus block today',
-          start_at: null,
-          end_at: null,
-          affected_task_ids: ['task-1'],
-          payload: { task_id: 'task-1', estimated_minutes: 45, reason: 'Fits a focus block today' },
-          expires_at: null,
-          decided_at: null,
-          created_at: '2026-06-21T08:00:00Z',
-        },
-        {
-          id: 'suggestion-2',
-          kind: 'task_project',
-          status: 'pending',
-          title: 'Sort into Backlog',
-          description: 'Default place until clearer',
-          start_at: null,
-          end_at: null,
-          affected_task_ids: ['task-2'],
-          payload: { task_id: 'task-2', project: 'Backlog', confidence: 'medium', reason: 'Default place until clearer' },
-          expires_at: null,
-          decided_at: null,
-          created_at: '2026-06-21T08:01:00Z',
-        },
-      ],
-    } satisfies AssistantSuggestionsResponse);
+  it('renders and preserves hard deadlines in the profile timezone', async () => {
+    const task = makeTask({ id: 'timezone-deadline', due_at: '2035-07-17T14:00:00Z' });
+    const patchSpy = vi.spyOn(api, 'patchTask').mockResolvedValue({ task });
+    renderTaskEditor(task, 'Pacific/Chatham');
 
-    const user = userEvent.setup();
-    renderTasksPage('en');
-    await user.click(await screen.findByRole('button', { name: 'Review' }));
+    await screen.findByRole('dialog', { name: 'Task details' });
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Task details' }).closest('[inert]')).toBeNull());
+    await waitFor(() => expect(screen.getByLabelText('Hard deadline')).toHaveValue('2035-07-18T02:45'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-    expect(screen.getByText('Review Hub')).toBeInTheDocument();
-    expect(screen.getByText('Lumi prepared 2 decisions')).toBeInTheDocument();
-    expect(screen.getByText('Estimate Compare Mira design')).toBeInTheDocument();
-    expect(screen.getByText('Sort into Backlog')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Review estimates/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Review project sorting/i })).toBeInTheDocument();
-    expect(screen.queryByText('Need project')).not.toBeInTheDocument();
-    expect(screen.queryByText('Разбор')).not.toBeInTheDocument();
+    await waitFor(() => expect(patchSpy).toHaveBeenCalledWith(
+      'timezone-deadline',
+      expect.objectContaining({ due_at: '2035-07-17T14:00:00.000Z' }),
+    ));
   });
 
-  it('opens Plan dates as grouped decision cards and accepts a prepared due date', async () => {
+  it('preserves a Later plan and an unavailable current project on ordinary edits', async () => {
+    const plannedFor = '2035-08-13T09:00:00Z';
     const task = makeTask({
-      id: 'task-plan',
-      title: 'Prepare UI progress notes',
-      project: 'Lumi',
-      project_id: 'project-lumi',
-      estimated_minutes: 25,
+      id: 'preserve-me',
+      title: 'Preserve me',
+      bucket: 'later',
+      planned_for: plannedFor,
+      project: 'Archived work',
+      project_id: 'archived-project',
     });
-    const dueSuggestion = {
-      id: 'suggestion-due',
-      kind: 'task_due_date',
-      status: 'pending',
-      title: 'Plan date',
-      description: 'Small task that fits this week',
-      start_at: null,
-      end_at: null,
-      affected_task_ids: ['task-plan'],
-      payload: {
-        task_id: 'task-plan',
-        due_at: '2026-06-26T15:00:00Z',
-        bucket: 'Likely this week',
-        reason: 'Small task that fits this week',
-      },
-      expires_at: null,
-      decided_at: null,
-      created_at: '2026-06-21T08:00:00Z',
-    } satisfies AssistantSuggestion;
-    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([task]));
-    vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
-    vi.spyOn(api, 'listAssistantSuggestions')
-      .mockResolvedValueOnce({ items: [dueSuggestion] } satisfies AssistantSuggestionsResponse)
-      .mockResolvedValue({ items: [] } satisfies AssistantSuggestionsResponse);
-    const acceptSpy = vi.spyOn(api, 'acceptAssistantSuggestion').mockResolvedValue({
-      suggestion: { ...dueSuggestion, status: 'accepted', decided_at: '2026-06-21T08:01:00Z' },
-    });
+    const patchSpy = vi.spyOn(api, 'patchTask').mockResolvedValue({ task });
+    renderTaskEditor(task);
 
-    const user = userEvent.setup();
-    renderTasksPage('en');
-    await user.click(await screen.findByRole('button', { name: 'Review' }));
-    await user.click(screen.getByRole('button', { name: /Review plan dates/i }));
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Task details' }).closest('[inert]')).toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-    expect(screen.getByRole('dialog', { name: 'Plan dates' })).toBeInTheDocument();
-    expect(screen.getByText('Likely this week')).toBeInTheDocument();
-    expect(screen.getByText('Prepare UI progress notes')).toBeInTheDocument();
-    expect(screen.getByText('Small task that fits this week')).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: /Accept date for Prepare UI progress notes/i }));
-    await waitFor(() => {
-      expect(acceptSpy).toHaveBeenCalledWith('suggestion-due');
-      expect(screen.queryByText('Prepare UI progress notes')).not.toBeInTheDocument();
-    });
+    await waitFor(() => expect(patchSpy).toHaveBeenCalled());
+    const input = patchSpy.mock.calls[0]?.[1];
+    expect(input).toEqual(expect.objectContaining({ status: 'active', planned_for: plannedFor }));
+    expect(input).not.toHaveProperty('project');
+    expect(input).not.toHaveProperty('project_id');
   });
 
-  it('marks a Plan dates card as no deadline with a scoped review skip', async () => {
-    const task = makeTask({
-      id: 'task-backlog-date',
-      title: 'Think about subscription UX',
-      project: 'Backlog',
-      project_id: 'project-backlog',
-    });
-    const dueSuggestion = {
-      id: 'suggestion-no-date',
-      kind: 'task_due_date',
-      status: 'pending',
-      title: 'No deadline',
-      description: 'Backlog items can stay open without a deadline.',
-      start_at: null,
-      end_at: null,
-      affected_task_ids: ['task-backlog-date'],
-      payload: {
-        task_id: 'task-backlog-date',
-        no_deadline: true,
-        bucket: 'Someday / Backlog',
-        reason: 'Backlog items can stay open without a deadline.',
-      },
-      expires_at: null,
-      decided_at: null,
-      created_at: '2026-06-21T08:00:00Z',
-    } satisfies AssistantSuggestion;
-    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([task]));
-    vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
-    vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({ items: [dueSuggestion] });
+  it('opens the Done archive and reopens a completed task', async () => {
+    const done = makeTask({ id: 'done-1', title: 'Archived task', status: 'done', bucket: 'done' });
+    mockBuckets({ done: [done] });
     const patchSpy = vi.spyOn(api, 'patchTask').mockResolvedValue({
-      task: { ...task, review_skips: { due_date: true } },
+      task: { ...done, status: 'active', bucket: 'later', completed_at: null },
     });
-    vi.spyOn(api, 'dismissAssistantSuggestion').mockResolvedValue({
-      suggestion: { ...dueSuggestion, status: 'dismissed', decided_at: '2026-06-21T08:01:00Z' },
-    });
-
     const user = userEvent.setup();
-    renderTasksPage('en');
-    await user.click(await screen.findByRole('button', { name: 'Review' }));
-    await user.click(screen.getByRole('button', { name: /Review plan dates/i }));
-    await user.click(screen.getByRole('button', { name: /No deadline for Think about subscription UX/i }));
+    renderTasksPage();
 
-    await waitFor(() => {
-      expect(patchSpy).toHaveBeenCalledWith('task-backlog-date', { review_skips: { due_date: true } });
-    });
-  });
-
-  it('opens Sort into projects as suggestion cards and can keep a task unassigned', async () => {
-    const task = makeTask({ id: 'task-sort', title: 'Update office files', estimated_minutes: 20 });
-    const projectSuggestion = {
-      id: 'suggestion-project',
-      kind: 'task_project',
-      status: 'pending',
-      title: 'Sort into Lumi',
-      description: 'Looks related to Lumi docs',
-      start_at: null,
-      end_at: null,
-      affected_task_ids: ['task-sort'],
-      payload: {
-        task_id: 'task-sort',
-        project: 'Lumi',
-        confidence: 'High',
-        reason: 'Looks related to Lumi docs',
-      },
-      expires_at: null,
-      decided_at: null,
-      created_at: '2026-06-21T08:00:00Z',
-    } satisfies AssistantSuggestion;
-    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([task]));
-    vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [makeProject({ id: 'project-lumi', name: 'Lumi' })] });
-    vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({ items: [projectSuggestion] } satisfies AssistantSuggestionsResponse);
-    const patchSpy = vi.spyOn(api, 'patchTask').mockResolvedValue({
-      task: { ...task, review_skips: { project: true } },
-    });
-    const dismissSpy = vi.spyOn(api, 'dismissAssistantSuggestion').mockResolvedValue({
-      suggestion: { ...projectSuggestion, status: 'dismissed', decided_at: '2026-06-21T08:01:00Z' },
-    });
-
-    const user = userEvent.setup();
-    renderTasksPage('en');
-    await user.click(await screen.findByRole('button', { name: 'Review' }));
-    await user.click(screen.getByRole('button', { name: /Review project sorting/i }));
-
-    const dialog = screen.getByRole('dialog', { name: 'Sort into projects' });
-    expect(dialog).toBeInTheDocument();
-    expect(within(dialog).getByText('Suggested project')).toBeInTheDocument();
-    expect(within(dialog).getByText('Lumi')).toBeInTheDocument();
-    expect(within(dialog).getByText('Looks related to Lumi docs')).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: /Keep Update office files unassigned/i }));
-    await waitFor(() => {
-      expect(patchSpy).toHaveBeenCalledWith('task-sort', { review_skips: { project: true } });
-      expect(dismissSpy).toHaveBeenCalledWith('suggestion-project');
-    });
-  });
-
-  it('shows Backlog as a system project with a cleanup panel', async () => {
-    const backlogProject = makeProject({
-      id: 'project-backlog',
-      name: 'Backlog',
-      system_key: 'backlog',
-      is_system: true,
-      active_task_count: 2,
-      health_status: 'light',
-      health_reason: 'Open ideas',
-      next_task: makeTask({ id: 'task-backlog-1', title: 'Think about subscription UX', project: 'Backlog', project_id: 'project-backlog' }),
-    });
-    vi.spyOn(api, 'listTasks').mockImplementation(async (query) => ({
-      items: query?.project_id === 'project-backlog'
-        ? [
-            makeTask({ id: 'task-backlog-1', title: 'Think about subscription UX', project: 'Backlog', project_id: 'project-backlog' }),
-            makeTask({ id: 'task-backlog-2', title: 'Review onboarding ideas', project: 'Backlog', project_id: 'project-backlog', estimated_minutes: 30 }),
-          ]
-        : [],
-      has_more: false,
-      next_offset: null,
-    }));
-    vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [backlogProject] });
-    vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({
-      items: [
-        {
-          id: 'suggestion-backlog-estimate',
-          kind: 'task_estimate',
-          status: 'pending',
-          title: 'Estimate Think about subscription UX',
-          description: 'Small enough for one focus block.',
-          start_at: null,
-          end_at: null,
-          affected_task_ids: ['task-backlog-1'],
-          payload: {
-            task_id: 'task-backlog-1',
-            estimated_minutes: 30,
-            reason: 'Small enough for one focus block.',
-          },
-          expires_at: null,
-          decided_at: null,
-          created_at: '2026-06-21T08:00:00Z',
-        },
-      ],
-    } satisfies AssistantSuggestionsResponse);
-
-    const user = userEvent.setup();
-    renderTasksPage('en');
-    await user.click(await screen.findByRole('button', { name: 'Projects' }));
-    await user.click(screen.getByRole('button', { name: /Open project Backlog/i }));
-
-    expect(await screen.findByText('Backlog cleanup')).toBeInTheDocument();
-    expect(screen.getByText('1 decision ready')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Review cleanup' })).toBeInTheDocument();
-  });
-
-  it('groups Done tasks and can undo completion inline', async () => {
-    const doneTask = makeTask({
-      id: 'task-done',
-      title: 'Buy capsules',
-      status: 'done',
-      project: 'Shopping',
-      estimated_minutes: 5,
-      completed_at: new Date().toISOString(),
-    });
-    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([doneTask]));
-    vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
-    vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({ items: [] });
-    const patchSpy = vi.spyOn(api, 'patchTask').mockResolvedValue({
-      task: { ...doneTask, status: 'active', completed_at: null },
-    });
-
-    const user = userEvent.setup();
-    renderTasksPage('en');
     await user.click(await screen.findByRole('button', { name: 'Done' }));
+    expect(await screen.findByRole('heading', { name: 'Done archive' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Reopen: Archived task' }));
 
-    expect(await screen.findByText('Work done')).toBeInTheDocument();
-    expect(screen.getAllByText('Today').length).toBeGreaterThan(1);
-    await user.click(screen.getByRole('button', { name: /Undo completion for Buy capsules/i }));
-
-    await waitFor(() => {
-      expect(patchSpy).toHaveBeenCalledWith('task-done', { status: 'active' });
-    });
+    await waitFor(() => expect(patchSpy).toHaveBeenCalledWith('done-1', { status: 'active' }));
   });
 
-  it('can undo completion from the Done task detail sheet', async () => {
-    const doneTask = makeTask({
-      id: 'task-done-detail',
-      title: 'Send recap',
-      status: 'done',
-      completed_at: new Date().toISOString(),
-    });
-    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([doneTask]));
-    vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
-    vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({ items: [] });
-    const patchSpy = vi.spyOn(api, 'patchTask').mockResolvedValue({
-      task: { ...doneTask, status: 'active', completed_at: null },
-    });
+  it('shows the global empty state', async () => {
+    mockBuckets();
+    renderTasksPage();
 
-    const user = userEvent.setup();
-    renderTasksPage('en');
-    await user.click(await screen.findByRole('button', { name: 'Done' }));
-    await user.click(await screen.findByRole('button', { name: /Open task details/i }));
-    await user.click(screen.getByRole('button', { name: 'Undo completion' }));
-
-    await waitFor(() => {
-      expect(patchSpy).toHaveBeenCalledWith('task-done-detail', { status: 'active' });
-    });
+    expect(await screen.findByText('No open tasks')).toBeInTheDocument();
+    expect(screen.getByText('Capture the next thing above. It will land in Inbox.')).toBeInTheDocument();
   });
 
-  it('opens an estimate bottom sheet from the task-card nudge', async () => {
-    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([
-      makeTask({ id: 'task-1', title: 'Compare Mira design', project: 'Lumi' }),
-    ]));
-    vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
-    vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({
-      items: [
-        {
-          id: 'suggestion-1',
-          kind: 'task_estimate',
-          status: 'pending',
-          title: 'Estimate Compare Mira design',
-          description: 'Fits a focus block today',
-          start_at: null,
-          end_at: null,
-          affected_task_ids: ['task-1'],
-          payload: { task_id: 'task-1', estimated_minutes: 45, reason: 'Fits a focus block today' },
-          expires_at: null,
-          decided_at: null,
-          created_at: '2026-06-21T08:00:00Z',
-        },
-      ],
-    } satisfies AssistantSuggestionsResponse);
-
-    const user = userEvent.setup();
-    renderTasksPage('en');
-
-    expect(await screen.findByText('Estimate: 45 min')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Edit estimate for Compare Mira design' }));
-
-    expect(screen.getByRole('dialog', { name: 'Estimate task' })).toBeInTheDocument();
-    expect(screen.getAllByText('Fits a focus block today').length).toBeGreaterThan(0);
-    expect(screen.getByRole('button', { name: '45m' })).toHaveAttribute('aria-pressed', 'true');
-  });
-
-  it('accepts the suggested estimate from the task-card nudge', async () => {
-    vi.spyOn(api, 'listTasks').mockResolvedValue(makeTasksResponse([
-      makeTask({ id: 'task-1', title: 'Compare Mira design', project: 'Lumi' }),
-    ]));
-    vi.spyOn(api, 'listProjects').mockResolvedValue({ items: [] });
-    vi.spyOn(api, 'listAssistantSuggestions').mockResolvedValue({
-      items: [
-        {
-          id: 'suggestion-1',
-          kind: 'task_estimate',
-          status: 'pending',
-          title: 'Estimate Compare Mira design',
-          description: 'Fits a focus block today',
-          start_at: null,
-          end_at: null,
-          affected_task_ids: ['task-1'],
-          payload: { task_id: 'task-1', estimated_minutes: 45 },
-          expires_at: null,
-          decided_at: null,
-          created_at: '2026-06-21T08:00:00Z',
-        },
-      ],
-    } satisfies AssistantSuggestionsResponse);
-    const acceptSpy = vi.spyOn(api, 'acceptAssistantSuggestion').mockResolvedValue({
-      suggestion: {
-        id: 'suggestion-1',
-        kind: 'task_estimate',
-        status: 'accepted',
-        title: 'Estimate Compare Mira design',
-        description: 'Fits a focus block today',
-        start_at: null,
-        end_at: null,
-        affected_task_ids: ['task-1'],
-        payload: { task_id: 'task-1', estimated_minutes: 45 },
-        expires_at: null,
-        decided_at: '2026-06-21T08:01:00Z',
-        created_at: '2026-06-21T08:00:00Z',
-      },
+  it('shows a section error and retries it', async () => {
+    let inboxAttempts = 0;
+    vi.spyOn(api, 'listTasks').mockImplementation(async (query) => {
+      if (query?.filter !== 'inbox') return makeTasksResponse();
+      inboxAttempts += 1;
+      if (inboxAttempts === 1) throw new Error('offline');
+      return makeTasksResponse([makeTask({ id: 'recovered', title: 'Recovered task', status: 'inbox', bucket: 'inbox' })]);
     });
-
     const user = userEvent.setup();
-    renderTasksPage('en');
-    await user.click(await screen.findByRole('button', { name: 'Accept estimate for Compare Mira design' }));
+    renderTasksPage();
 
-    await waitFor(() => {
-      expect(acceptSpy).toHaveBeenCalledWith('suggestion-1');
-    });
+    expect(await screen.findByText('Could not load this list.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+
+    expect(await screen.findByText('Recovered task')).toBeInTheDocument();
+    expect(inboxAttempts).toBe(2);
   });
 });

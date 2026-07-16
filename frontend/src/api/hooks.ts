@@ -52,6 +52,7 @@ export const qk = {
   today: ['today'] as const,
   tasksAll: ['tasks'] as const,
   tasks: (query: TaskListQuery = {}) => ['tasks', normalizeTaskListQuery(query)] as const,
+  taskPages: (query: TaskListQuery = {}) => ['tasks', 'pages', normalizeTaskListQuery(query)] as const,
   projectTasks: (projectId: string) => [
     'tasks',
     normalizeTaskListQuery({ filter: 'all', limit: 100, project_id: projectId }),
@@ -209,6 +210,17 @@ export function useTasks(filterOrQuery: TaskFilter | TaskListQuery) {
     typeof filterOrQuery === 'string' ? { filter: filterOrQuery } : filterOrQuery,
   );
   return useQuery({ queryKey: qk.tasks(query), queryFn: () => api.listTasks(query) });
+}
+
+export function useInfiniteTasks(query: TaskListQuery, enabled = true) {
+  const normalized = normalizeTaskListQuery(query);
+  return useInfiniteQuery({
+    queryKey: qk.taskPages(normalized),
+    queryFn: ({ pageParam }) => api.listTasks({ ...normalized, offset: pageParam }),
+    initialPageParam: normalized.offset,
+    getNextPageParam: (lastPage) => lastPage.has_more ? (lastPage.next_offset ?? undefined) : undefined,
+    enabled,
+  });
 }
 
 export function useFocusTasks() {
