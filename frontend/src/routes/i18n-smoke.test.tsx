@@ -82,8 +82,8 @@ describe('Mini App English UI smoke', () => {
     renderWithProviders(<TasksPage />);
 
     expect(await screen.findByPlaceholderText('Search tasks')).toBeInTheDocument();
-    expect(screen.getByText('Today')).toBeInTheDocument();
-    expect(await screen.findByText('No tasks for today')).toBeInTheDocument();
+    expect(screen.getByText('Open')).toBeInTheDocument();
+    expect(await screen.findByText('No open tasks')).toBeInTheDocument();
     expect(screen.queryByText('Сегодня')).not.toBeInTheDocument();
   });
 

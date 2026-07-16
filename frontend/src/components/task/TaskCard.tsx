@@ -1,269 +1,119 @@
-import { useState } from 'react';
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { ChevronRight, Clock, RotateCcw } from 'lucide-react';
-import type { Task, SnoozePreset, TaskPriority } from '../../api/types';
+import { motion, useReducedMotion } from 'framer-motion';
+import type { Task } from '../../api/types';
 import { formatDueLabel } from '../../lib/format';
-import type { AppLocale } from '../../lib/i18n';
-import { pickLocaleText } from '../../lib/i18n';
 import { useTimeDisplay } from '../../lib/useTimeDisplay';
 import { haptic } from '../../telegram/webapp';
 
 interface TaskCardProps {
   task: Task;
-  onComplete: (id: string) => void;
-  onReopen?: (id: string) => void;
-  onSnooze: (id: string, preset: SnoozePreset) => void;
-  onEdit?: (task: Task) => void;
-  estimateSuggestion?: { id: string; minutes: number; reason?: string | null };
-  onAcceptEstimate?: (suggestionId: string) => void;
-  onEditEstimate?: (task: Task, suggestion: { id: string; minutes: number; reason?: string | null }) => void;
+  onComplete: (task: Task) => void;
+  onReopen?: (task: Task) => void;
+  onEdit: (task: Task) => void;
 }
 
-const PRIORITY_DOTS: Record<TaskPriority, { className: string; label: Record<AppLocale, string> }> = {
-  low: { className: 'bg-[#7d8896]', label: { en: 'low priority', ru: 'низкий приоритет' } },
-  medium: { className: 'bg-[rgba(46,99,231,0.55)]', label: { en: 'medium priority', ru: 'средний приоритет' } },
-  high: { className: 'bg-[#d97a2b]', label: { en: 'high priority', ru: 'высокий приоритет' } },
-  urgent: { className: 'bg-[#c2553f]', label: { en: 'urgent', ru: 'срочно' } },
-};
+function estimateLabel(minutes: number, locale: 'en' | 'ru'): string {
+  if (minutes < 60) return `${minutes} ${locale === 'ru' ? 'мин' : 'min'}`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours} ${locale === 'ru' ? 'ч' : 'h'}` : `${hours} ${locale === 'ru' ? 'ч' : 'h'} ${rest} ${locale === 'ru' ? 'мин' : 'min'}`;
+}
 
-const SNOOZE_PRESETS: { preset: SnoozePreset; label: Record<AppLocale, string> }[] = [
-  { preset: '1h', label: { en: '1 h', ru: '1 ч' } },
-  { preset: '3h', label: { en: '3 h', ru: '3 ч' } },
-  { preset: 'tomorrow', label: { en: 'Tomorrow', ru: 'Завтра' } },
-  { preset: 'next_week', label: { en: 'Next week', ru: 'След. неделя' } },
-];
-
-export function TaskCard({
-  task,
-  onComplete,
-  onReopen,
-  onSnooze,
-  onEdit,
-  estimateSuggestion,
-  onAcceptEstimate,
-  onEditEstimate,
-}: TaskCardProps) {
-  const [snoozeOpen, setSnoozeOpen] = useState(false);
+export function TaskCard({ task, onComplete, onReopen, onEdit }: TaskCardProps) {
   const reduceMotion = useReducedMotion();
   const timeDisplay = useTimeDisplay();
   const locale = timeDisplay.locale ?? 'en';
   const done = task.status === 'done';
   const overdue = !done && task.due_at !== null && new Date(task.due_at).getTime() < Date.now();
-  const priority = PRIORITY_DOTS[task.priority];
-  const copy = pickLocaleText(locale, {
-    en: {
-      done: 'Task completed',
-      complete: 'Complete task',
-      reopen: 'Reopen task',
-      snooze: 'Snooze task',
-      snoozePrefix: 'Snooze:',
-    },
-    ru: {
-      done: 'Задача выполнена',
-      complete: 'Выполнить задачу',
-      reopen: 'Вернуть задачу',
-      snooze: 'Отложить задачу',
-      snoozePrefix: 'Отложить:',
-    },
-  });
-  const complete = () => {
-    if (done) {
-      if (!onReopen) return;
-      haptic('light');
-      onReopen(task.id);
-      return;
-    }
-    haptic('success');
-    onComplete(task.id);
+  const toggle = () => {
+    haptic(done ? 'light' : 'success');
+    if (done) onReopen?.(task);
+    else onComplete(task);
   };
+  const copy = locale === 'ru'
+    ? {
+        complete: `Выполнить: ${task.title}`,
+        reopen: `Вернуть: ${task.title}`,
+        details: `Открыть детали: ${task.title}`,
+        deadline: 'Срок',
+      }
+    : {
+        complete: `Complete: ${task.title}`,
+        reopen: `Reopen: ${task.title}`,
+        details: `Open details: ${task.title}`,
+        deadline: 'Due',
+      };
+
+  const meta = [
+    task.project,
+    task.estimated_minutes === null ? null : estimateLabel(task.estimated_minutes, locale),
+  ].filter((value): value is string => Boolean(value));
+  const dueLabel = task.due_at ? `${copy.deadline} ${formatDueLabel(task.due_at, timeDisplay)}` : null;
+  const detailsLabel = [copy.details, ...meta, dueLabel].filter(Boolean).join('. ');
 
   return (
-    <div className="card card-strong px-4 py-3">
-      <div className="flex items-start gap-3">
-        {/* Complete checkbox: 26px visual, ≥44px tap target */}
-        <motion.button
-          type="button"
-          aria-label={done ? (onReopen ? copy.reopen : copy.done) : copy.complete}
-          disabled={done && !onReopen}
-          whileTap={reduceMotion || (done && !onReopen) ? undefined : { scale: 0.85 }}
-          transition={{ type: 'spring', stiffness: 420, damping: 22 }}
-          onClick={complete}
-          className="relative -m-2 mt-[-5px] shrink-0 p-2"
+    <div className="flex min-h-[64px] items-stretch gap-1 px-2 sm:px-3">
+      <motion.button
+        type="button"
+        aria-label={done ? copy.reopen : copy.complete}
+        disabled={done && !onReopen}
+        onClick={toggle}
+        whileTap={reduceMotion || (done && !onReopen) ? undefined : { scale: 0.86 }}
+        transition={{ type: 'spring', stiffness: 420, damping: 22 }}
+        className="flex w-11 shrink-0 items-center justify-center disabled:cursor-default"
+      >
+        <span
+          className={`flex h-6 w-6 items-center justify-center rounded-full border-[1.5px] transition-colors ${
+            done ? 'border-[var(--accent)] bg-accent' : 'border-[var(--hint)] bg-transparent'
+          }`}
         >
-          <span
-            className={`flex h-[26px] w-[26px] items-center justify-center rounded-full border-[1.5px] transition-colors duration-200 ${
-              done ? 'border-[var(--accent)] bg-accent' : 'border-[var(--hint)] bg-transparent'
-            }`}
+          <motion.svg
+            width="12"
+            height="12"
+            viewBox="0 0 14 14"
+            fill="none"
+            initial={false}
+            animate={{ opacity: done ? 1 : 0, scale: done ? 1 : 0.5 }}
           >
-            <motion.svg
-              width="13"
-              height="13"
-              viewBox="0 0 14 14"
-              fill="none"
-              initial={false}
-              animate={{ opacity: done ? 1 : 0, scale: done ? 1 : 0.4 }}
-              transition={{ duration: 0.22, ease: 'easeOut' }}
-            >
-              <motion.path
-                d="M2.5 7.5 L5.5 10.5 L11.5 3.5"
-                stroke="var(--accent-foreground)"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                initial={false}
-                animate={{ pathLength: done ? 1 : 0 }}
-                transition={{ duration: 0.3, ease: 'easeOut' }}
-              />
-            </motion.svg>
-          </span>
-        </motion.button>
-
-        <button
-          type="button"
-          disabled={done}
-          onClick={complete}
-          className="min-w-0 flex-1 text-left disabled:cursor-default"
-        >
-          <p
-            className={`text-[14.5px] leading-snug transition-colors ${
-              done ? 'text-hint line-through' : 'font-medium text-ink'
-            }`}
-          >
-            {task.title}
-          </p>
-          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span
-              aria-label={priority.label[locale]}
-              title={priority.label[locale]}
-              className={`h-[6px] w-[6px] shrink-0 rounded-full ${priority.className}`}
+            <path
+              d="M2.5 7.5 5.5 10.5 11.5 3.5"
+              stroke="var(--accent-foreground)"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
             />
-            {task.due_at && (
-              <span className={`tnum text-[12.5px] ${overdue ? 'font-medium text-danger' : 'text-hint'}`}>
-                {formatDueLabel(task.due_at, timeDisplay)}
-              </span>
-            )}
-            {task.estimated_minutes !== null && (
-              <span className="tnum rounded-full bg-[var(--secondary-bg)] px-2 py-px text-[11.5px] text-hint">
-                {task.estimated_minutes} {locale === 'en' ? 'min' : 'мин'}
-              </span>
-            )}
-            {task.project && (
-              <span className="rounded-full bg-[var(--secondary-bg)] px-2 py-px text-[11.5px] text-hint">
-                {task.project}
-              </span>
-            )}
-            {task.tags.slice(0, 2).map((tag) => (
-              <span key={tag} className="text-[11.5px] text-hint">
-                #{tag}
+          </motion.svg>
+        </span>
+      </motion.button>
+
+      <button
+        type="button"
+        aria-label={detailsLabel}
+        onClick={() => {
+          haptic('light');
+          onEdit(task);
+        }}
+        className="min-w-0 flex-1 py-3 text-left outline-none focus-visible:rounded-xl focus-visible:shadow-[0_0_0_3px_var(--accent-soft)]"
+      >
+        <p className={`text-[14.5px] leading-snug ${done ? 'text-hint line-through' : 'font-medium text-ink'}`}>
+          {task.title}
+        </p>
+        {(meta.length > 0 || task.due_at) && (
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] text-hint">
+            {meta.map((value, index) => (
+              <span key={`${value}-${index}`} className="inline-flex min-w-0 max-w-full items-center gap-2">
+                {index > 0 && <span aria-hidden className="text-[10px] opacity-60">•</span>}
+                <span className="min-w-0 max-w-full truncate">{value}</span>
               </span>
             ))}
+            {task.due_at && (
+              <span className={`tnum inline-flex items-center gap-1 ${overdue ? 'font-medium text-danger' : ''}`}>
+                {(meta.length > 0) && <span aria-hidden className="text-[10px] opacity-60">•</span>}
+                <span>{dueLabel}</span>
+              </span>
+            )}
           </div>
-        </button>
-
-        {onEdit && (
-          <button
-            type="button"
-            aria-label={locale === 'en' ? 'Open task details' : 'Открыть детали задачи'}
-            onClick={() => {
-              haptic('light');
-              onEdit(task);
-            }}
-            className="relative -m-2 mt-[-5px] shrink-0 p-2 text-hint transition-colors active:text-accent-text"
-          >
-            <ChevronRight size={18} strokeWidth={1.8} />
-          </button>
         )}
-
-        {done && onReopen && (
-          <button
-            type="button"
-            aria-label={`${locale === 'en' ? 'Undo completion for' : 'Вернуть задачу'} ${task.title}`}
-            onClick={() => {
-              haptic('light');
-              onReopen(task.id);
-            }}
-            className="relative -m-2 mt-[-7px] inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-[var(--secondary-bg)] px-3 text-[12px] font-semibold text-ink"
-          >
-            <RotateCcw size={14} strokeWidth={1.9} />
-            {locale === 'en' ? 'Undo' : 'Вернуть'}
-          </button>
-        )}
-
-        {!done && (
-          <button
-            type="button"
-            aria-label={copy.snooze}
-            onClick={() => {
-              haptic('light');
-              setSnoozeOpen((v) => !v);
-            }}
-            className={`relative -m-2 mt-[-5px] shrink-0 p-2 transition-colors ${
-              snoozeOpen ? 'text-accent-text' : 'text-hint'
-            }`}
-          >
-            <Clock size={18} strokeWidth={1.8} />
-          </button>
-        )}
-      </div>
-
-      {estimateSuggestion && !done && (
-        <div className="mt-3 rounded-2xl border border-[var(--accent-border)] bg-[var(--accent-soft)] px-3 py-2.5">
-          <div className="flex items-center gap-2">
-            <span className="tnum min-w-0 flex-1 text-[12.5px] font-semibold text-accent-text">
-              {locale === 'en' ? 'Estimate' : 'Оценка'}: {estimateSuggestion.minutes} {locale === 'en' ? 'min' : 'мин'}
-            </span>
-            <button
-              type="button"
-              aria-label={`${locale === 'en' ? 'Accept estimate for' : 'Принять оценку для'} ${task.title}`}
-              onClick={() => onAcceptEstimate?.(estimateSuggestion.id)}
-              className="h-8 rounded-full bg-accent px-3 text-[12px] font-semibold text-white"
-            >
-              {locale === 'en' ? 'Accept' : 'Принять'}
-            </button>
-            <button
-              type="button"
-              aria-label={`${locale === 'en' ? 'Edit estimate for' : 'Изменить оценку для'} ${task.title}`}
-              onClick={() => onEditEstimate?.(task, estimateSuggestion)}
-              className="h-8 rounded-full bg-[var(--surface-strong)] px-3 text-[12px] font-semibold text-ink"
-            >
-              {locale === 'en' ? 'Edit' : 'Изменить'}
-            </button>
-          </div>
-          {estimateSuggestion.reason && (
-            <p className="mt-1 truncate text-[12px] text-hint">{estimateSuggestion.reason}</p>
-          )}
-        </div>
-      )}
-
-      <AnimatePresence initial={false}>
-        {snoozeOpen && !done && (
-          <motion.div
-            initial={reduceMotion ? false : { height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
-            transition={{ duration: 0.22, ease: 'easeOut' }}
-            className="overflow-hidden"
-          >
-            <div className="mt-2.5 flex items-center gap-1.5 border-t border-hairline pt-2.5">
-              <span className="mr-1 text-[12px] text-hint">{copy.snoozePrefix}</span>
-              {SNOOZE_PRESETS.map(({ preset, label }) => (
-                <button
-                  key={preset}
-                  type="button"
-                  onClick={() => {
-                    haptic('light');
-                    setSnoozeOpen(false);
-                    onSnooze(task.id, preset);
-                  }}
-                  className="relative rounded-full bg-[var(--secondary-bg)] px-2.5 py-1 text-[12px] font-medium text-ink after:absolute after:-inset-1.5 after:content-['']"
-                >
-                  {label[locale]}
-                </button>
-              ))}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      </button>
     </div>
   );
 }
