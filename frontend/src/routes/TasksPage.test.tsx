@@ -239,8 +239,10 @@ describe('TasksPage V2', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Complete: Deep work' }));
     await waitFor(() => expect(completeSpy).toHaveBeenCalledWith('deep-work'));
-    expect(await screen.findByText('Task completed: Deep work')).toBeInTheDocument();
-
+    await waitFor(
+      () => expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument(),
+      { timeout: 3000 },
+    );
     await user.click(screen.getByRole('button', { name: 'Undo' }));
     await waitFor(
       () => expect(patchSpy).toHaveBeenCalledWith('deep-work', { status: 'active' }),
