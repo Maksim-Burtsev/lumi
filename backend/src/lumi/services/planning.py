@@ -25,6 +25,7 @@ from lumi.llm.gateway import LLMGateway
 from lumi.logging import get_logger
 from lumi.services.calendar import CalendarService
 from lumi.services.tasks import TaskService
+from lumi.services.work_blocks import WorkBlockResultStatus, WorkBlockService
 from lumi.utils.time import fmt_local, local_to_utc, utc_now, utc_to_local
 
 log = get_logger(__name__)
@@ -36,6 +37,7 @@ class PlanningService:
         self.llm = llm or LLMGateway()
         self.calendar = CalendarService(session)
         self.tasks = TaskService(session)
+        self.work_blocks = WorkBlockService(session)
 
     async def propose_day_plan(
         self, user: User, *, day: datetime | None = None, agent_run_id: uuid.UUID | None = None
@@ -89,32 +91,29 @@ class PlanningService:
             plan = PlanResult(summary="Could not build the plan automatically.")
 
         created = []
+        tasks_by_id = {task.id: task for task in active_tasks}
         for block in plan.blocks[:3]:
             start_utc = local_to_utc(block.start_at_local, tz)
             end_utc = local_to_utc(block.end_at_local, tz)
-            if end_utc <= start_utc:
+            try:
+                task_id = uuid.UUID(block.task_id) if block.task_id else None
+            except ValueError:
                 continue
-            # Focus blocks are capped at 2 hours — long marathons get clipped.
-            if end_utc - start_utc > timedelta(hours=2):
-                end_utc = start_utc + timedelta(hours=2)
-            task_id = None
-            if block.task_id:
-                try:
-                    task_id = uuid.UUID(block.task_id)
-                except ValueError:
-                    task_id = None
-            event = await self.calendar.create_internal_block(
+            if task_id is None or task_id not in tasks_by_id:
+                continue
+            result = await self.work_blocks.create(
                 user,
+                task_id=task_id,
                 title=block.title,
                 start_at=start_utc,
                 end_at=end_utc,
                 description=block.reason,
                 status=CalendarEventStatus.PROPOSED,
                 created_by="agent",
-                source_task_id=task_id,
                 agent_run_id=agent_run_id,
             )
-            created.append(event)
+            if result.status == WorkBlockResultStatus.PROPOSED and result.event is not None:
+                created.append(result.event)
 
         summary = plan.summary or "Plan ready."
         if created:

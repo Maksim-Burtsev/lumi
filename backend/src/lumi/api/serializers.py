@@ -140,6 +140,9 @@ def focus_session_to_dict(
     return {
         "id": str(focus_session.id),
         "status": focus_session.status.value,
+        "planned_event_id": (
+            str(focus_session.planned_event_id) if focus_session.planned_event_id else None
+        ),
         "task": task_to_dict(task, timezone=timezone) if task else None,
         "project_id": str(focus_session.project_id) if focus_session.project_id else None,
         "project_name": project_name,
@@ -165,8 +168,13 @@ def event_to_dict(event: CalendarEvent) -> dict[str, Any]:
     metadata = event.metadata_ or {}
     private_note = metadata.get("private_note")
     private_note_summary = metadata.get("private_note_summary")
+    if event.source.value == "internal":
+        kind = "work_block" if event.source_task_id else "internal"
+    else:
+        kind = "external"
     return {
         "id": str(event.id),
+        "kind": kind,
         "title": event.title,
         "description": event.description,
         "start_at": _iso(event.start_at),
@@ -175,6 +183,8 @@ def event_to_dict(event: CalendarEvent) -> dict[str, Any]:
         "busy": event.busy,
         "status": event.status.value,
         "source": event.source.value,
+        "source_task_id": str(event.source_task_id) if event.source_task_id else None,
+        "timezone": event.timezone,
         "created_by": event.created_by,
         "location": metadata.get("location"),
         "meeting_url": metadata.get("meeting_url"),
@@ -190,6 +200,7 @@ def event_to_dict(event: CalendarEvent) -> dict[str, Any]:
         "private_note_summary_status": metadata.get("private_note_summary_status"),
         "private_note_updated_at": metadata.get("private_note_updated_at"),
         "private_note_summary_updated_at": metadata.get("private_note_summary_updated_at"),
+        "updated_at": _iso(event.updated_at),
     }
 
 

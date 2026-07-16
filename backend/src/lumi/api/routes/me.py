@@ -103,7 +103,10 @@ async def patch_settings(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="invalid_theme_mode") from exc
     if payload.settings is not None:
-        merged_settings = {**user.settings, **payload.settings}
+        merged_settings = {
+            **user.settings,
+            **{key: value for key, value in payload.settings.items() if key != "planning"},
+        }
         if "time_format" in payload.settings:
             try:
                 merged_settings["time_format"] = validate_time_format(
@@ -112,7 +115,10 @@ async def patch_settings(
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail="invalid_time_format") from exc
         if "planning" in payload.settings:
-            merged_settings = merge_planning_settings(merged_settings, payload.settings)
+            try:
+                merged_settings = merge_planning_settings(merged_settings, payload.settings)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         if "theme_mode" in payload.settings:
             try:
                 merged_settings["theme_mode"] = validate_theme_mode(

@@ -219,6 +219,15 @@ def _block_confirm_accepted_text(language: str | None) -> str:
     )
 
 
+def _block_confirm_conflict_text(language: str | None) -> str:
+    return _text_for_language(
+        language,
+        en="That time is no longer free. Open Lumi to choose another slot.",
+        ru="Это время уже занято. Откройте Lumi, чтобы выбрать другое окно.",
+        it="Quell'orario non e piu libero. Apri Lumi per scegliere un altro spazio.",
+    )
+
+
 def _block_confirmed_text(
     language: str | None,
     *,
@@ -1132,7 +1141,16 @@ async def on_block_confirm(callback: CallbackQuery) -> None:
         if event is None or event.status != CalendarEventStatus.PROPOSED:
             await callback.answer(_block_confirm_missing_text(language))
             return
-        await calendar.confirm_proposed_block(user, event)
+        if event.source_task_id is not None:
+            from lumi.services.work_blocks import WorkBlockResultStatus, WorkBlockService
+
+            result = await WorkBlockService(session).confirm(user, event_id=event.id)
+            if result.status != WorkBlockResultStatus.CONFIRMED or result.event is None:
+                await callback.answer(_block_confirm_conflict_text(language), show_alert=True)
+                return
+            event = result.event
+        else:
+            await calendar.confirm_proposed_block(user, event)
         from lumi.utils.time import fmt_local
 
         text = _block_confirmed_text(

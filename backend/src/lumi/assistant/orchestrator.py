@@ -77,7 +77,6 @@ from lumi.services.calendar import (
     CalendarService,
     ExternalCalendarMutationError,
     calendar_private_note_summary_text,
-    merge_busy_intervals,
     private_note_needs_summary,
 )
 from lumi.services.confirmations import ConfirmationService
@@ -260,19 +259,6 @@ MONTH_ALIASES = {
     "dec": 12,
 }
 WEEK_DATE_REF_PATTERNS = (r"\bweek\b", r"\bнедел(?:я|ю|е|и|ь)?\b")
-FLEXIBLE_CALENDAR_SLOT_MARKERS = (
-    "after",
-    "first free",
-    "free slot",
-    "without overlap",
-    "без налож",
-    "после",
-    "свобод",
-    "окно",
-    "dopo",
-    "spazio libero",
-    "senza sovrapp",
-)
 ImageLoader = Callable[[dict], Awaitable[ImageInput | None]]
 
 
@@ -824,23 +810,6 @@ def _initial_progress_status(user: User) -> str:
 def _looks_like_multi_step_request(text: str) -> bool:
     lower = text.lower()
     return any(marker in lower for marker in MULTI_STEP_INTENT_MARKERS)
-
-
-def _looks_like_flexible_calendar_slot_request(text: str) -> bool:
-    lower = text.lower()
-    return any(marker in lower for marker in FLEXIBLE_CALENDAR_SLOT_MARKERS)
-
-
-def _calendar_busy_intervals(events) -> list[tuple]:
-    return [
-        (event.start_at, event.end_at)
-        for event in events
-        if event.busy and event.status in (
-            CalendarEventStatus.CONFIRMED,
-            CalendarEventStatus.TENTATIVE,
-            CalendarEventStatus.PROPOSED,
-        )
-    ]
 
 
 def _text_for_language(language: str | None, *, en: str, ru: str, it: str | None = None) -> str:
@@ -4323,40 +4292,6 @@ class AssistantOrchestrator:
             open_app_button=user_visible,
         )
 
-    async def _next_available_calendar_slot_after(
-        self,
-        user: User,
-        *,
-        start: datetime,
-        end: datetime,
-    ) -> tuple[datetime, datetime] | None:
-        duration = end - start
-        if duration <= timedelta(0):
-            return None
-        local_start = utc_to_local(start, user.timezone)
-        day_start = local_to_utc(
-            datetime(local_start.year, local_start.month, local_start.day, 0, 0),
-            user.timezone,
-        )
-        day_end = local_to_utc(
-            datetime(local_start.year, local_start.month, local_start.day, 23, 59, 59),
-            user.timezone,
-        )
-        cursor = start
-        events = await self.calendar.list_events(user, day_start, day_end)
-        for busy_start, busy_end in merge_busy_intervals(_calendar_busy_intervals(events)):
-            if busy_end <= cursor:
-                continue
-            candidate_end = cursor + duration
-            if candidate_end <= busy_start:
-                return cursor, candidate_end
-            if busy_start < candidate_end and busy_end > cursor:
-                cursor = max(cursor, busy_end)
-        candidate_end = cursor + duration
-        if candidate_end <= day_end:
-            return cursor, candidate_end
-        return None
-
     async def _apply_calendar_request(
         self,
         *,
@@ -4448,8 +4383,6 @@ class AssistantOrchestrator:
             end_at = local_to_utc(request.end_at_local, tz)
             if end_at <= start_at:
                 return
-            requested_start_at = start_at
-            requested_end_at = end_at
             conflicts = await self.calendar.list_events(user, start_at, end_at)
             busy_conflicts = [
                 event for event in conflicts
@@ -4460,44 +4393,37 @@ class AssistantOrchestrator:
                 )
             ]
             if busy_conflicts:
-                adjusted = (
-                    await self._next_available_calendar_slot_after(user, start=start_at, end=end_at)
-                    if _looks_like_flexible_calendar_slot_request(text)
-                    else None
+                conflict = busy_conflicts[0]
+                start_label = utc_to_local(start_at, tz).strftime("%H:%M")
+                end_label = utc_to_local(end_at, tz).strftime("%H:%M")
+                fallback = _calendar_conflict_text(
+                    language,
+                    title=title,
+                    conflict_title=conflict.title,
+                    start_label=start_label,
+                    end_label=end_label,
                 )
-                if adjusted is None:
-                    conflict = busy_conflicts[0]
-                    start_label = utc_to_local(start_at, tz).strftime("%H:%M")
-                    end_label = utc_to_local(end_at, tz).strftime("%H:%M")
-                    fallback = _calendar_conflict_text(
-                        language,
-                        title=title,
-                        conflict_title=conflict.title,
-                        start_label=start_label,
-                        end_label=end_label,
-                    )
-                    await self.runs.log_tool_call(
-                        run=run,
-                        tool_name="create_internal_calendar_block",
-                        status="skipped",
-                        args={**request.model_dump(mode="json"), **_call_source_payload(call)},
-                        result={
-                            "reason": "calendar_conflict",
-                            "conflict_event_id": str(conflict.id),
-                            "conflict_title": conflict.title,
-                        },
-                    )
-                    results.append(fallback)
-                    outcomes.append(ActionOutcome(
-                        action_type="create_internal_calendar_block",
-                        status="skipped",
-                        fallback_text=fallback,
-                        title=title,
-                        error_code="calendar_conflict",
-                        details={"conflict_event_id": str(conflict.id)},
-                    ))
-                    return
-                start_at, end_at = adjusted
+                await self.runs.log_tool_call(
+                    run=run,
+                    tool_name="create_internal_calendar_block",
+                    status="skipped",
+                    args={**request.model_dump(mode="json"), **_call_source_payload(call)},
+                    result={
+                        "reason": "calendar_conflict",
+                        "conflict_event_id": str(conflict.id),
+                        "conflict_title": conflict.title,
+                    },
+                )
+                results.append(fallback)
+                outcomes.append(ActionOutcome(
+                    action_type="create_internal_calendar_block",
+                    status="skipped",
+                    fallback_text=fallback,
+                    title=title,
+                    error_code="calendar_conflict",
+                    details={"conflict_event_id": str(conflict.id)},
+                ))
+                return
             requires_confirmation = request.requires_confirmation
             event = await self.calendar.create_internal_block(
                 user,
@@ -4511,13 +4437,7 @@ class AssistantOrchestrator:
                 ),
                 created_by="agent",
                 agent_run_id=run.id,
-                metadata={
-                    "reply_language": language,
-                    **({
-                        "adjusted_from_start_at": requested_start_at.isoformat(),
-                        "adjusted_from_end_at": requested_end_at.isoformat(),
-                    } if (start_at, end_at) != (requested_start_at, requested_end_at) else {}),
-                },
+                metadata={"reply_language": language},
             )
             if request.private_note:
                 event = await self.calendar.set_private_note(user, event, request.private_note)

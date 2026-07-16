@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, field_validator
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,10 +17,14 @@ from lumi.api.run_helper import start_background_run
 from lumi.api.serializers import event_to_dict
 from lumi.connectors.google.auth import token_file_exists
 from lumi.db.models import AgentRun, AgentRunType, CalendarEventStatus, Connector, ConnectorType, User
-from lumi.services.assistant_suggestions import AssistantSuggestionService
 from lumi.services.automations import AutomationService
 from lumi.services.calendar import CalendarService
-from lumi.services.realtime import RealtimeEventService
+from lumi.services.work_blocks import (
+    WorkBlockResult,
+    WorkBlockResultStatus,
+    WorkBlockService,
+    is_work_block,
+)
 from lumi.utils.time import utc_now
 from lumi.worker.queue import enqueue_job
 
@@ -68,6 +73,49 @@ class PrivateNoteBody(BaseModel):
 
 class PlanDayBody(BaseModel):
     date: str | None = None
+
+
+class WorkBlockCreate(BaseModel):
+    task_id: uuid.UUID
+    title: str | None = Field(default=None, max_length=300)
+    start_at: datetime
+    end_at: datetime
+    status: Literal["proposed", "confirmed"] = "proposed"
+    description: str | None = None
+
+
+class WorkBlockConfirm(BaseModel):
+    expected_updated_at: datetime | None = None
+
+
+def _work_block_response(result: WorkBlockResult, *, success_code: int) -> JSONResponse:
+    status_codes = {
+        WorkBlockResultStatus.NOT_FOUND: 404,
+        WorkBlockResultStatus.INVALID: 422,
+        WorkBlockResultStatus.CONFLICT: 409,
+        WorkBlockResultStatus.STALE: 409,
+    }
+    conflict_event_id = str(result.conflict.id) if result.conflict else None
+    return JSONResponse(
+        status_code=status_codes.get(result.status, success_code),
+        content={
+            "status": result.status.value,
+            "reason": result.reason.value if result.reason else None,
+            "event": event_to_dict(result.event) if result.event else None,
+            "conflict_event_id": conflict_event_id,
+        },
+    )
+
+
+def _legacy_work_block_response(result: WorkBlockResult) -> dict:
+    if result.status in {
+        WorkBlockResultStatus.CONFIRMED,
+        WorkBlockResultStatus.ALREADY_CONFIRMED,
+    } and result.event is not None:
+        return {"event": event_to_dict(result.event)}
+    response = _work_block_response(result, success_code=200)
+    detail = result.reason.value if result.reason else result.status.value
+    raise HTTPException(status_code=response.status_code, detail=detail)
 
 
 async def _external_calendar_sync_state(session: AsyncSession, user: User) -> dict:
@@ -253,6 +301,47 @@ async def plan_day(
     return await start_background_run(session, user, "daily_planning", **kwargs)
 
 
+@router.post("/calendar/work-blocks", status_code=201)
+async def create_work_block(
+    payload: WorkBlockCreate,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    result = await WorkBlockService(session).create(
+        user,
+        task_id=payload.task_id,
+        title=payload.title,
+        start_at=payload.start_at,
+        end_at=payload.end_at,
+        status=CalendarEventStatus(payload.status),
+        description=payload.description,
+        created_by="user",
+    )
+    return _work_block_response(result, success_code=201)
+
+
+@router.post("/calendar/work-blocks/{block_id}/confirm")
+async def confirm_work_block(
+    block_id: str,
+    payload: WorkBlockConfirm | None = None,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    try:
+        event_id = uuid.UUID(block_id)
+    except ValueError:
+        return _work_block_response(
+            WorkBlockResult(WorkBlockResultStatus.NOT_FOUND),
+            success_code=200,
+        )
+    result = await WorkBlockService(session).confirm(
+        user,
+        event_id=event_id,
+        expected_updated_at=payload.expected_updated_at if payload else None,
+    )
+    return _work_block_response(result, success_code=200)
+
+
 @router.post("/calendar/blocks/{block_id}/confirm")
 async def confirm_block(
     block_id: str,
@@ -266,6 +355,9 @@ async def confirm_block(
         raise HTTPException(status_code=404, detail="not_found") from exc
     if event is None:
         raise HTTPException(status_code=404, detail="not_found")
+    if is_work_block(event):
+        result = await WorkBlockService(session).confirm(user, event_id=event.id)
+        return _legacy_work_block_response(result)
     if event.status != CalendarEventStatus.PROPOSED:
         raise HTTPException(status_code=409, detail="not_proposed")
     event = await calendar.confirm_proposed_block(user, event)
@@ -291,21 +383,7 @@ async def delete_event(
         # External calendars are read-only mirrors — removing them here would
         # just resurrect on the next sync.
         raise HTTPException(status_code=409, detail="read_only_source")
-    event.status = CalendarEventStatus.CANCELLED
-    await RealtimeEventService(session).emit(
-        user_id=user.id,
-        topics=["calendar"],
-        event_type="calendar_event.cancelled",
-        payload={"event_id": str(event.id)},
-    )
-    await AssistantSuggestionService(session).enqueue_opportunity(
-        user,
-        kind="slot_suggestions",
-        scope_key="today",
-        reason="calendar_event.cancelled",
-        payload={"event_id": str(event.id)},
-        delay_seconds=20,
-    )
+    await calendar.cancel_internal_event(user, event, actor="user")
     return {"ok": True}
 
 

@@ -11,9 +11,19 @@ import pytest
 from sqlalchemy import event, select
 
 from lumi.api.deps import get_current_user
-from lumi.db.models import FocusSession, FocusSessionStatus, Task, UiEvent
+from lumi.api.serializers import event_to_dict
+from lumi.db.models import (
+    CalendarEventStatus,
+    CalendarSource,
+    FocusSession,
+    FocusSessionStatus,
+    Task,
+    TaskStatus,
+    UiEvent,
+)
 from lumi.db.session import get_engine, session_scope
 from lumi.main import app
+from lumi.services.calendar import CalendarService
 from lumi.services.focus import FocusService
 from lumi.services.projects import ProjectService
 from lumi.services.tasks import TaskService
@@ -94,6 +104,159 @@ async def test_focus_session_lifecycle_tracks_task_project_and_reflection(client
     assert body["today"]["completed_sessions"] == 1
     assert body["today"]["focus_seconds"] == finished["duration_seconds"]
     assert body["recent_sessions"][0]["id"] == finished["id"]
+
+
+async def test_focus_start_links_confirmed_work_block_and_keeps_planned_duration(
+    client,
+    db_session,
+):
+    user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID)
+    task = await TaskService(db_session).create_task(user, title="Linked work", project="Lumi")
+    starts_at = datetime.now(UTC) + timedelta(hours=1)
+    event = await CalendarService(db_session).create_internal_block(
+        user,
+        title="Linked work block",
+        start_at=starts_at,
+        end_at=starts_at + timedelta(minutes=90),
+        source_task_id=task.id,
+    )
+    serialized_event = event_to_dict(event)
+    await db_session.commit()
+
+    response = await client.post(
+        "/api/focus/sessions",
+        json={
+            "planned_event_id": str(event.id),
+            "intention": "Work from the planned block",
+            "planned_minutes": 25,
+        },
+    )
+
+    assert response.status_code == 201
+    focus_session = response.json()["session"]
+    assert focus_session["planned_event_id"] == str(event.id)
+    assert focus_session["task"]["id"] == str(task.id)
+    assert focus_session["planned_minutes"] == 25
+    assert serialized_event["kind"] == "work_block"
+    assert serialized_event["source_task_id"] == str(task.id)
+    assert serialized_event["timezone"] == user.timezone
+    assert serialized_event["updated_at"] is not None
+
+    stored = await db_session.get(FocusSession, uuid.UUID(focus_session["id"]), populate_existing=True)
+    assert stored is not None
+    assert stored.planned_event_id == event.id
+
+    finished = await client.post(f"/api/focus/sessions/{focus_session['id']}/finish", json={})
+    assert finished.status_code == 200
+    await db_session.refresh(task)
+    assert task.status == TaskStatus.INBOX
+
+    clear_task = await client.patch(
+        f"/api/focus/sessions/{focus_session['id']}",
+        json={"task_id": None},
+    )
+    assert clear_task.status_code == 409
+    assert clear_task.json() == {"error": "planned_event_task_locked"}
+
+
+async def test_focus_start_rejects_invalid_or_unowned_planned_events(client, db_session):
+    user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID)
+    task = await TaskService(db_session).create_task(user, title="Open task")
+    other_task = await TaskService(db_session).create_task(user, title="Other open task")
+    closed_task = await TaskService(db_session).create_task(user, title="Closed task")
+    await TaskService(db_session).complete_task(user, closed_task)
+    starts_at = datetime.now(UTC) + timedelta(hours=1)
+    calendar_service = CalendarService(db_session)
+    proposed = await calendar_service.create_internal_block(
+        user,
+        title="Proposed",
+        start_at=starts_at,
+        end_at=starts_at + timedelta(minutes=30),
+        status=CalendarEventStatus.PROPOSED,
+        source_task_id=task.id,
+    )
+    cancelled = await calendar_service.create_internal_block(
+        user,
+        title="Cancelled",
+        start_at=starts_at + timedelta(hours=1),
+        end_at=starts_at + timedelta(hours=1, minutes=30),
+        status=CalendarEventStatus.CANCELLED,
+        source_task_id=task.id,
+    )
+    not_busy = await calendar_service.create_internal_block(
+        user,
+        title="Not busy",
+        start_at=starts_at + timedelta(hours=2),
+        end_at=starts_at + timedelta(hours=2, minutes=30),
+        source_task_id=task.id,
+        busy=False,
+    )
+    generic_internal = await calendar_service.create_internal_block(
+        user,
+        title="Generic internal event",
+        start_at=starts_at + timedelta(hours=3),
+        end_at=starts_at + timedelta(hours=3, minutes=30),
+    )
+    closed = await calendar_service.create_internal_block(
+        user,
+        title="Closed task block",
+        start_at=starts_at + timedelta(hours=4),
+        end_at=starts_at + timedelta(hours=4, minutes=30),
+        source_task_id=closed_task.id,
+    )
+    mismatch = await calendar_service.create_internal_block(
+        user,
+        title="Mismatch",
+        start_at=starts_at + timedelta(hours=5),
+        end_at=starts_at + timedelta(hours=5, minutes=30),
+        source_task_id=task.id,
+    )
+    external = await calendar_service.upsert_external_event(
+        user,
+        source=CalendarSource.GOOGLE,
+        external_calendar_id="primary",
+        external_event_id="focus-link-external",
+        title="External meeting",
+        start_at=starts_at + timedelta(hours=6),
+        end_at=starts_at + timedelta(hours=6, minutes=30),
+    )
+    other_user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID + 1)
+    foreign_task = await TaskService(db_session).create_task(other_user, title="Foreign task")
+    foreign = await calendar_service.create_internal_block(
+        other_user,
+        title="Foreign block",
+        start_at=starts_at,
+        end_at=starts_at + timedelta(minutes=30),
+        source_task_id=foreign_task.id,
+    )
+    await db_session.commit()
+
+    assert event_to_dict(generic_internal)["kind"] == "internal"
+    assert event_to_dict(external)["kind"] == "external"
+
+    async def start(event_id: uuid.UUID, *, task_id: uuid.UUID | None = None):
+        payload = {
+            "planned_event_id": str(event_id),
+            "intention": "Must be rejected",
+            "planned_minutes": 25,
+        }
+        if task_id is not None:
+            payload["task_id"] = str(task_id)
+        return await client.post("/api/focus/sessions", json=payload)
+
+    cases = [
+        (await start(proposed.id), 422, "planned_event_not_confirmed"),
+        (await start(cancelled.id), 422, "planned_event_not_confirmed"),
+        (await start(not_busy.id), 422, "planned_event_not_work_block"),
+        (await start(generic_internal.id), 422, "planned_event_not_work_block"),
+        (await start(external.id), 422, "planned_event_not_work_block"),
+        (await start(closed.id), 422, "task_not_active"),
+        (await start(mismatch.id, task_id=other_task.id), 422, "planned_event_task_mismatch"),
+        (await start(foreign.id), 404, "planned_event_not_found"),
+    ]
+    for response, status, error in cases:
+        assert response.status_code == status
+        assert response.json() == {"error": error}
 
 
 async def test_focus_summary_groups_by_project_and_ignores_abandoned(client, db_session):

@@ -19,6 +19,7 @@ router = APIRouter()
 
 class FocusStart(BaseModel):
     task_id: uuid.UUID | None = None
+    planned_event_id: uuid.UUID | None = None
     project_id: uuid.UUID | None = None
     project_name: str | None = Field(
         default=None,
@@ -213,6 +214,7 @@ async def start_focus_session(
         focus_session = await service.start_session(
             user,
             task_id=payload.task_id,
+            planned_event_id=payload.planned_event_id,
             intention=payload.intention,
             planned_minutes=payload.planned_minutes,
             **project_fields,
@@ -220,7 +222,14 @@ async def start_focus_session(
     except ValueError as exc:
         code = str(exc)
         status = 409 if code == "active_focus_session_exists" else 404
-        if code in {"invalid_focus_intention", "project_mismatch"}:
+        if code in {
+            "invalid_focus_intention",
+            "planned_event_not_confirmed",
+            "planned_event_not_work_block",
+            "planned_event_task_mismatch",
+            "project_mismatch",
+            "task_not_active",
+        }:
             status = 422
         raise HTTPException(status_code=status, detail=code) from exc
     return {"session": await _serialize_session(service, user, focus_session)}
@@ -300,7 +309,7 @@ async def update_focus_session(
         code = str(exc)
         if code in {"task_not_found", "project_not_found", "focus_session_not_found"}:
             status = 404
-        elif code == "focus_session_not_completed":
+        elif code in {"focus_session_not_completed", "planned_event_task_locked"}:
             status = 409
         else:
             status = 422

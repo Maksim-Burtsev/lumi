@@ -13,7 +13,17 @@ from sqlalchemy import Select, and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from lumi.db.models import FocusSession, FocusSessionStatus, Project, Task, User
+from lumi.db.models import (
+    CalendarEvent,
+    CalendarEventStatus,
+    CalendarSource,
+    FocusSession,
+    FocusSessionStatus,
+    Project,
+    Task,
+    TaskStatus,
+    User,
+)
 from lumi.services.projects import ProjectService
 from lumi.services.realtime import RealtimeEventService
 from lumi.utils.time import get_zone, local_day_bounds, utc_now
@@ -53,6 +63,36 @@ class FocusService:
             return None
         result = await self.session.execute(select(Task).where(Task.id == task_id, Task.user_id == user.id))
         return result.scalar_one_or_none()
+
+    async def _get_planned_work_block(
+        self,
+        user: User,
+        planned_event_id: uuid.UUID | None,
+    ) -> tuple[CalendarEvent | None, Task | None]:
+        if planned_event_id is None:
+            return None, None
+        event = await self.session.scalar(
+            select(CalendarEvent).where(
+                CalendarEvent.id == planned_event_id,
+                CalendarEvent.user_id == user.id,
+            )
+        )
+        if event is None:
+            raise ValueError("planned_event_not_found")
+        if (
+            event.source != CalendarSource.INTERNAL
+            or not event.busy
+            or event.source_task_id is None
+        ):
+            raise ValueError("planned_event_not_work_block")
+        if event.status != CalendarEventStatus.CONFIRMED:
+            raise ValueError("planned_event_not_confirmed")
+        task = await self.get_task(user, event.source_task_id)
+        if task is None:
+            raise ValueError("planned_event_not_work_block")
+        if task.status not in {TaskStatus.INBOX, TaskStatus.ACTIVE}:
+            raise ValueError("task_not_active")
+        return event, task
 
     async def get_active(self, user: User) -> FocusSession | None:
         result = await self.session.execute(
@@ -119,6 +159,7 @@ class FocusService:
         intention: str,
         planned_minutes: int,
         task_id: uuid.UUID | None = None,
+        planned_event_id: uuid.UUID | None = None,
         project_id: uuid.UUID | None | object = UNSET,
         project_name: str | None | object = UNSET,
     ) -> FocusSession:
@@ -131,9 +172,16 @@ class FocusService:
         await self.session.execute(select(User.id).where(User.id == user.id).with_for_update())
         if await self.get_active(user) is not None:
             raise ValueError("active_focus_session_exists")
-        task = await self.get_task(user, task_id)
-        if task_id is not None and task is None:
-            raise ValueError("task_not_found")
+        planned_event, planned_task = await self._get_planned_work_block(user, planned_event_id)
+        task: Task | None
+        if planned_task is not None:
+            if task_id is not None and task_id != planned_task.id:
+                raise ValueError("planned_event_task_mismatch")
+            task = planned_task
+        else:
+            task = await self.get_task(user, task_id)
+            if task_id is not None and task is None:
+                raise ValueError("task_not_found")
         project = await self._resolve_project(
             user,
             task=task,
@@ -145,6 +193,7 @@ class FocusService:
         focus_session = FocusSession(
             user_id=user.id,
             task_id=task.id if task else None,
+            planned_event_id=planned_event.id if planned_event else None,
             project_id=project.id if project else None,
             project_snapshot=project.name if project else None,
             intention=clean_intention[:300],
@@ -384,6 +433,8 @@ class FocusService:
         task: Task | None = None
         if "task_id" in updates:
             task_id = updates["task_id"]
+            if locked.planned_event_id is not None and task_id != locked.task_id:
+                raise ValueError("planned_event_task_locked")
             task = await self.get_task(user, task_id)
             if task_id is not None and task is None:
                 raise ValueError("task_not_found")

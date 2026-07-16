@@ -22,6 +22,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -422,6 +423,7 @@ class Project(Base):
 class Task(Base):
     __tablename__ = "tasks"
     __table_args__ = (
+        UniqueConstraint("user_id", "id", name="uq_tasks_user_id_id"),
         Index("ix_tasks_user_status_due", "user_id", "status", "due_at"),
         Index("ix_tasks_user_project_status", "user_id", "project_id", "status"),
         Index(
@@ -553,6 +555,8 @@ class FocusSession(Base):
         Index("ix_focus_sessions_user_started", "user_id", "started_at"),
         Index("ix_focus_sessions_user_status", "user_id", "status"),
         Index("ix_focus_sessions_user_project", "user_id", "project_id"),
+        Index("ix_focus_sessions_user_task", "user_id", "task_id"),
+        Index("ix_focus_sessions_user_planned_event", "user_id", "planned_event_id"),
         Index(
             "uq_focus_sessions_one_active",
             "user_id",
@@ -589,11 +593,28 @@ class FocusSession(Base):
             "ended_at IS NULL OR ended_at > started_at",
             name="focus_session_ended_after_started",
         ),
+        CheckConstraint(
+            "planned_event_id IS NULL OR task_id IS NOT NULL",
+            name="focus_session_planned_event_requires_task",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "task_id"],
+            ["tasks.user_id", "tasks.id"],
+            name="fk_focus_sessions_user_task",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "planned_event_id", "task_id"],
+            ["calendar_events.user_id", "calendar_events.id", "calendar_events.source_task_id"],
+            name="fk_focus_sessions_planned_work_block",
+            ondelete="RESTRICT",
+        ),
     )
 
     id: Mapped[uuid.UUID] = uuid_pk()
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
-    task_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tasks.id"))
+    task_id: Mapped[uuid.UUID | None] = mapped_column()
+    planned_event_id: Mapped[uuid.UUID | None] = mapped_column()
     project_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("projects.id", ondelete="SET NULL")
     )
@@ -789,8 +810,15 @@ class PendingConfirmation(Base):
 class CalendarEvent(Base):
     __tablename__ = "calendar_events"
     __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "id",
+            "source_task_id",
+            name="uq_calendar_events_user_id_source_task",
+        ),
         Index("ix_calendar_events_user_start_end", "user_id", "start_at", "end_at"),
         Index("ix_calendar_events_user_source_ext", "user_id", "source", "external_event_id"),
+        Index("ix_calendar_events_user_source_task", "user_id", "source_task_id"),
         Index(
             "uq_calendar_events_external",
             "user_id",
@@ -799,6 +827,16 @@ class CalendarEvent(Base):
             "external_event_id",
             unique=True,
             postgresql_where=text("external_event_id IS NOT NULL"),
+        ),
+        CheckConstraint(
+            "source_task_id IS NULL OR source = 'internal'",
+            name="calendar_event_source_task_internal",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "source_task_id"],
+            ["tasks.user_id", "tasks.id"],
+            name="fk_calendar_events_user_source_task",
+            ondelete="RESTRICT",
         ),
     )
 
@@ -822,7 +860,7 @@ class CalendarEvent(Base):
         default=CalendarEventStatus.CONFIRMED,
     )
     created_by: Mapped[str] = mapped_column(Text, nullable=False, default="user")
-    source_task_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tasks.id"))
+    source_task_id: Mapped[uuid.UUID | None] = mapped_column()
     agent_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("agent_runs.id"))
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     metadata_: Mapped[dict[str, Any]] = mapped_column(
