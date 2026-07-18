@@ -1029,7 +1029,7 @@ export interface RunActionOptions {
 }
 
 export interface RunAction {
-  trigger: (startOverride?: () => Promise<RunRef>) => void;
+  trigger: () => void;
   isRunning: boolean;
   status: RunPollStatus;
 }
@@ -1045,11 +1045,11 @@ export function useAgentRunAction(options: RunActionOptions): RunAction {
   const runRef = useRef(poller.run);
   runRef.current = poller.run;
 
-  const trigger = useCallback((startOverride?: () => Promise<RunRef>) => {
+  const trigger = useCallback(() => {
     if (runId !== null || starting) return;
     setStarting(true);
     haptic('light');
-    (startOverride ?? optionsRef.current.start)()
+    optionsRef.current.start()
       .then((ref) => setRunId(ref.run_id))
       .catch((error: unknown) => {
         if (error instanceof ApiError && optionsRef.current.onApiError?.(error)) return;
