@@ -151,15 +151,16 @@ class AgentPlanner:
                 except Exception as exc:  # noqa: BLE001
                     plan_exc = exc
             log.warning("agent planner validation failed", fields={"error": str(plan_exc)[:300]})
+            fallback_plan = AgentPlan(command_core=not self.allow_legacy_agent_plans)
             self.last_trace = _planner_trace(
                 raw=raw,
-                plan=AgentPlan.empty(),
+                plan=fallback_plan,
                 validation_status="validation_error",
                 validation_error=str(plan_exc),
                 media_context=media_context,
                 available_media=available_media,
             )
-            return AgentPlan.empty()
+            return fallback_plan
 
 
 def _looks_like_legacy_signals(raw: object) -> bool:

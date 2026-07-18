@@ -576,6 +576,11 @@ def _with_schedule_read_guard(
     *,
     allow_implicit_date: bool = False,
 ) -> AgentPlan:
+    # Strict command-core output is authoritative. Never manufacture a command
+    # from user text after the model returned a valid final/ask decision or its
+    # strict output failed validation.
+    if plan.command_core:
+        return plan
     request = _schedule_read_request_from_text(text, user, allow_implicit=allow_implicit_date)
     if plan.tool_calls:
         if (

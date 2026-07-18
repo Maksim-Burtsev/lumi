@@ -12,6 +12,7 @@ from lumi.assistant.command_core import (
     decision_to_agent_plan_data,
     parse_assistant_decision,
 )
+from lumi.assistant.orchestrator import _with_schedule_read_guard
 from lumi.assistant.planner import AgentPlanner
 from lumi.assistant.schemas import AgentPlan
 from lumi.assistant.tool_registry import TOOL_CATALOG, VISIBLE_COMMAND_NAMES
@@ -238,7 +239,28 @@ async def test_live_planner_rejects_legacy_model_output_unless_explicitly_enable
 
     assert strict.tool_calls == []
     assert strict.mode == "final_answer"
+    assert strict.command_core is True
     assert replay.tool_calls[0].name == "update_settings"
+
+
+@pytest.mark.asyncio
+async def test_strict_validation_failure_cannot_become_a_regex_calendar_command() -> None:
+    plan = await AgentPlanner(
+        llm=ScriptedPlannerLLM({"mode": "final_answer"}),
+    ).plan(
+        user=_test_user(),
+        text="what is on my calendar tomorrow?",
+    )
+
+    guarded = _with_schedule_read_guard(
+        _test_user(),
+        "what is on my calendar tomorrow?",
+        plan,
+    )
+
+    assert guarded.command_core is True
+    assert guarded.mode == "final_answer"
+    assert guarded.tool_calls == []
 
 
 def test_deterministic_action_reply_uses_backend_facts() -> None:
