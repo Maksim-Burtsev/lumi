@@ -51,6 +51,8 @@ Rules:
 """
 
 _SECRET_PATTERNS = (
+    re.compile(r"(?i)\bauthorization\s*:\s*bearer\s+\S+"),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"),
     re.compile(r"(?i)\b(bearer|token|api[_ -]?key|password|secret)\s*[:=]\s*\S+"),
     re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
     re.compile(r"\b\d{12,}:[A-Za-z0-9_-]{20,}\b"),

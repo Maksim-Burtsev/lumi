@@ -406,9 +406,13 @@ def test_reflection_golden_corpus_is_labelled_sanitized_and_evidence_literal():
 
 def test_reflection_provider_payload_redacts_direct_secrets_and_contact_ids():
     redacted = redact_reflection_for_provider(
-        "Finished. api_key=secret-value email me@example.com bot 123456789012:abcdefghijklmnopqrstuv."
+        "Finished. api_key=secret-value email me@example.com "
+        "bot 123456789012:abcdefghijklmnopqrstuv. "
+        "Authorization: Bearer top-secret-token bearer another-secret-token."
     )
     assert "secret-value" not in redacted
+    assert "top-secret-token" not in redacted
+    assert "another-secret-token" not in redacted
     assert "me@example.com" not in redacted
     assert "abcdefghijklmnopqrstuv" not in redacted
-    assert redacted.count("[redacted]") == 3
+    assert redacted.count("[redacted]") == 5
