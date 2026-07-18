@@ -79,7 +79,18 @@ GET /api/today → {
     "meetings_today": int, "tasks_active": int, "tasks_due_today": int,
     "tasks_overdue": int
   },
-  "timeline": [TimelineItem],           // today's events + focus blocks, sorted by start
+  "capacity": {
+    "work_minutes": int, "meeting_minutes": int, "planned_minutes": int,
+    "focus_minutes": int, "free_minutes": int, "utilization_percent": int,
+    "over_capacity": bool
+  },
+  "next_block": TimelineItem|null,
+  "planned_tasks": [Task],
+  "planning": {
+    "tomorrow_date": "YYYY-MM-DD", "can_replan": bool,
+    "proposal_expires_at": ts|null
+  },
+  "timeline": [TimelineItem],           // meetings + WorkBlocks + actual sessions
   "needs_attention": [AttentionItem],
   "suggestions": [Suggestion],
   "slot_suggestions": [SlotSuggestion], // precomputed micro-slot task options
@@ -87,9 +98,11 @@ GET /api/today → {
 }
 
 TimelineItem = {
-  "id": uuid, "kind": "event"|"focus"|"proposed", "title": str,
+  "id": str, "kind": "meeting"|"work_block"|"proposed"|"event"|"focus_session"|"task",
+  "title": str,
   "start_at": ts, "end_at": ts, "source": "internal"|"google"|"yandex",
-  "status": "confirmed"|"tentative"|"proposed"|"cancelled", "busy": bool
+  "status": "confirmed"|"tentative"|"proposed"|"cancelled", "busy": bool,
+  "expires_at"?: ts|null
 }
 
 AttentionItem = {"id": str, "kind": "overdue_task"|"due_task"|"confirmation",
@@ -212,18 +225,33 @@ current owned project name, falling back to that snapshot if the project was rem
 ```
 FocusSession = {
   "id": uuid, "status": "active"|"completed"|"abandoned",
+  "planned_event_id": uuid|null,
   "task": Task|null, "project_id": uuid|null, "project_name": str|null,
   "local_date": "YYYY-MM-DD", "intention": str, "planned_minutes": int,
+  "actual_minutes": number|null, "planned_vs_actual_minutes": number|null,
+  "cycle": {
+    "preset": "25/5"|"50/10"|"90/15"|"custom"|null,
+    "focus_minutes": int, "break_minutes": int, "phase": "focus"|"break"|"done",
+    "break_started_at": ts|null, "break_target_end_at": ts|null,
+    "break_ended_at": ts|null
+  },
   "started_at": ts, "target_end_at": ts, "ended_at": ts|null,
   "duration_seconds": int|null,
   "reflection": {
+    "outcome": "done"|"progress"|"blocked"|null, "raw_text": str|null,
     "accomplished_text": str|null, "distraction_text": str|null,
-    "next_step_text": str|null, "focus_score": 1..5|null
+    "next_step_text": str|null, "focus_score": 1..5|null,
+    "input_hash": str|null,
+    "analysis": {
+      "status": "pending"|"running"|"ready"|"failed"|"superseded",
+      "schema_version": str, "updated_at": ts
+    }|null
   }
 }
 
 GET /api/focus/state → {
   "active_session": FocusSession|null,
+  "active_break": FocusSession|null,
   "today": {"focus_seconds": int, "completed_sessions": int, "streak_days": int},
   "recent_sessions": [FocusSession]
 }
@@ -255,7 +283,8 @@ GET /api/focus/sessions/{id} → {"session": FocusSession}
 
 POST /api/focus/sessions
   body: {"task_id"?: uuid|null, "project_id"?: uuid|null,
-         "project_name"?: str|null, "intention": str, "planned_minutes": 1..240}
+         "planned_event_id"?: uuid|null, "project_name"?: str|null,
+         "intention": str, "planned_minutes": 1..240, "break_minutes"?: 0..60}
   → {"session": FocusSession} (201)
 
 POST /api/focus/sessions/log
@@ -266,16 +295,38 @@ POST /api/focus/sessions/log
 
 POST /api/focus/sessions/{id}/finish body: {reflection fields...}
   → {"session": FocusSession}
+POST /api/focus/sessions/{id}/break/finish → {"session": FocusSession}
 POST /api/focus/sessions/{id}/abandon → {"session": FocusSession}
 PATCH /api/focus/sessions/{id} body: any mutable subset → {"session": FocusSession}
 DELETE /api/focus/sessions/{id} → 204
 ```
 
 Normal finish uses server time. Manual/edit ranges must end after start, cannot
-extend more than 24 hours, and cannot end in the future beyond a small clock-skew
+extend more than 240 minutes, and cannot end in the future beyond a small clock-skew
 tolerance. Mutating an already transitioned session returns stable `409`; a second
 concurrent start returns `409 active_focus_session_exists`. PATCH distinguishes an
 omitted field (preserve it) from explicit `null` (clear it).
+
+The quick review is optional. Saving user-authored reflection fields schedules a
+versioned, best-effort extraction; provider or queue failure never rolls back the
+finished session. Extraction status is exposed in `reflection.analysis`.
+
+```
+FocusInsight = {
+  "id": uuid, "kind": str,
+  "status": "proposed"|"confirmed"|"dismissed"|"expired",
+  "statement": str, "window_start": ts, "window_end": ts,
+  "support_count": int, "confidence": number,
+  "evidence": object, "first_seen_at": ts, "last_seen_at": ts
+}
+
+GET  /api/focus/insights?limit=1..3 → {"items": [FocusInsight]}
+POST /api/focus/insights/{id}/try → {"insight": FocusInsight}
+POST /api/focus/insights/{id}/dismiss → {"insight": FocusInsight}
+```
+
+Insights are deterministic, evidence-backed hypotheses. `Try` changes only the
+insight status; it never changes schedules or preferences.
 
 Week analytics use the rolling seven local days against the average of the four
 preceding seven-day windows. Month analytics are month-to-date and compare the same
@@ -288,12 +339,22 @@ CalendarEvent = {
   "id": uuid, "title": str, "description": str|null,
   "start_at": ts, "end_at": ts, "all_day": bool, "busy": bool,
   "status": "confirmed"|"tentative"|"cancelled"|"proposed",
-  "source": "internal"|"google"|"yandex", "created_by": str
+  "source": "internal"|"google"|"yandex", "created_by": str,
+  "kind": "work_block"|"internal"|"external", "source_task_id": uuid|null
 }
 
 GET  /api/calendar/events?start=ts&end=ts → {"items": [CalendarEvent]}
 POST /api/calendar/events  body: {"title": str, "start_at": ts, "end_at": ts, "description"?} → {"event": CalendarEvent}  (201, internal block)
-POST /api/calendar/plan-day  body: {"date"?: "YYYY-MM-DD"} → {"run_id": uuid, "status": "queued"}
+POST /api/calendar/work-blocks
+  body: {"task_id": uuid, "title"?: str, "start_at": ts, "end_at": ts,
+         "status"?: "proposed"|"confirmed", "description"?: str}
+  → structured WorkBlock result (201)
+POST /api/calendar/work-blocks/{id}/confirm
+  body: {"expected_updated_at"?: ts} → structured WorkBlock result
+POST /api/calendar/plan-day
+  body: {"mode"?: "today"|"tomorrow"|"replan", "date"?: "YYYY-MM-DD",
+         "request_id"?: str}
+  → {"run_id": uuid, "status": "queued"}
 POST /api/calendar/blocks/{id}/confirm → {"event": CalendarEvent}        // proposed -> confirmed (internal)
 POST /api/calendar/sync → {"run_id": uuid, "status": "queued"}           // requires Google; 409 {"error":"calendar_not_connected"} when no external calendar is configured
 GET  /api/calendar/free-slots?date=YYYY-MM-DD&duration=60 → {"items": [{"start_at": ts, "end_at": ts}]}

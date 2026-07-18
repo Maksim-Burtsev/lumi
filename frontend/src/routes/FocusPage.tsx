@@ -2,12 +2,14 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 're
 import {
   BarChart3,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CircleDot,
   ClipboardPenLine,
   Clock3,
   Flame,
+  FlaskConical,
   Folder,
   Loader2,
   Pencil,
@@ -22,8 +24,10 @@ import {
 import {
   useAbandonFocusSession,
   useDeleteFocusSession,
+  useDismissFocusInsight,
   useFinishFocusBreak,
   useFinishFocusSession,
+  useFocusInsights,
   useFocusSession,
   useFocusSessions,
   useFocusState,
@@ -33,12 +37,15 @@ import {
   useLogFocusSession,
   useProjects,
   useStartFocusSession,
+  useTryFocusInsight,
   useUpdateFocusSession,
 } from '../api/hooks';
 import type { FocusPeriod } from '../api/client';
 import type {
   FocusCyclePreset,
   FocusDailyActivity,
+  FocusInsight,
+  FocusReflectionOutcome,
   FocusSession,
   FocusSummaryResponse,
   Project,
@@ -51,7 +58,7 @@ import { Chip } from '../components/ui/Chip';
 import { FieldLabel, Input, Textarea } from '../components/ui/Field';
 import { SectionHeader } from '../components/ui/SectionHeader';
 import { Sheet } from '../components/ui/Sheet';
-import { SkeletonList } from '../components/ui/Skeleton';
+import { Skeleton, SkeletonList } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
 import type { AppLocale } from '../lib/i18n';
@@ -130,6 +137,13 @@ const COPY = {
     finishError: 'Could not finish session',
     cancelError: 'Could not cancel session',
     reflectionTitle: 'Session review',
+    outcome: 'Outcome',
+    outcomeDone: 'Done',
+    outcomeProgress: 'Progress',
+    outcomeBlocked: 'Blocked',
+    reflectionNote: 'Optional note',
+    reflectionNotePlaceholder: 'What matters from this session?',
+    advancedReflection: 'Advanced details',
     doneQuestion: 'What got done?',
     donePlaceholder: 'Short result',
     blockersQuestion: 'What got in the way?',
@@ -149,6 +163,26 @@ const COPY = {
     dayStreak: 'day streak',
     focusDays: 'focus days',
     analytics: 'Analytics',
+    insights: 'Patterns to test',
+    insightObserved: 'Observed pattern',
+    insightExperiment: 'Experiment',
+    insightWhy: 'Why?',
+    insightEvidence: 'Evidence',
+    insightWindow: 'Window',
+    insightSupport: 'Supporting sessions',
+    insightConfidence: 'Confidence',
+    insightSources: 'Source sessions',
+    insightSource: 'Session',
+    insightTry: 'Try',
+    insightDismiss: 'Dismiss',
+    insightTrying: 'Trying',
+    insightSafety: 'Try only marks this as an experiment. Lumi won’t change your calendar or settings.',
+    insightCorrelation: 'Observed together, not proven as a cause.',
+    insightTried: 'Experiment confirmed',
+    insightDismissed: 'Pattern dismissed',
+    insightTryError: 'Could not confirm the experiment',
+    insightDismissError: 'Could not dismiss the pattern',
+    insightLoadError: 'Could not load patterns.',
     week: 'Week',
     month: 'Month',
     custom: 'Custom',
@@ -289,6 +323,13 @@ const COPY = {
     finishError: 'Не удалось завершить сессию',
     cancelError: 'Не удалось отменить сессию',
     reflectionTitle: 'Итог сессии',
+    outcome: 'Результат',
+    outcomeDone: 'Готово',
+    outcomeProgress: 'Продвинулся',
+    outcomeBlocked: 'Заблокирован',
+    reflectionNote: 'Короткая заметка',
+    reflectionNotePlaceholder: 'Что важно сохранить после сессии?',
+    advancedReflection: 'Дополнительные детали',
     doneQuestion: 'Что сделал?',
     donePlaceholder: 'Коротко зафиксируй результат',
     blockersQuestion: 'Что мешало?',
@@ -308,6 +349,26 @@ const COPY = {
     dayStreak: 'дней подряд',
     focusDays: 'дни с фокусом',
     analytics: 'Аналитика',
+    insights: 'Паттерны для проверки',
+    insightObserved: 'Наблюдаемый паттерн',
+    insightExperiment: 'Эксперимент',
+    insightWhy: 'Почему?',
+    insightEvidence: 'Основания',
+    insightWindow: 'Период',
+    insightSupport: 'Сессий в выборке',
+    insightConfidence: 'Уверенность',
+    insightSources: 'Исходные сессии',
+    insightSource: 'Сессия',
+    insightTry: 'Попробовать',
+    insightDismiss: 'Скрыть',
+    insightTrying: 'Проверяю',
+    insightSafety: 'Попробовать — значит только подтвердить эксперимент. Lumi не изменит календарь или настройки.',
+    insightCorrelation: 'Наблюдается вместе, но причинная связь не доказана.',
+    insightTried: 'Эксперимент подтверждён',
+    insightDismissed: 'Паттерн скрыт',
+    insightTryError: 'Не удалось подтвердить эксперимент',
+    insightDismissError: 'Не удалось скрыть паттерн',
+    insightLoadError: 'Не удалось загрузить паттерны.',
     week: 'Неделя',
     month: 'Месяц',
     custom: 'Свой период',
@@ -431,6 +492,90 @@ function deltaLabel(value: number | null): string {
   if (value === null) return '—';
   const arrow = value >= 0 ? '↑' : '↓';
   return `${arrow} ${Math.abs(value)}%`;
+}
+
+function insightWindowLabel(
+  insight: FocusInsight,
+  locale: AppLocale,
+  timeDisplay: TimeDisplayOptions,
+): string {
+  const start = new Date(insight.window_start);
+  const windowEnd = new Date(insight.window_end);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(windowEnd.getTime())) {
+    return `${insight.window_start} — ${insight.window_end}`;
+  }
+  const end = windowEnd.getTime() > start.getTime()
+    ? new Date(windowEnd.getTime() - 1)
+    : windowEnd;
+  const options: Intl.DateTimeFormatOptions = {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    ...(timeDisplay.timezone ? { timeZone: timeDisplay.timezone } : {}),
+  };
+  try {
+    const formatter = new Intl.DateTimeFormat(locale === 'ru' ? 'ru-RU' : 'en-US', options);
+    return `${formatter.format(start)} — ${formatter.format(end)}`;
+  } catch {
+    const formatter = new Intl.DateTimeFormat(locale === 'ru' ? 'ru-RU' : 'en-US', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+    return `${formatter.format(start)} — ${formatter.format(end)}`;
+  }
+}
+
+function evidenceLabel(key: string): string {
+  const words = key
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim();
+  return words ? `${words.charAt(0).toUpperCase()}${words.slice(1)}` : key;
+}
+
+function evidenceValue(value: unknown, locale: AppLocale): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'boolean') {
+    if (locale === 'ru') return value ? 'Да' : 'Нет';
+    return value ? 'Yes' : 'No';
+  }
+  if (typeof value === 'string' || typeof value === 'number') return String(value);
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((item) => evidenceValue(item, locale))
+      .filter((item): item is string => item !== null);
+    return parts.length ? parts.slice(0, 6).join(', ') : null;
+  }
+  if (typeof value === 'object') {
+    const parts = Object.entries(value)
+      .map(([key, item]) => {
+        const formatted = evidenceValue(item, locale);
+        return formatted === null ? null : `${evidenceLabel(key)}: ${formatted}`;
+      })
+      .filter((item): item is string => item !== null);
+    return parts.length ? parts.slice(0, 6).join(' · ') : null;
+  }
+  return null;
+}
+
+function insightEvidenceRows(insight: FocusInsight, locale: AppLocale) {
+  return Object.entries(insight.evidence)
+    .filter(([key]) => key !== 'supporting_session_ids')
+    .map(([key, value]) => ({ label: evidenceLabel(key), value: evidenceValue(value, locale) }))
+    .filter((row): row is { label: string; value: string } => row.value !== null)
+    .slice(0, 8);
+}
+
+function insightSupportingSessionIds(insight: FocusInsight): string[] {
+  const ids = insight.evidence.supporting_session_ids;
+  if (!Array.isArray(ids)) return [];
+  return [...new Set(ids.filter((id): id is string => typeof id === 'string' && id.length > 0))];
+}
+
+function confidenceLabel(value: number): string {
+  const normalized = value <= 1 ? value * 100 : value;
+  return `${Math.round(Math.max(0, Math.min(100, normalized)))}%`;
 }
 
 function timerLabel(seconds: number): string {
@@ -1004,6 +1149,43 @@ function ScorePicker({
   );
 }
 
+function OutcomePicker({
+  value,
+  onChange,
+  label,
+  labels,
+}: {
+  value: FocusReflectionOutcome | null;
+  onChange: (value: FocusReflectionOutcome) => void;
+  label: string;
+  labels: Record<FocusReflectionOutcome, string>;
+}) {
+  const options: FocusReflectionOutcome[] = ['done', 'progress', 'blocked'];
+  return (
+    <div>
+      <FieldLabel>{label}</FieldLabel>
+      <div role="radiogroup" aria-label={label} className="grid grid-cols-3 gap-2">
+        {options.map((option) => (
+          <button
+            key={option}
+            type="button"
+            role="radio"
+            aria-checked={value === option}
+            onClick={() => onChange(option)}
+            className={`h-10 rounded-full border px-2 text-[13px] font-medium transition-colors focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--accent-soft)] ${
+              value === option
+                ? 'border-[var(--accent-border)] bg-[var(--accent-soft)] text-accent-text'
+                : 'border-hairline bg-[var(--surface-strong)] text-hint'
+            }`}
+          >
+            {labels[option]}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ReflectionSheet({
   session,
   open,
@@ -1018,6 +1200,8 @@ function ReflectionSheet({
   const copy = COPY[locale];
   const update = useUpdateFocusSession();
   const { show } = useToast();
+  const [outcome, setOutcome] = useState<FocusReflectionOutcome | null>(null);
+  const [reflectionText, setReflectionText] = useState('');
   const [accomplished, setAccomplished] = useState('');
   const [distraction, setDistraction] = useState('');
   const [nextStep, setNextStep] = useState('');
@@ -1025,6 +1209,8 @@ function ReflectionSheet({
 
   useEffect(() => {
     if (open && session) {
+      setOutcome(session.reflection.outcome);
+      setReflectionText(session.reflection.raw_text ?? '');
       setAccomplished(session.reflection.accomplished_text ?? '');
       setDistraction(session.reflection.distraction_text ?? '');
       setNextStep(session.reflection.next_step_text ?? '');
@@ -1039,6 +1225,8 @@ function ReflectionSheet({
       {
         id: session.id,
         input: {
+          reflection_outcome: outcome,
+          reflection_text: reflectionText.trim() || null,
           accomplished_text: accomplished,
           distraction_text: distraction,
           next_step_text: nextStep,
@@ -1062,19 +1250,38 @@ function ReflectionSheet({
           <p className="text-[13px] font-medium text-ink">{session.project_name ?? copy.noProject}</p>
           <p className="mt-0.5 text-[12.5px] text-hint">{session.intention}</p>
         </div>
-        <label>
-          <FieldLabel>{copy.doneQuestion}</FieldLabel>
-          <Textarea value={accomplished} onChange={setAccomplished} rows={3} placeholder={copy.donePlaceholder} />
-        </label>
-        <label>
-          <FieldLabel>{copy.blockersQuestion}</FieldLabel>
-          <Textarea value={distraction} onChange={setDistraction} rows={2} placeholder={copy.blockersPlaceholder} />
-        </label>
-        <label>
-          <FieldLabel>{copy.nextStep}</FieldLabel>
-          <Textarea value={nextStep} onChange={setNextStep} rows={2} placeholder={copy.nextStepPlaceholder} />
-        </label>
+        <OutcomePicker
+          value={outcome}
+          onChange={setOutcome}
+          label={copy.outcome}
+          labels={{
+            done: copy.outcomeDone,
+            progress: copy.outcomeProgress,
+            blocked: copy.outcomeBlocked,
+          }}
+        />
         <ScorePicker value={score} onChange={setScore} label={copy.score} unscoredLabel={copy.unscored} />
+        <label>
+          <FieldLabel>{copy.reflectionNote}</FieldLabel>
+          <Textarea value={reflectionText} onChange={setReflectionText} rows={3} placeholder={copy.reflectionNotePlaceholder} />
+        </label>
+        <details className="rounded-2xl border border-hairline bg-[var(--surface)] px-4 py-3">
+          <summary className="cursor-pointer text-[13px] font-medium text-ink">{copy.advancedReflection}</summary>
+          <div className="mt-4 space-y-4">
+            <label>
+              <FieldLabel>{copy.doneQuestion}</FieldLabel>
+              <Textarea value={accomplished} onChange={setAccomplished} rows={3} placeholder={copy.donePlaceholder} />
+            </label>
+            <label>
+              <FieldLabel>{copy.blockersQuestion}</FieldLabel>
+              <Textarea value={distraction} onChange={setDistraction} rows={2} placeholder={copy.blockersPlaceholder} />
+            </label>
+            <label>
+              <FieldLabel>{copy.nextStep}</FieldLabel>
+              <Textarea value={nextStep} onChange={setNextStep} rows={2} placeholder={copy.nextStepPlaceholder} />
+            </label>
+          </div>
+        </details>
         <Button fullWidth busy={update.isPending} onClick={submit} icon={<Check size={16} />}>
           {copy.saveSession}
         </Button>
@@ -1103,6 +1310,8 @@ function EditSessionSheet({
   const [startTime, setStartTime] = useState(() => timeInputValue(new Date(), timeDisplay.timezone));
   const [endDate, setEndDate] = useState(() => dateInputValue(new Date(), timeDisplay.timezone));
   const [endTime, setEndTime] = useState(() => timeInputValue(new Date(), timeDisplay.timezone));
+  const [outcome, setOutcome] = useState<FocusReflectionOutcome | null>(null);
+  const [reflectionText, setReflectionText] = useState('');
   const [accomplished, setAccomplished] = useState('');
   const [distraction, setDistraction] = useState('');
   const [nextStep, setNextStep] = useState('');
@@ -1117,6 +1326,8 @@ function EditSessionSheet({
       setStartTime(timeInputValue(started, timeDisplay.timezone));
       setEndDate(dateInputValue(ended, timeDisplay.timezone));
       setEndTime(timeInputValue(ended, timeDisplay.timezone));
+      setOutcome(session.reflection.outcome);
+      setReflectionText(session.reflection.raw_text ?? '');
       setAccomplished(session.reflection.accomplished_text ?? '');
       setDistraction(session.reflection.distraction_text ?? '');
       setNextStep(session.reflection.next_step_text ?? '');
@@ -1144,6 +1355,8 @@ function EditSessionSheet({
           intention: intention.trim() || copy.defaultIntention,
           started_at: nextRange.started_at,
           ended_at: nextRange.ended_at,
+          reflection_outcome: outcome,
+          reflection_text: reflectionText.trim() || null,
           accomplished_text: accomplished.trim() || null,
           distraction_text: distraction.trim() || null,
           next_step_text: nextStep.trim() || null,
@@ -1191,19 +1404,38 @@ function EditSessionSheet({
           {copy.startEndPreview}: <span className="text-ink">{preview}</span>
         </p>
         {!range.valid && <p role="alert" className="text-[12.5px] text-danger">{copy.invalidRange}</p>}
-        <label>
-          <FieldLabel>{copy.doneQuestion}</FieldLabel>
-          <Textarea value={accomplished} onChange={setAccomplished} rows={3} placeholder={copy.donePlaceholder} />
-        </label>
-        <label>
-          <FieldLabel>{copy.blockersQuestion}</FieldLabel>
-          <Textarea value={distraction} onChange={setDistraction} rows={2} placeholder={copy.blockersPlaceholder} />
-        </label>
-        <label>
-          <FieldLabel>{copy.nextStep}</FieldLabel>
-          <Textarea value={nextStep} onChange={setNextStep} rows={2} placeholder={copy.nextStepPlaceholder} />
-        </label>
+        <OutcomePicker
+          value={outcome}
+          onChange={setOutcome}
+          label={copy.outcome}
+          labels={{
+            done: copy.outcomeDone,
+            progress: copy.outcomeProgress,
+            blocked: copy.outcomeBlocked,
+          }}
+        />
         <ScorePicker value={score} onChange={setScore} label={copy.score} unscoredLabel={copy.unscored} />
+        <label>
+          <FieldLabel>{copy.reflectionNote}</FieldLabel>
+          <Textarea value={reflectionText} onChange={setReflectionText} rows={3} placeholder={copy.reflectionNotePlaceholder} />
+        </label>
+        <details className="rounded-2xl border border-hairline bg-[var(--surface)] px-4 py-3">
+          <summary className="cursor-pointer text-[13px] font-medium text-ink">{copy.advancedReflection}</summary>
+          <div className="mt-4 space-y-4">
+            <label>
+              <FieldLabel>{copy.doneQuestion}</FieldLabel>
+              <Textarea value={accomplished} onChange={setAccomplished} rows={3} placeholder={copy.donePlaceholder} />
+            </label>
+            <label>
+              <FieldLabel>{copy.blockersQuestion}</FieldLabel>
+              <Textarea value={distraction} onChange={setDistraction} rows={2} placeholder={copy.blockersPlaceholder} />
+            </label>
+            <label>
+              <FieldLabel>{copy.nextStep}</FieldLabel>
+              <Textarea value={nextStep} onChange={setNextStep} rows={2} placeholder={copy.nextStepPlaceholder} />
+            </label>
+          </div>
+        </details>
         <Button fullWidth busy={update.isPending} onClick={submit} icon={<Check size={16} />}>
           {copy.saveChanges}
         </Button>
@@ -1233,6 +1465,8 @@ function ManualLogSheet({
   const [taskId, setTaskId] = useState('');
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projectName, setProjectName] = useState('');
+  const [outcome, setOutcome] = useState<FocusReflectionOutcome | null>(null);
+  const [reflectionText, setReflectionText] = useState('');
   const [accomplished, setAccomplished] = useState('');
   const [distraction, setDistraction] = useState('');
   const [nextStep, setNextStep] = useState('');
@@ -1308,6 +1542,8 @@ function ManualLogSheet({
         intention: text,
         logged_at: nextRange.started_at,
         duration_minutes: nextRange.duration_minutes,
+        reflection_outcome: outcome,
+        reflection_text: reflectionText.trim() || null,
         accomplished_text: accomplished.trim() || null,
         distraction_text: distraction.trim() || null,
         next_step_text: nextStep.trim() || null,
@@ -1319,6 +1555,8 @@ function ManualLogSheet({
           setTaskId('');
           setProjectId(null);
           setProjectName('');
+          setOutcome(null);
+          setReflectionText('');
           setAccomplished('');
           setDistraction('');
           setNextStep('');
@@ -1386,19 +1624,38 @@ function ManualLogSheet({
               <span className="text-[12px] text-hint">{copy.chooseProject}</span>
             </button>
           </div>
-          <label>
-            <FieldLabel>{copy.whatDid}</FieldLabel>
-            <Textarea value={accomplished} onChange={setAccomplished} rows={3} placeholder={copy.donePlaceholder} />
-          </label>
-          <label>
-            <FieldLabel>{copy.blockersQuestion}</FieldLabel>
-            <Textarea value={distraction} onChange={setDistraction} rows={2} placeholder={copy.optionalProject} />
-          </label>
-          <label>
-            <FieldLabel>{copy.nextStep}</FieldLabel>
-            <Textarea value={nextStep} onChange={setNextStep} rows={2} placeholder={copy.optionalProject} />
-          </label>
+          <OutcomePicker
+            value={outcome}
+            onChange={setOutcome}
+            label={copy.outcome}
+            labels={{
+              done: copy.outcomeDone,
+              progress: copy.outcomeProgress,
+              blocked: copy.outcomeBlocked,
+            }}
+          />
           <ScorePicker value={score} onChange={setScore} label={copy.score} unscoredLabel={copy.unscored} />
+          <label>
+            <FieldLabel>{copy.reflectionNote}</FieldLabel>
+            <Textarea value={reflectionText} onChange={setReflectionText} rows={3} placeholder={copy.reflectionNotePlaceholder} />
+          </label>
+          <details className="rounded-2xl border border-hairline bg-[var(--surface)] px-4 py-3">
+            <summary className="cursor-pointer text-[13px] font-medium text-ink">{copy.advancedReflection}</summary>
+            <div className="mt-4 space-y-4">
+              <label>
+                <FieldLabel>{copy.whatDid}</FieldLabel>
+                <Textarea value={accomplished} onChange={setAccomplished} rows={3} placeholder={copy.donePlaceholder} />
+              </label>
+              <label>
+                <FieldLabel>{copy.blockersQuestion}</FieldLabel>
+                <Textarea value={distraction} onChange={setDistraction} rows={2} placeholder={copy.optionalProject} />
+              </label>
+              <label>
+                <FieldLabel>{copy.nextStep}</FieldLabel>
+                <Textarea value={nextStep} onChange={setNextStep} rows={2} placeholder={copy.optionalProject} />
+              </label>
+            </div>
+          </details>
           <Button fullWidth busy={logFocus.isPending} onClick={submit} icon={<ClipboardPenLine size={16} />}>
             {copy.saveBlock}
           </Button>
@@ -2171,6 +2428,211 @@ function KpiDelta({ value }: { value: number | null }) {
   );
 }
 
+function InsightRow({
+  insight,
+  locale,
+  timeDisplay,
+  onOpenSession,
+}: {
+  insight: FocusInsight;
+  locale: AppLocale;
+  timeDisplay: TimeDisplayOptions;
+  onOpenSession: (sessionId: string) => void;
+}) {
+  const copy = COPY[locale];
+  const { show } = useToast();
+  const [expanded, setExpanded] = useState(false);
+  const detailsId = useId();
+  const tryInsight = useTryFocusInsight();
+  const dismissInsight = useDismissFocusInsight();
+  const evidenceRows = insightEvidenceRows(insight, locale);
+  const supportingSessionIds = insightSupportingSessionIds(insight);
+  const isTrying = tryInsight.isPending && tryInsight.variables === insight.id;
+  const isDismissing = dismissInsight.isPending && dismissInsight.variables === insight.id;
+  const confirmed = insight.status === 'confirmed';
+
+  return (
+    <article data-testid="focus-insight" className="px-4 py-4">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-[var(--accent-soft)] text-accent-text">
+          <FlaskConical size={17} aria-hidden />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-accent-text">
+              {confirmed ? copy.insightExperiment : copy.insightObserved}
+            </span>
+            {confirmed && (
+              <span className="rounded-full bg-[var(--success-soft)] px-2 py-0.5 text-[11px] font-medium text-success">
+                {copy.insightTrying}
+              </span>
+            )}
+          </div>
+          <p className="mt-1.5 text-[14.5px] font-medium leading-snug text-ink">{insight.statement}</p>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={detailsId}
+        onClick={() => setExpanded((current) => !current)}
+        className="mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-full text-[12.5px] font-medium text-accent-text"
+      >
+        {copy.insightWhy}
+        <ChevronDown
+          size={15}
+          aria-hidden
+          className={`transition-transform ${expanded ? 'rotate-180' : ''}`}
+        />
+      </button>
+
+      {expanded && (
+        <div
+          id={detailsId}
+          role="region"
+          aria-label={copy.insightEvidence}
+          className="rounded-2xl bg-[var(--surface-strong)] px-3.5 py-3"
+        >
+          <dl className="divide-y divide-hairline text-[12.5px]">
+            <div className="flex items-start justify-between gap-4 py-1.5 first:pt-0">
+              <dt className="text-hint">{copy.insightWindow}</dt>
+              <dd className="tnum text-right text-ink">{insightWindowLabel(insight, locale, timeDisplay)}</dd>
+            </div>
+            <div className="flex items-start justify-between gap-4 py-1.5">
+              <dt className="text-hint">{copy.insightSupport}</dt>
+              <dd className="tnum text-right text-ink">{insight.support_count}</dd>
+            </div>
+            <div className="flex items-start justify-between gap-4 py-1.5">
+              <dt className="text-hint">{copy.insightConfidence}</dt>
+              <dd className="tnum text-right text-ink">{confidenceLabel(insight.confidence)}</dd>
+            </div>
+            {evidenceRows.map((row) => (
+              <div key={row.label} className="flex items-start justify-between gap-4 py-1.5">
+                <dt className="text-hint">{row.label}</dt>
+                <dd className="max-w-[62%] break-words text-right text-ink">{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+          {supportingSessionIds.length > 0 && (
+            <div className="mt-3 border-t border-hairline pt-3">
+              <p className="text-[11.5px] font-medium text-hint">{copy.insightSources}</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {supportingSessionIds.map((sessionId, index) => (
+                  <button
+                    key={sessionId}
+                    type="button"
+                    onClick={() => onOpenSession(sessionId)}
+                    className="inline-flex min-h-9 items-center gap-1 rounded-full border border-hairline bg-[var(--surface)] px-3 text-[12px] font-medium text-accent-text"
+                  >
+                    {copy.insightSource} {index + 1}
+                    <ChevronRight size={14} aria-hidden />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          <p className="mt-2 text-[11.5px] leading-relaxed text-hint">{copy.insightCorrelation}</p>
+        </div>
+      )}
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {!confirmed && (
+          <Button
+            size="sm"
+            variant="secondary"
+            busy={isTrying}
+            disabled={dismissInsight.isPending}
+            onClick={() => {
+              tryInsight.mutate(insight.id, {
+                onSuccess: () => {
+                  haptic('success');
+                  show(copy.insightTried, 'success');
+                },
+                onError: () => show(copy.insightTryError, 'error'),
+              });
+            }}
+          >
+            {copy.insightTry}
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant="ghost"
+          busy={isDismissing}
+          disabled={tryInsight.isPending}
+          onClick={() => {
+            dismissInsight.mutate(insight.id, {
+              onSuccess: () => {
+                haptic('light');
+                show(copy.insightDismissed, 'info');
+              },
+              onError: () => show(copy.insightDismissError, 'error'),
+            });
+          }}
+        >
+          {copy.insightDismiss}
+        </Button>
+      </div>
+      {!confirmed && (
+        <p className="mt-2.5 text-[11.5px] leading-relaxed text-hint">{copy.insightSafety}</p>
+      )}
+    </article>
+  );
+}
+
+function InsightsSection({
+  locale,
+  timeDisplay,
+  onOpenSession,
+}: {
+  locale: AppLocale;
+  timeDisplay: TimeDisplayOptions;
+  onOpenSession: (sessionId: string) => void;
+}) {
+  const copy = COPY[locale];
+  const insights = useFocusInsights(3);
+  const items = (insights.data?.items ?? [])
+    .filter((item) => item.status === 'proposed' || item.status === 'confirmed')
+    .slice(0, 3);
+
+  if (insights.isSuccess && items.length === 0) return null;
+
+  return (
+    <Rise>
+      <section aria-label={copy.insights}>
+        <SectionHeader title={copy.insights} />
+        <Card className="divide-y divide-hairline overflow-hidden !p-0" strong>
+          {insights.isPending ? (
+            <div aria-label={copy.insights} className="px-4 py-4">
+              <Skeleton className="h-3 w-24" />
+              <Skeleton className="mt-2.5 h-4 w-4/5" />
+              <Skeleton className="mt-2 h-4 w-3/5" />
+            </div>
+          ) : insights.isError ? (
+            <div role="alert" className="flex items-center justify-between gap-3 px-4 py-4">
+              <p className="text-[13px] text-hint">{copy.insightLoadError}</p>
+              <Button size="sm" variant="ghost" onClick={() => void insights.refetch()}>
+                {copy.retry}
+              </Button>
+            </div>
+          ) : (
+            items.map((insight) => (
+              <InsightRow
+                key={insight.id}
+                insight={insight}
+                locale={locale}
+                timeDisplay={timeDisplay}
+                onOpenSession={onOpenSession}
+              />
+            ))
+          )}
+        </Card>
+      </section>
+    </Rise>
+  );
+}
+
 function AnalyticsKpis({ summary, locale, period }: { summary: FocusSummaryResponse | undefined; locale: AppLocale; period: MainPeriod }) {
   const copy = COPY[locale];
   return (
@@ -2274,10 +2736,22 @@ function SessionDetailsSheet({
           <div className="rounded-2xl border border-hairline bg-[var(--surface)] p-4">
             <div className="mb-3 flex items-center justify-between">
               <h3 className="text-[14px] font-semibold text-ink">{copy.reflectionTitle}</h3>
-              <span className="tnum text-[13px] text-hint">{reflection.focus_score ? `${reflection.focus_score}/5` : '—'}</span>
+              <div className="flex items-center gap-2">
+                {reflection.outcome && (
+                  <span className="rounded-full bg-[var(--accent-soft)] px-2 py-1 text-[11.5px] font-medium text-accent-text">
+                    {{
+                      done: copy.outcomeDone,
+                      progress: copy.outcomeProgress,
+                      blocked: copy.outcomeBlocked,
+                    }[reflection.outcome]}
+                  </span>
+                )}
+                <span className="tnum text-[13px] text-hint">{reflection.focus_score ? `${reflection.focus_score}/5` : '—'}</span>
+              </div>
             </div>
-            {reflection.accomplished_text || reflection.distraction_text || reflection.next_step_text ? (
+            {reflection.raw_text || reflection.accomplished_text || reflection.distraction_text || reflection.next_step_text ? (
               <div className="space-y-3 text-[13px] leading-relaxed">
+                {reflection.raw_text && <p className="text-hint">{reflection.raw_text}</p>}
                 {reflection.accomplished_text && <p><span className="font-medium text-ink">{copy.doneQuestion}</span><br /><span className="text-hint">{reflection.accomplished_text}</span></p>}
                 {reflection.distraction_text && <p><span className="font-medium text-ink">{copy.blockersQuestion}</span><br /><span className="text-hint">{reflection.distraction_text}</span></p>}
                 {reflection.next_step_text && <p><span className="font-medium text-ink">{copy.nextStep}</span><br /><span className="text-hint">{reflection.next_step_text}</span></p>}
@@ -2359,6 +2833,10 @@ export default function FocusPage() {
   };
   const openHistoryDetails = (sessionId: string) => {
     setDetailsFromHistory(true);
+    setDetailsSessionId(sessionId);
+  };
+  const openInsightDetails = (sessionId: string) => {
+    setDetailsFromHistory(false);
     setDetailsSessionId(sessionId);
   };
   const closeDetails = () => {
@@ -2462,6 +2940,12 @@ export default function FocusPage() {
         </Rise>
       ) : (
         <>
+          <InsightsSection
+            locale={locale}
+            timeDisplay={timeDisplay}
+            onOpenSession={openInsightDetails}
+          />
+
           <Rise>
         <SectionHeader
           title={copy.analytics}

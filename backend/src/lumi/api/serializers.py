@@ -9,7 +9,9 @@ from lumi.db.models import (
     AgentRun,
     AssistantSuggestion,
     CalendarEvent,
+    FocusInsight,
     FocusSession,
+    FocusSessionAnalysis,
     LLMCall,
     Memory,
     Message,
@@ -135,6 +137,7 @@ def focus_session_to_dict(
     project: Project | None = None,
     *,
     timezone: str = "UTC",
+    analysis: FocusSessionAnalysis | None = None,
 ) -> dict[str, Any]:
     project_name = project.name if project is not None else focus_session.project_snapshot
     actual_minutes = (
@@ -188,11 +191,47 @@ def focus_session_to_dict(
         "duration_seconds": focus_session.duration_seconds,
         "local_date": focus_session.started_at.astimezone(get_zone(timezone)).date().isoformat(),
         "reflection": {
+            "outcome": (
+                focus_session.reflection_outcome.value
+                if focus_session.reflection_outcome
+                else None
+            ),
+            "raw_text": focus_session.reflection_text,
             "accomplished_text": focus_session.accomplished_text,
             "distraction_text": focus_session.distraction_text,
             "next_step_text": focus_session.next_step_text,
             "focus_score": focus_session.focus_score,
+            "input_hash": focus_session.reflection_input_hash,
+            "analysis": (
+                {
+                    "status": analysis.status.value,
+                    "schema_version": analysis.schema_version,
+                    "updated_at": _iso(analysis.updated_at),
+                }
+                if analysis is not None
+                else None
+            ),
         },
+    }
+
+
+def focus_insight_to_dict(insight: FocusInsight) -> dict[str, Any]:
+    return {
+        "id": str(insight.id),
+        "kind": insight.kind,
+        "status": insight.status.value,
+        "statement": insight.statement,
+        "window_start": _iso(insight.window_start),
+        "window_end": _iso(insight.window_end),
+        "support_count": insight.support_count,
+        "confidence": float(insight.confidence),
+        "evidence": {
+            **insight.evidence,
+            "supporting_session_ids": list(insight.supporting_session_ids),
+            "distinct_days": insight.distinct_days,
+        },
+        "first_seen_at": _iso(insight.first_seen_at),
+        "last_seen_at": _iso(insight.last_seen_at),
     }
 
 

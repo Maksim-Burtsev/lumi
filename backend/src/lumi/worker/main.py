@@ -14,8 +14,10 @@ from lumi.worker.jobs import (
     enqueue_active_user_task_cleanup,
     enqueue_daily_task_cleanup,
     enqueue_due_assistant_turns,
+    extract_focus_reflection,
     process_assistant_turn,
     process_due_opportunity_jobs,
+    recover_focus_reflection_analyses,
     recover_pending_calendar_private_note_summaries,
     run_calendar_sync,
     run_daily_planning,
@@ -44,6 +46,7 @@ class WorkerSettings:
         run_daily_planning,
         run_calendar_sync,
         summarize_calendar_private_note,
+        extract_focus_reflection,
         compact_conversation,
         process_assistant_turn,
         process_due_opportunity_jobs,
@@ -63,6 +66,11 @@ class WorkerSettings:
         # Realtime outbox retention: durable catch-up is 72h.
         cron(cleanup_ui_events, hour=3, minute=20, unique=True),
         cron(recover_pending_calendar_private_note_summaries, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}, unique=True),
+        cron(
+            recover_focus_reflection_analyses,
+            minute={1, 6, 11, 16, 21, 26, 31, 36, 41, 46, 51, 56},
+            unique=True,
+        ),
     ]
     on_startup = startup
     on_shutdown = shutdown

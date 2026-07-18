@@ -10,7 +10,7 @@ Core principle: **the LLM is stateless, the backend is stateful**. The model pro
 | `redis` | redis:7-alpine | arq queue and coordination |
 | `api` | `uvicorn lumi.main:app` | shared web/Mini App REST API, initData and web-session validation, `/app` static files |
 | `bot` | `python -m lumi.bot.runner` | aiogram long polling, commands, callbacks |
-| `worker` | `python -m lumi.worker.main` | arq jobs: assistant turns, planning, calendar sync, reminders, compaction |
+| `worker` | `python -m lumi.worker.main` | arq jobs: assistant turns, planning, calendar sync, reflection extraction, reminders, compaction |
 | `scheduler` | `python -m lumi.scheduler.main` | every 30s: due system `calendar_sync` tasks -> queue |
 
 All four Python processes use the same `lumi-backend` image: one build, different commands.
@@ -28,7 +28,7 @@ flowchart TD
     ORCH --> LLMGW[LLMGateway]
     LLMGW --> MMX[MiniMax M3]
     LLMGW --> MOCK[MockLLM]
-    ORCH --> SVCS[TaskService · CalendarService · MemoryService · ConfirmationService]
+    ORCH --> SVCS[TaskService · CalendarService · FocusService · ConfirmationService]
     SVCS --> PG[(Postgres)]
     CTX --> PG
 
@@ -38,6 +38,10 @@ flowchart TD
     API -->|SSE /api/realtime| WEB
     API --> AUTH[initData or Redis web session + allowlist]
     API --> SVCS
+    SVCS --> REFLECT[versioned reflection analysis]
+    SVCS --> INSIGHTS[deterministic focus insights]
+    REFLECT --> PG
+    INSIGHTS --> PG
     SVCS --> UIE[ui_events outbox]
     UIE --> PG
     UIE -->|after commit| RT[(Redis · pub/sub)]
@@ -119,6 +123,34 @@ Telegram initData remains the first-priority credential. Standalone sessions are
 server-side and revocable; unsafe cookie-authenticated requests also require the
 exact public origin and the derived CSRF value.
 
+## Product V2 focus loop
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant API as FastAPI
+    participant S as Domain services
+    participant DB as Postgres
+    participant W as Worker
+
+    U->>API: capture Task
+    API->>S: propose/confirm internal WorkBlock
+    S->>DB: CalendarEvent(source_task_id)
+    U->>API: start linked FocusSession(planned_event_id)
+    U->>API: finish focus + optional quick review
+    S->>DB: actual duration, break state, planned-vs-actual source
+    S-->>W: enqueue best-effort reflection extraction
+    W->>DB: versioned FocusSessionAnalysis
+    U->>API: review weekly insights
+    S->>DB: deterministic aggregates + evidence-backed FocusInsight
+```
+
+The WorkBlock, Task, and FocusSession remain separate records. Finishing focus
+does not complete the Task. Break time is stored on the session but excluded
+from actual focus duration. Manual/edit session ranges are capped at 240
+minutes. Reflection extraction is optional and failure-safe; insights require
+validated aggregate evidence and never mutate schedule or preferences.
+
 Explicit planning and calendar-sync endpoints create an `agent_run`, **commit**, and enqueue a Redis job. The Mini App keeps a `GET /api/realtime` SSE stream open: the backend writes small `ui_events` inside the same transaction, publishes them to Redis only after commit, and the frontend invalidates React Query and refetches current REST endpoints. `GET /api/agent-runs/{id}` remains available for observability and fallback polling.
 
 ## System Calendar sync flow
@@ -150,7 +182,8 @@ bot/api  ->  assistant/orchestrator  ->  services  ->  connectors / llm  ->  DB 
 ```
 
 - `lumi/assistant/` - orchestrator, context_builder, signal_extractor, memory_service, compaction, prompts
-- `lumi/services/` - tasks, calendar, planning, system scheduling, confirmations, today, runs, audit, users, notifier
+- `lumi/services/` - tasks, calendar/WorkBlocks, planning/Today, focus/breaks,
+  reflection analysis, focus insights, confirmations, runs, audit, users, notifier
 - `lumi/connectors/` - Google Calendar and Yandex.Calendar
 - `lumi/llm/` - base protocol, minimax, mock, gateway (llm_calls logging), json_utils
 - `lumi/security/` - telegram_auth (HMAC initData), crypto (Fernet)

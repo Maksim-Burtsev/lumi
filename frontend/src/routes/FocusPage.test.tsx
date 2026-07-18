@@ -3,7 +3,16 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
-import type { FocusSession, FocusStateResponse, FocusSummaryResponse, ProjectsResponse, SettingsResponse, TasksResponse, User } from '../api/types';
+import type {
+  FocusInsight,
+  FocusSession,
+  FocusStateResponse,
+  FocusSummaryResponse,
+  ProjectsResponse,
+  SettingsResponse,
+  TasksResponse,
+  User,
+} from '../api/types';
 import { ToastProvider } from '../components/ui/Toast';
 import { localRangeToIso } from '../lib/focusTime';
 import FocusPage, { aggregateActivityForChart, getDialMetrics } from './FocusPage';
@@ -161,6 +170,17 @@ const SUMMARY: FocusSummaryResponse = {
   next_steps: [],
 };
 
+const EMPTY_REFLECTION: FocusSession['reflection'] = {
+  outcome: null,
+  raw_text: null,
+  accomplished_text: null,
+  distraction_text: null,
+  next_step_text: null,
+  focus_score: null,
+  input_hash: null,
+  analysis: null,
+};
+
 function makeUser(locale = 'en'): User {
   return {
     id: '99999999-9999-4999-8999-999999999999',
@@ -208,12 +228,29 @@ function makeSession(overrides: Partial<FocusSession> = {}): FocusSession {
     target_end_at: '2026-06-24T10:45:00Z',
     ended_at: '2026-06-24T10:45:00Z',
     duration_seconds: 45 * 60,
-    reflection: {
-      accomplished_text: null,
-      distraction_text: null,
-      next_step_text: null,
-      focus_score: null,
+    reflection: { ...EMPTY_REFLECTION },
+    ...overrides,
+  };
+}
+
+function makeInsight(overrides: Partial<FocusInsight> = {}): FocusInsight {
+  return {
+    id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+    kind: 'focus_score_by_daypart',
+    status: 'proposed',
+    statement: 'Morning sessions tend to have a higher focus score.',
+    window_start: '2026-07-06T00:00:00Z',
+    window_end: '2026-07-12T23:59:59Z',
+    support_count: 8,
+    confidence: 0.8,
+    evidence: {
+      distinct_days: 4,
+      morning: { average: 4.6, session_count: 5 },
+      otherwise: { average: 3.4, session_count: 3 },
+      supporting_session_ids: ['22222222-2222-4222-8222-222222222222'],
     },
+    first_seen_at: '2026-07-13T08:00:00Z',
+    last_seen_at: '2026-07-13T08:00:00Z',
     ...overrides,
   };
 }
@@ -235,6 +272,12 @@ function makeSessions(count: number): FocusSession[] {
 function renderFocusPage(locale = 'en') {
   vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettings(locale));
   vi.spyOn(api, 'listProjects').mockResolvedValue(PROJECTS);
+  const insightsSpy = vi.isMockFunction(api.getFocusInsights)
+    ? vi.mocked(api.getFocusInsights)
+    : vi.spyOn(api, 'getFocusInsights');
+  if (!insightsSpy.getMockImplementation()) {
+    insightsSpy.mockResolvedValue({ items: [] });
+  }
   const sessionsSpy = vi.isMockFunction(api.listFocusSessions)
     ? vi.mocked(api.listFocusSessions)
     : vi.spyOn(api, 'listFocusSessions');
@@ -332,6 +375,89 @@ describe('FocusPage', () => {
     expect(state).toHaveBeenCalledTimes(2);
   });
 
+  it('shows at most three insight hypotheses with an accessible evidence drilldown', async () => {
+    const user = userEvent.setup();
+    const sourceSession = makeSession({ intention: 'Evidence source session' });
+    const items = Array.from({ length: 4 }, (_, index) => makeInsight({
+      id: `insight-${index + 1}`,
+      statement: `Observed pattern ${index + 1}`,
+    }));
+    vi.spyOn(api, 'getFocusState').mockResolvedValue(EMPTY_STATE);
+    vi.spyOn(api, 'getFocusSummary').mockResolvedValue(SUMMARY);
+    const getInsights = vi.spyOn(api, 'getFocusInsights').mockResolvedValue({ items });
+    const getSession = vi.spyOn(api, 'getFocusSession').mockResolvedValue({
+      session: sourceSession,
+    });
+
+    renderFocusPage('en');
+
+    const rows = await screen.findAllByTestId('focus-insight');
+    expect(rows).toHaveLength(3);
+    expect(getInsights).toHaveBeenCalledWith(3);
+    expect(screen.queryByText('Observed pattern 4')).not.toBeInTheDocument();
+
+    const first = rows[0];
+    const why = within(first).getByRole('button', { name: /why/i });
+    expect(why).toHaveAttribute('aria-expanded', 'false');
+    await user.click(why);
+
+    expect(why).toHaveAttribute('aria-expanded', 'true');
+    expect(within(first).getByRole('region', { name: /evidence/i })).toBeInTheDocument();
+    expect(within(first).getByText('Supporting sessions')).toBeInTheDocument();
+    expect(within(first).getByText('80%')).toBeInTheDocument();
+    expect(within(first).getByText(/Observed together, not proven as a cause/i)).toBeInTheDocument();
+    expect(within(first).queryByText(/supporting_session_ids/i)).not.toBeInTheDocument();
+
+    await user.click(within(first).getByRole('button', { name: 'Session 1' }));
+    await waitFor(() => expect(getSession).toHaveBeenCalledWith(sourceSession.id));
+    expect(await screen.findByText('Evidence source session')).toBeInTheDocument();
+    expect(screen.getByText('Session details')).toBeInTheDocument();
+  });
+
+  it('confirms an insight experiment without changing schedule or settings', async () => {
+    const user = userEvent.setup();
+    const insight = makeInsight();
+    vi.spyOn(api, 'getFocusState').mockResolvedValue(EMPTY_STATE);
+    vi.spyOn(api, 'getFocusSummary').mockResolvedValue(SUMMARY);
+    vi.spyOn(api, 'getFocusInsights').mockResolvedValue({ items: [insight] });
+    const tryInsight = vi.spyOn(api, 'tryFocusInsight').mockResolvedValue({
+      insight: { ...insight, status: 'confirmed' },
+    });
+    const planDay = vi.spyOn(api, 'planDay');
+    const patchSettings = vi.spyOn(api, 'patchSettings');
+
+    renderFocusPage('en');
+
+    const row = await screen.findByTestId('focus-insight');
+    expect(within(row).getByText(/won’t change your calendar or settings/i)).toBeInTheDocument();
+    await user.click(within(row).getByRole('button', { name: /^try$/i }));
+
+    await waitFor(() => expect(tryInsight).toHaveBeenCalledWith(insight.id));
+    expect(await within(row).findByText('Trying')).toBeInTheDocument();
+    expect(planDay).not.toHaveBeenCalled();
+    expect(patchSettings).not.toHaveBeenCalled();
+  });
+
+  it('dismisses an insight from its isolated section', async () => {
+    const user = userEvent.setup();
+    const insight = makeInsight({ statement: 'Dismiss this pattern' });
+    vi.spyOn(api, 'getFocusState').mockResolvedValue(EMPTY_STATE);
+    vi.spyOn(api, 'getFocusSummary').mockResolvedValue(SUMMARY);
+    vi.spyOn(api, 'getFocusInsights').mockResolvedValue({ items: [insight] });
+    const dismissInsight = vi.spyOn(api, 'dismissFocusInsight').mockResolvedValue({
+      insight: { ...insight, status: 'dismissed' },
+    });
+
+    renderFocusPage('en');
+
+    const row = await screen.findByTestId('focus-insight');
+    await user.click(within(row).getByRole('button', { name: /dismiss/i }));
+
+    await waitFor(() => expect(dismissInsight).toHaveBeenCalledWith(insight.id));
+    await waitFor(() => expect(screen.queryByText('Dismiss this pattern')).not.toBeInTheDocument());
+    expect(screen.queryByRole('region', { name: /patterns to test/i })).not.toBeInTheDocument();
+  });
+
   it('starts a task-linked session and shows the breathing orb', async () => {
     const user = userEvent.setup();
     vi.spyOn(api, 'getFocusState').mockResolvedValue(EMPTY_STATE);
@@ -352,6 +478,7 @@ describe('FocusPage', () => {
         ended_at: null,
         duration_seconds: null,
         reflection: {
+          ...EMPTY_REFLECTION,
           accomplished_text: null,
           distraction_text: null,
           next_step_text: null,
@@ -404,6 +531,7 @@ describe('FocusPage', () => {
         ended_at: null,
         duration_seconds: null,
         reflection: {
+          ...EMPTY_REFLECTION,
           accomplished_text: null,
           distraction_text: null,
           next_step_text: null,
@@ -535,6 +663,7 @@ describe('FocusPage', () => {
         ended_at: '2026-06-24T10:37:00Z',
         duration_seconds: 37 * 60,
         reflection: {
+          ...EMPTY_REFLECTION,
           accomplished_text: 'Сделал',
           distraction_text: null,
           next_step_text: null,
@@ -561,6 +690,8 @@ describe('FocusPage', () => {
         intention: 'Ретро блок',
         logged_at: expect.any(String),
         duration_minutes: 37,
+        reflection_outcome: null,
+        reflection_text: null,
         accomplished_text: 'Сделал',
         distraction_text: null,
         next_step_text: null,
@@ -796,6 +927,7 @@ describe('FocusPage', () => {
       intention: 'QA custom session',
       duration_seconds: 39 * 60,
       reflection: {
+        ...EMPTY_REFLECTION,
         accomplished_text: 'Checked timer start and history',
         distraction_text: null,
         next_step_text: null,
@@ -1118,6 +1250,7 @@ describe('FocusPage', () => {
       project_id: LUMI_PROJECT_ID,
       project_name: 'Lumi',
       reflection: {
+        ...EMPTY_REFLECTION,
         accomplished_text: 'Filled later',
         distraction_text: null,
         next_step_text: 'Retest',
@@ -1145,6 +1278,7 @@ describe('FocusPage', () => {
       project_id: LUMI_PROJECT_ID,
       project_name: 'Lumi',
       reflection: {
+        ...EMPTY_REFLECTION,
         accomplished_text: 'Checked layer',
         distraction_text: null,
         next_step_text: null,
@@ -1207,6 +1341,7 @@ describe('FocusPage', () => {
       ended_at: '2026-06-24T10:45:00Z',
       duration_seconds: 45 * 60,
       reflection: {
+        ...EMPTY_REFLECTION,
         accomplished_text: 'Old result',
         distraction_text: null,
         next_step_text: null,
@@ -1224,6 +1359,7 @@ describe('FocusPage', () => {
         ended_at: '2026-06-24T12:15:00Z',
         duration_seconds: 75 * 60,
         reflection: {
+          ...EMPTY_REFLECTION,
           accomplished_text: 'New result',
           distraction_text: null,
           next_step_text: null,
@@ -1263,7 +1399,7 @@ describe('FocusPage', () => {
       ended_at: '2026-06-24T20:10:00Z',
       duration_seconds: 20 * 60,
       local_date: '2026-06-24',
-      reflection: { accomplished_text: null, distraction_text: null, next_step_text: null, focus_score: 3 },
+      reflection: { ...EMPTY_REFLECTION, focus_score: 3 },
     });
     vi.spyOn(api, 'getFocusState').mockResolvedValue({ ...EMPTY_STATE, recent_sessions: [session] });
     vi.spyOn(api, 'getFocusSummary').mockResolvedValue(SUMMARY);
@@ -1292,7 +1428,7 @@ describe('FocusPage', () => {
     const user = userEvent.setup();
     const session = makeSession({
       intention: 'Fresh details target',
-      reflection: { accomplished_text: 'Old result', distraction_text: null, next_step_text: null, focus_score: null },
+      reflection: { ...EMPTY_REFLECTION, accomplished_text: 'Old result' },
     });
     const refreshed = {
       ...session,
