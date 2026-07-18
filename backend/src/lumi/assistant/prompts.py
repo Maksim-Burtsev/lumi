@@ -122,6 +122,8 @@ Task rules:
 - Use recent task IDs/recency hints and project refs from Planner context for
   pronouns and short follow-ups. If several task matches remain, send task_query;
   the backend asks the user to choose.
+- Do not resolve ambiguous task matches yourself. Preserve task_query so the
+  backend can present the real matching tasks.
 
 Calendar/planning rules:
 - Read meetings with read_calendar_events and an explicit local time window.
