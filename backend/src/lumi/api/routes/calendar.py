@@ -72,7 +72,20 @@ class PrivateNoteBody(BaseModel):
 
 
 class PlanDayBody(BaseModel):
+    mode: Literal["today", "tomorrow", "replan"] = "today"
     date: str | None = None
+    request_id: str | None = Field(default=None, max_length=120)
+
+    @field_validator("date")
+    @classmethod
+    def validate_date(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("bad_date") from exc
+        return value
 
 
 class WorkBlockCreate(BaseModel):
@@ -295,9 +308,14 @@ async def plan_day(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
-    kwargs: dict[str, Any] = {}
-    if payload and payload.date:
-        kwargs["plan_date"] = payload.date  # YYYY-MM-DD, плановать можно любой день
+    payload = payload or PlanDayBody()
+    kwargs: dict[str, Any] = {
+        "planning_mode": payload.mode,
+    }
+    if payload.date:
+        kwargs["plan_date"] = payload.date
+    if payload.request_id:
+        kwargs["request_id"] = payload.request_id
     return await start_background_run(session, user, "daily_planning", **kwargs)
 
 

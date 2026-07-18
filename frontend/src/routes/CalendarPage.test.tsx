@@ -95,10 +95,14 @@ describe('CalendarPage WorkBlock integration', () => {
         ended_at: null,
         duration_seconds: null,
         reflection: {
+          outcome: null,
+          raw_text: null,
           accomplished_text: null,
           distraction_text: null,
           next_step_text: null,
           focus_score: null,
+          input_hash: null,
+          analysis: null,
         },
       },
     });

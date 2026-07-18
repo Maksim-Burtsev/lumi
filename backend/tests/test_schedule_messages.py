@@ -218,6 +218,30 @@ def test_render_schedule_message_marks_proposed_blocks_without_color_noise():
     assert rendered.buttons == []
 
 
+def test_render_schedule_message_builds_compact_confirmation_button():
+    tz = "Europe/Moscow"
+    start = local_to_utc(datetime(2026, 6, 24, 15, 0), tz)
+
+    rendered = render_schedule_message(
+        title="📅 Day plan",
+        items=[
+            ScheduleMessageItem(
+                title="Deep work",
+                start_at=start,
+                end_at=start + timedelta(hours=1),
+                kind="proposed",
+                action_id="abc",
+            )
+        ],
+        timezone=tz,
+        language="en",
+        confirm_proposed=True,
+    )
+
+    assert rendered.buttons[0][0].text == "✓ 15:00 Deep work"
+    assert rendered.buttons[0][0].callback_data == "block_confirm:abc"
+
+
 def test_render_schedule_message_uses_week_limit_for_multi_day_window():
     tz = "Europe/Moscow"
     start = local_to_utc(datetime(2026, 6, 22, 9, 0), tz)

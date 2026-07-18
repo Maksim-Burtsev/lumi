@@ -53,6 +53,7 @@ describe('getRealtimeInvalidationKeys', () => {
       ['focus-summary'],
       ['focus-sessions'],
       ['focus-session'],
+      ['focus-insights'],
       ['calendar-events'],
       ['free-slots'],
       ['inbox-summary'],
@@ -78,6 +79,7 @@ describe('getRealtimeInvalidationKeys', () => {
       ['focus-summary'],
       ['focus-sessions'],
       ['focus-session'],
+      ['focus-insights'],
       ['today'],
     ]);
   });
@@ -97,6 +99,7 @@ describe('getRealtimeInvalidationKeys', () => {
       ['focus-summary'],
       ['focus-sessions'],
       ['focus-session'],
+      ['focus-insights'],
     ]);
   });
 });

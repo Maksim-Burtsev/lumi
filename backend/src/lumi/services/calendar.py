@@ -56,6 +56,34 @@ def _same_url(a: str | None, b: str | None) -> bool:
     return bool(a and b and a.rstrip("/").lower() == b.rstrip("/").lower())
 
 
+def _planning_proposal_expired(
+    event: CalendarEvent,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    if event.status != CalendarEventStatus.PROPOSED:
+        return False
+    raw_expiry = (event.metadata_ or {}).get("proposal_expires_at")
+    if not isinstance(raw_expiry, str):
+        return False
+    try:
+        expires_at = datetime.fromisoformat(raw_expiry.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return (
+        expires_at.tzinfo is not None
+        and expires_at.utcoffset() is not None
+        and expires_at <= (now or utc_now())
+    )
+
+
+def _is_replaceable_planning_proposal(event: CalendarEvent) -> bool:
+    metadata = event.metadata_ or {}
+    return bool(metadata.get("plan_batch_id")) and not metadata.get(
+        "alternative_for_event_id"
+    )
+
+
 def _clean_links(
     links: list[str] | None, *, meeting_url: str | None = None, external_url: str | None = None
 ) -> list[str]:
@@ -226,7 +254,12 @@ class CalendarService:
             )
             .order_by(CalendarEvent.start_at)
         )
-        return list(result.scalars())
+        now = utc_now()
+        return [
+            event
+            for event in result.scalars()
+            if not _planning_proposal_expired(event, now=now)
+        ]
 
     async def get_event(self, user: User, event_id: uuid.UUID) -> CalendarEvent | None:
         result = await self.session.execute(
@@ -431,22 +464,33 @@ class CalendarService:
         await self._emit_calendar_changed(event, "calendar_event.created")
         return event
 
-    async def cancel_proposed_blocks(self, user: User, *, day: datetime) -> int:
+    async def cancel_proposed_blocks(
+        self,
+        user: User,
+        *,
+        day: datetime,
+        future_only: bool = False,
+        planning_only: bool = False,
+        now: datetime | None = None,
+    ) -> int:
         """Cancel all agent-proposed (still unaccepted) blocks for the given day."""
         await self._lock_user(user)
         day_start, day_end = local_day_bounds(day, user.timezone)
-        result = await self.session.execute(
-            select(CalendarEvent).where(
-                CalendarEvent.user_id == user.id,
-                CalendarEvent.source == CalendarSource.INTERNAL,
-                CalendarEvent.status == CalendarEventStatus.PROPOSED,
-                CalendarEvent.source_task_id.is_not(None),
-                CalendarEvent.start_at < day_end,
-                CalendarEvent.end_at > day_start,
-            )
+        stmt = select(CalendarEvent).where(
+            CalendarEvent.user_id == user.id,
+            CalendarEvent.source == CalendarSource.INTERNAL,
+            CalendarEvent.status == CalendarEventStatus.PROPOSED,
+            CalendarEvent.source_task_id.is_not(None),
+            CalendarEvent.start_at < day_end,
+            CalendarEvent.end_at > day_start,
         )
+        if future_only:
+            stmt = stmt.where(CalendarEvent.start_at >= (now or utc_now()))
+        result = await self.session.execute(stmt)
         cancelled = 0
         for event in result.scalars():
+            if planning_only and not _is_replaceable_planning_proposal(event):
+                continue
             event.status = CalendarEventStatus.CANCELLED
             cancelled += 1
         if cancelled:
@@ -575,6 +619,7 @@ class CalendarService:
         *,
         day: datetime,
         duration_minutes: int = 60,
+        ignore_future_planning_proposals: bool = False,
     ) -> list[tuple[datetime, datetime]]:
         """Free windows in the user's working day, UTC tuples."""
         work_window = planning_work_window(user.settings, day, user.timezone)
@@ -600,6 +645,14 @@ class CalendarService:
                 CalendarEventStatus.CONFIRMED,
                 CalendarEventStatus.TENTATIVE,
                 CalendarEventStatus.PROPOSED,
+            )
+            and not (
+                ignore_future_planning_proposals
+                and e.status == CalendarEventStatus.PROPOSED
+                and e.source == CalendarSource.INTERNAL
+                and e.source_task_id is not None
+                and _is_replaceable_planning_proposal(e)
+                and e.start_at >= now
             )
         ]
         return subtract_intervals(
@@ -790,7 +843,10 @@ class CalendarService:
             for event in result.scalars()
             if not (
                 event.status == CalendarEventStatus.PROPOSED
-                and (event.metadata_ or {}).get("alternative_for_event_id")
+                and (
+                    (event.metadata_ or {}).get("alternative_for_event_id")
+                    or _planning_proposal_expired(event)
+                )
             )
         ]
         external_id = str(external_event.id)
@@ -898,6 +954,17 @@ class CalendarService:
                             status=CalendarEventStatus.PROPOSED,
                             created_by="external_sync",
                             metadata={
+                                **{
+                                    key: value
+                                    for key in (
+                                        "plan_batch_id",
+                                        "planning_request_id",
+                                        "planning_mode",
+                                        "planning_context_hash",
+                                        "proposal_expires_at",
+                                    )
+                                    if (value := metadata.get(key)) is not None
+                                },
                                 "alternative_for_event_id": str(block.id),
                                 "conflict_external_event_id": conflict.get(
                                     "external_event_id"
@@ -917,6 +984,17 @@ class CalendarService:
                         conflict["alternative_event_id"] = None
                         metadata["work_block_conflict"] = conflict
                         block.metadata_ = metadata
+
+                if (
+                    block.status == CalendarEventStatus.PROPOSED
+                    and metadata.get("plan_batch_id")
+                ):
+                    await self.cancel_internal_event(
+                        user,
+                        block,
+                        actor="external_sync",
+                    )
+                    changed = True
 
             if changed:
                 await self.session.flush()

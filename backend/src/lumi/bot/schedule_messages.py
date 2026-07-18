@@ -123,7 +123,7 @@ def render_schedule_message(
         if confirm_proposed and item.kind == "proposed" and item.action_id:
             start_label = utc_to_local(item.start_at, timezone).strftime("%H:%M")
             buttons.append([ScheduleMessageButton(
-                text=f"✓ Принять {start_label} {truncate(item.title, 24)}",
+                text=f"✓ {start_label} {truncate(item.title, 24)}",
                 callback_data=f"block_confirm:{item.action_id}",
             )])
         if item.busy:

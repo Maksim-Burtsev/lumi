@@ -13,6 +13,7 @@ import type {
   CreateTaskInput,
   FinishFocusSessionInput,
   FocusStateResponse,
+  FocusInsightsResponse,
   LogFocusSessionInput,
   PatchAutomationInput,
   PatchNewsTopicInput,
@@ -62,6 +63,7 @@ export const qk = {
   focus: ['focus'] as const,
   focusTasks: ['tasks', normalizeTaskListQuery({ filter: 'all', limit: 300 })] as const,
   focusSession: (id: string) => ['focus-session', id] as const,
+  focusInsights: (limit = 3) => ['focus-insights', { limit }] as const,
   focusSummary: (query: FocusRangeQuery) => ['focus-summary', query] as const,
   focusSessions: (query: FocusRangeQuery) => ['focus-sessions', query] as const,
   eventsAll: ['calendar-events'] as const,
@@ -315,6 +317,13 @@ export function useFocusSession(id: string | null) {
   });
 }
 
+export function useFocusInsights(limit = 3) {
+  return useQuery({
+    queryKey: qk.focusInsights(limit),
+    queryFn: () => api.getFocusInsights(limit),
+  });
+}
+
 export function useCalendarEvents(start: string, end: string) {
   return useQuery({ queryKey: qk.events(start, end), queryFn: () => api.listCalendarEvents(start, end) });
 }
@@ -523,6 +532,37 @@ function invalidateFocusDerivedQueries(queryClient: ReturnType<typeof useQueryCl
   void queryClient.invalidateQueries({ queryKey: ['focus-summary'] });
   void queryClient.invalidateQueries({ queryKey: ['focus-sessions'] });
   void queryClient.invalidateQueries({ queryKey: ['focus-session'] });
+  void queryClient.invalidateQueries({ queryKey: ['focus-insights'] });
+}
+
+export function useTryFocusInsight() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.tryFocusInsight(id),
+    onSuccess: ({ insight }) => {
+      queryClient.setQueriesData<FocusInsightsResponse>(
+        { queryKey: ['focus-insights'] },
+        (current) => current
+          ? { ...current, items: current.items.map((item) => item.id === insight.id ? insight : item) }
+          : current,
+      );
+    },
+  });
+}
+
+export function useDismissFocusInsight() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.dismissFocusInsight(id),
+    onSuccess: ({ insight }) => {
+      queryClient.setQueriesData<FocusInsightsResponse>(
+        { queryKey: ['focus-insights'] },
+        (current) => current
+          ? { ...current, items: current.items.filter((item) => item.id !== insight.id) }
+          : current,
+      );
+    },
+  });
 }
 
 export function useStartFocusSession() {
@@ -540,6 +580,7 @@ export function useStartFocusSession() {
         recent_sessions: previous?.recent_sessions ?? [],
       });
       invalidateFocusDerivedQueries(queryClient);
+      void queryClient.invalidateQueries({ queryKey: qk.today });
     },
   });
 }

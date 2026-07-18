@@ -98,10 +98,10 @@ export interface TodaySummary {
   tasks_active: number;
   tasks_due_today: number;
   tasks_overdue: number;
-  emails_need_reply: number;
+  emails_need_reply?: number;
 }
 
-export type TimelineKind = 'event' | 'focus' | 'proposed' | 'task';
+export type TimelineKind = 'meeting' | 'work_block' | 'proposed' | 'event' | 'focus_session' | 'task';
 export type EventSource = 'internal' | 'google' | 'yandex';
 export type EventStatus = 'confirmed' | 'tentative' | 'proposed' | 'cancelled';
 
@@ -114,11 +114,29 @@ export interface TimelineItem {
   source: EventSource;
   status: EventStatus;
   busy: boolean;
+  meeting_url?: string | null;
+  expires_at?: string | null;
   private_note?: string | null;
   private_note_summary?: string | null;
   private_note_summary_status?: 'pending' | 'ready' | 'failed' | 'not_needed' | null;
   private_note_updated_at?: string | null;
   private_note_summary_updated_at?: string | null;
+}
+
+export interface TodayCapacity {
+  work_minutes: number;
+  meeting_minutes: number;
+  planned_minutes: number;
+  focus_minutes: number;
+  free_minutes: number;
+  utilization_percent: number;
+  over_capacity: boolean;
+}
+
+export interface TodayPlanning {
+  tomorrow_date: string;
+  can_replan: boolean;
+  proposal_expires_at: string | null;
 }
 
 export type AttentionKind = 'overdue_task' | 'due_task' | 'email' | 'confirmation';
@@ -219,6 +237,10 @@ export interface TodayResponse {
   date: string;
   greeting: string;
   summary: TodaySummary;
+  capacity: TodayCapacity;
+  next_block: TimelineItem | null;
+  planned_tasks: Task[];
+  planning: TodayPlanning;
   timeline: TimelineItem[];
   needs_attention: AttentionItem[];
   suggestions: Suggestion[];
@@ -376,12 +398,24 @@ export interface AssistantSuggestionResponse {
 export type FocusSessionStatus = 'active' | 'completed' | 'abandoned';
 export type FocusCyclePreset = '25/5' | '50/10' | '90/15' | 'custom';
 export type FocusCyclePhase = 'focus' | 'break' | 'done';
+export type FocusReflectionOutcome = 'done' | 'progress' | 'blocked';
+export type FocusAnalysisStatus = 'pending' | 'running' | 'ready' | 'failed' | 'superseded';
+
+export interface FocusReflectionAnalysis {
+  status: FocusAnalysisStatus;
+  schema_version: string;
+  updated_at: string | null;
+}
 
 export interface FocusReflection {
+  outcome: FocusReflectionOutcome | null;
+  raw_text: string | null;
   accomplished_text: string | null;
   distraction_text: string | null;
   next_step_text: string | null;
   focus_score: number | null;
+  input_hash: string | null;
+  analysis: FocusReflectionAnalysis | null;
 }
 
 export interface FocusCycle {
@@ -438,6 +472,8 @@ export interface StartFocusSessionInput {
 }
 
 export interface FinishFocusSessionInput {
+  reflection_outcome?: FocusReflectionOutcome | null;
+  reflection_text?: string | null;
   accomplished_text?: string | null;
   distraction_text?: string | null;
   next_step_text?: string | null;
@@ -451,6 +487,8 @@ export interface UpdateFocusSessionInput {
   intention?: string;
   started_at?: string;
   ended_at?: string;
+  reflection_outcome?: FocusReflectionOutcome | null;
+  reflection_text?: string | null;
   accomplished_text?: string | null;
   distraction_text?: string | null;
   next_step_text?: string | null;
@@ -464,6 +502,8 @@ export interface LogFocusSessionInput {
   intention: string;
   logged_at: string;
   duration_minutes: number;
+  reflection_outcome?: FocusReflectionOutcome | null;
+  reflection_text?: string | null;
   accomplished_text?: string | null;
   distraction_text?: string | null;
   next_step_text?: string | null;
@@ -508,6 +548,30 @@ export interface FocusSummaryResponse {
   daily_activity: FocusDailyActivity[];
   project_breakdown: FocusProjectBreakdown[];
   next_steps: string[];
+}
+
+export type FocusInsightStatus = 'proposed' | 'confirmed' | 'dismissed' | 'expired';
+
+export interface FocusInsight {
+  id: string;
+  kind: string;
+  status: FocusInsightStatus;
+  statement: string;
+  window_start: string;
+  window_end: string;
+  support_count: number;
+  confidence: number;
+  evidence: Record<string, unknown>;
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
+export interface FocusInsightsResponse {
+  items: FocusInsight[];
+}
+
+export interface FocusInsightResponse {
+  insight: FocusInsight;
 }
 
 // ---------------------------------------------------------------- Calendar
@@ -609,6 +673,14 @@ export interface FreeSlotsResponse {
 export interface RunRef {
   run_id: string;
   status: string;
+}
+
+export type PlanDayMode = 'today' | 'tomorrow' | 'replan';
+
+export interface PlanDayInput {
+  mode?: PlanDayMode;
+  date?: string;
+  request_id?: string;
 }
 
 // ---------------------------------------------------------------- Inbox
