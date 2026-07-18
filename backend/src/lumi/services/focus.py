@@ -20,6 +20,7 @@ from lumi.db.models import (
     FocusSession,
     FocusSessionStatus,
     Project,
+    ReflectionOutcome,
     Task,
     TaskStatus,
     User,
@@ -211,6 +212,17 @@ class FocusService:
         )
 
         now = utc_now()
+        if planned_event is not None:
+            planned_minutes = max(
+                1,
+                min(
+                    240,
+                    round(
+                        (planned_event.end_at - planned_event.start_at).total_seconds()
+                        / 60
+                    ),
+                ),
+            )
         focus_session = FocusSession(
             user_id=user.id,
             task_id=task.id if task else None,
@@ -419,6 +431,8 @@ class FocusService:
         distraction_text: str | None,
         next_step_text: str | None,
         focus_score: int | None,
+        reflection_outcome: ReflectionOutcome | None = None,
+        reflection_text: str | None = None,
     ) -> FocusSession:
         await self.session.execute(select(User.id).where(User.id == user.id).with_for_update())
         locked = await self._get_locked_session(user, focus_session.id)
@@ -439,10 +453,15 @@ class FocusService:
         locked.distraction_text = _clean_text(distraction_text)
         locked.next_step_text = _clean_text(next_step_text)
         locked.focus_score = focus_score
+        locked.reflection_outcome = reflection_outcome
+        locked.reflection_text = _clean_text(reflection_text)
         if locked.break_minutes:
             locked.break_started_at = ended
             locked.break_target_end_at = ended + timedelta(minutes=locked.break_minutes)
         await self.session.flush()
+        from lumi.services.reflection_analysis import ReflectionAnalysisService
+
+        await ReflectionAnalysisService(self.session).schedule(locked)
         await self._emit(locked, "focus.finished")
         return locked
 
@@ -517,13 +536,28 @@ class FocusService:
             locked.planned_minutes = max(1, min(240, round((next_ended - next_started).total_seconds() / 60)))
             locked.duration_seconds = int((next_ended - next_started).total_seconds())
 
-        for field in ("accomplished_text", "distraction_text", "next_step_text"):
+        reflection_changed = False
+        for field in (
+            "accomplished_text",
+            "distraction_text",
+            "next_step_text",
+            "reflection_text",
+        ):
             if field in updates:
                 setattr(locked, field, _clean_text(updates[field]))
+                reflection_changed = True
         if "focus_score" in updates:
             locked.focus_score = updates["focus_score"]
+            reflection_changed = True
+        if "reflection_outcome" in updates:
+            locked.reflection_outcome = updates["reflection_outcome"]
+            reflection_changed = True
 
         await self.session.flush()
+        if reflection_changed:
+            from lumi.services.reflection_analysis import ReflectionAnalysisService
+
+            await ReflectionAnalysisService(self.session).schedule(locked)
         await self._emit(locked, "focus.updated")
         return locked
 
@@ -559,6 +593,8 @@ class FocusService:
         distraction_text: str | None = None,
         next_step_text: str | None = None,
         focus_score: int | None = None,
+        reflection_outcome: ReflectionOutcome | None = None,
+        reflection_text: str | None = None,
     ) -> FocusSession:
         clean_intention = _clean_text(intention)
         if clean_intention is None:
@@ -591,13 +627,21 @@ class FocusService:
             distraction_text=_clean_text(distraction_text),
             next_step_text=_clean_text(next_step_text),
             focus_score=focus_score,
+            reflection_outcome=reflection_outcome,
+            reflection_text=_clean_text(reflection_text),
         )
         self.session.add(focus_session)
         await self.session.flush()
+        from lumi.services.reflection_analysis import ReflectionAnalysisService
+
+        await ReflectionAnalysisService(self.session).schedule(focus_session)
         await self._emit(focus_session, "focus.logged")
         return focus_session
 
     async def abandon_session(self, user: User, focus_session: FocusSession) -> FocusSession:
+        # Keep the same user -> focus-session lock order as finish_session so
+        # concurrent terminal mutations cannot deadlock while emitting UiEvents.
+        await self.session.execute(select(User.id).where(User.id == user.id).with_for_update())
         locked = await self._get_locked_session(user, focus_session.id)
         if locked is None:
             raise ValueError("focus_session_not_found")

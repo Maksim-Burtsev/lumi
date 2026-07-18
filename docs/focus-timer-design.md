@@ -29,16 +29,32 @@ typographic hierarchy remain the visual foundation.
 ![Edit, log, and review sheet](assets/focus-timer/mockups/edit-log-review.png)
 
 - Start and end each have independent date and time controls, including sessions
-  that cross midnight.
+  that cross midnight; manual/edit duration cannot exceed 240 minutes.
 - Focus score is nullable and `Not scored` is an explicit radio choice.
+- Quick review is optional: outcome, short note, accomplished work, friction,
+  next step, and score remain user-authored source data.
 - Validation is inline and preserves the rest of the form layout.
 - The save action remains reachable above the keyboard and safe-area inset.
+
+## Planned work and insights
+
+- A confirmed internal WorkBlock starts a FocusSession through
+  `planned_event_id`; the Task, WorkBlock, and actual session remain distinct.
+- Session details show planned versus actual focus duration. Finishing focus
+  never silently completes the linked Task.
+- Reflection analysis is an asynchronous, versioned extraction from the quick
+  review. Its failure must not block or rewrite the completed session.
+- Analytics shows at most three temporary evidence-backed insights with source
+  evidence, Try, and Dismiss. Insights do not become advice, preferences, or
+  schedule changes without an explicit later action.
 
 ## Interaction invariants
 
 - Leaving the Sessions route must not stop timer tracking or the completion
   alarm.
 - Finish and cancel are mutually exclusive state transitions.
+- Break state survives navigation/reopen and break time is excluded from focus
+  duration and analytics.
 - No-project is represented as `null` in data and localized only in the UI.
 - History details are re-fetched by session id after mutations.
 - Nested sheets expose exactly one modal layer to assistive technology.
