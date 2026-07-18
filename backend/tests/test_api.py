@@ -5,17 +5,27 @@ import pytest
 from sqlalchemy import select
 
 from lumi.api.deps import get_current_user
+from lumi.api.routes import calendar as calendar_routes
 from lumi.api.routes import tasks as task_routes
 from lumi.api.routes import telegram
-from lumi.db.models import ScheduledTask, ScheduledTaskType
+from lumi.db.models import (
+    CalendarEventStatus,
+    CalendarSource,
+    FocusSession,
+    FocusSessionStatus,
+    ScheduledTask,
+    ScheduledTaskType,
+)
 from lumi.db.session import session_scope
 from lumi.main import app
 from lumi.services import tasks as task_service_module
+from lumi.services import today as today_service_module
 from lumi.services.calendar import CalendarService
 from lumi.services.confirmations import ConfirmationService
 from lumi.services.projects import ProjectService
 from lumi.services.tasks import TaskService
 from lumi.services.users import UserService
+from lumi.services.work_blocks import WorkBlockService
 from lumi.utils.time import local_now, local_to_utc
 
 from .conftest import TEST_TELEGRAM_ID
@@ -241,11 +251,224 @@ async def test_today_shape(client):
     response = await client.get("/api/today")
     assert response.status_code == 200
     body = response.json()
-    for key in ("date", "greeting", "summary", "timeline", "needs_attention",
-                "suggestions", "recent_runs"):
+    for key in (
+        "date",
+        "greeting",
+        "summary",
+        "capacity",
+        "next_block",
+        "planned_tasks",
+        "planning",
+        "timeline",
+        "needs_attention",
+        "suggestions",
+        "recent_runs",
+    ):
         assert key in body
     assert body["summary"]["tasks_active"] == 0
     assert "emails_need_reply" not in body["summary"]
+
+
+async def test_plan_day_passes_mode_date_and_idempotency_key(
+    client,
+    monkeypatch,
+):
+    captured: dict = {}
+
+    async def fake_start_background_run(session, user, automation_type, **kwargs):
+        captured.update({"automation_type": automation_type, **kwargs})
+        return {"run_id": "run-1", "status": "queued"}
+
+    monkeypatch.setattr(
+        calendar_routes,
+        "start_background_run",
+        fake_start_background_run,
+    )
+
+    response = await client.post(
+        "/api/calendar/plan-day",
+        json={
+            "mode": "tomorrow",
+            "date": "2035-07-12",
+            "request_id": "today-ui-1",
+        },
+    )
+    invalid = await client.post(
+        "/api/calendar/plan-day",
+        json={"mode": "tomorrow", "date": "2035-02-29"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": "run-1", "status": "queued"}
+    assert captured == {
+        "automation_type": "daily_planning",
+        "planning_mode": "tomorrow",
+        "plan_date": "2035-07-12",
+        "request_id": "today-ui-1",
+    }
+    assert invalid.status_code == 422
+
+
+async def test_today_is_workday_timeline_with_real_capacity_and_focus(
+    client,
+    db_session,
+    monkeypatch,
+):
+    now = datetime(2035, 7, 11, 9, 30, tzinfo=UTC)
+    monkeypatch.setattr(today_service_module, "utc_now", lambda: now)
+    monkeypatch.setattr(today_service_module, "local_now", lambda _timezone: now)
+    user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID)
+    user.timezone = "UTC"
+    user.settings = {
+        "planning": {
+            "work_days": [0, 1, 2, 3, 4, 5, 6],
+            "work_hours": {"start": "09:00", "end": "19:00"},
+        }
+    }
+    task = await TaskService(db_session).create_task(
+        user,
+        title="Ship Today",
+        target_at=now.replace(hour=10),
+    )
+    block = await WorkBlockService(db_session).create(
+        user,
+        task_id=task.id,
+        title="Ship Today",
+        start_at=now.replace(hour=10),
+        end_at=now.replace(hour=11),
+        status=CalendarEventStatus.CONFIRMED,
+    )
+    assert block.event is not None
+    await CalendarService(db_session).upsert_external_event(
+        user,
+        source=CalendarSource.GOOGLE,
+        external_calendar_id="primary",
+        external_event_id="meeting-1",
+        title="Partner sync",
+        start_at=now.replace(hour=13),
+        end_at=now.replace(hour=14),
+    )
+    db_session.add(FocusSession(
+        user_id=user.id,
+        task_id=task.id,
+        intention="Morning progress",
+        planned_minutes=25,
+        status=FocusSessionStatus.COMPLETED,
+        started_at=now.replace(hour=9, minute=0),
+        target_end_at=now.replace(hour=9, minute=25),
+        ended_at=now.replace(hour=9, minute=25),
+        duration_seconds=25 * 60,
+    ))
+    await db_session.commit()
+
+    response = await client.get("/api/today")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["capacity"] == {
+        "work_minutes": 600,
+        "meeting_minutes": 60,
+        "planned_minutes": 60,
+        "focus_minutes": 25,
+        "free_minutes": 440,
+        "utilization_percent": 20,
+        "over_capacity": False,
+    }
+    assert body["next_block"]["id"] == str(block.event.id)
+    assert body["next_block"]["kind"] == "work_block"
+    assert [task["title"] for task in body["planned_tasks"]] == ["Ship Today"]
+    assert {"meeting", "work_block", "focus_session"}.issubset(
+        {item["kind"] for item in body["timeline"]}
+    )
+    assert body["planning"]["tomorrow_date"] == "2035-07-12"
+
+
+async def test_today_next_block_excludes_work_block_for_completed_task(
+    client,
+    db_session,
+    monkeypatch,
+):
+    now = datetime(2035, 7, 11, 8, 0, tzinfo=UTC)
+    monkeypatch.setattr(today_service_module, "utc_now", lambda: now)
+    monkeypatch.setattr(today_service_module, "local_now", lambda _timezone: now)
+    user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID)
+    user.timezone = "UTC"
+    user.settings = {
+        "planning": {
+            "work_days": [0, 1, 2, 3, 4, 5, 6],
+            "work_hours": {"start": "09:00", "end": "19:00"},
+        }
+    }
+    task_service = TaskService(db_session)
+    task = await task_service.create_task(user, title="Already shipped")
+    block = await WorkBlockService(db_session).create(
+        user,
+        task_id=task.id,
+        title="Stale next block",
+        start_at=now.replace(hour=10),
+        end_at=now.replace(hour=11),
+        status=CalendarEventStatus.CONFIRMED,
+    )
+    assert block.event is not None
+    await task_service.complete_task(user, task)
+    await db_session.commit()
+
+    response = await client.get("/api/today")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["next_block"] is None
+    assert str(block.event.id) in {item["id"] for item in body["timeline"]}
+
+
+async def test_today_reports_over_capacity_without_moving_external_meeting(
+    client,
+    db_session,
+    monkeypatch,
+):
+    now = datetime(2035, 7, 11, 8, 0, tzinfo=UTC)
+    monkeypatch.setattr(today_service_module, "utc_now", lambda: now)
+    monkeypatch.setattr(today_service_module, "local_now", lambda _timezone: now)
+    user = await UserService(db_session).ensure_user(TEST_TELEGRAM_ID)
+    user.timezone = "UTC"
+    user.settings = {
+        "planning": {
+            "work_days": [0, 1, 2, 3, 4, 5, 6],
+            "work_hours": {"start": "09:00", "end": "10:00"},
+        }
+    }
+    task = await TaskService(db_session).create_task(user, title="Protected block")
+    block = await WorkBlockService(db_session).create(
+        user,
+        task_id=task.id,
+        title="Protected block",
+        start_at=now.replace(hour=9),
+        end_at=now.replace(hour=10),
+        status=CalendarEventStatus.CONFIRMED,
+    )
+    assert block.event is not None
+    external = await CalendarService(db_session).upsert_external_event(
+        user,
+        source=CalendarSource.GOOGLE,
+        external_calendar_id="primary",
+        external_event_id="capacity-conflict",
+        title="Fixed external meeting",
+        start_at=now.replace(hour=9),
+        end_at=now.replace(hour=10),
+    )
+    await db_session.commit()
+
+    response = await client.get("/api/today")
+
+    assert response.status_code == 200
+    capacity = response.json()["capacity"]
+    assert capacity["work_minutes"] == 60
+    assert capacity["meeting_minutes"] == 60
+    assert capacity["planned_minutes"] == 60
+    assert capacity["utilization_percent"] == 200
+    assert capacity["over_capacity"] is True
+    assert external.start_at == now.replace(hour=9)
+    assert block.event.start_at == now.replace(hour=9)
 
 
 async def test_today_timeline_includes_personal_note_fields(client, db_session):

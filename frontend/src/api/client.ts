@@ -18,6 +18,8 @@ import type {
   FocusSessionResponse,
   FocusStateResponse,
   FocusSummaryResponse,
+  FocusInsightResponse,
+  FocusInsightsResponse,
   FreeSlotsResponse,
   GoogleStatus,
   YandexConnectInput,
@@ -39,6 +41,7 @@ import type {
   PrivateNoteInput,
   PatchSettingsInput,
   PatchTaskInput,
+  PlanDayInput,
   ProjectsResponse,
   RunRef,
   SettingsResponse,
@@ -295,6 +298,22 @@ export class LumiApiClient {
     return request('POST', `/api/focus/sessions/${id}/abandon`);
   }
 
+  finishFocusBreak(id: string): Promise<FocusSessionResponse> {
+    return request('POST', `/api/focus/sessions/${id}/break/finish`);
+  }
+
+  getFocusInsights(limit = 3): Promise<FocusInsightsResponse> {
+    return request('GET', '/api/focus/insights', { query: { limit } });
+  }
+
+  tryFocusInsight(id: string): Promise<FocusInsightResponse> {
+    return request('POST', `/api/focus/insights/${id}/try`);
+  }
+
+  dismissFocusInsight(id: string): Promise<FocusInsightResponse> {
+    return request('POST', `/api/focus/insights/${id}/dismiss`);
+  }
+
   // -------------------------------------------------- Calendar
   listCalendarEvents(start: string, end: string): Promise<CalendarEventsResponse> {
     return request('GET', '/api/calendar/events', { query: { start, end } });
@@ -308,8 +327,9 @@ export class LumiApiClient {
     return request('PUT', `/api/calendar/events/${id}/private-note`, { body: input });
   }
 
-  planDay(date?: string): Promise<RunRef> {
-    return request('POST', '/api/calendar/plan-day', { body: date ? { date } : {} });
+  planDay(input?: string | PlanDayInput): Promise<RunRef> {
+    const body = typeof input === 'string' ? { date: input } : (input ?? {});
+    return request('POST', '/api/calendar/plan-day', { body });
   }
 
   confirmBlock(id: string): Promise<CalendarEventResponse> {

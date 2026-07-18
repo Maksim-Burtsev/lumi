@@ -66,3 +66,49 @@ describe('standalone web auth client', () => {
     expect(init.headers).toMatchObject({ 'X-CSRF-Token': 'csrf-value' });
   });
 });
+
+describe('workday planning client', () => {
+  it('posts the selected plan-day mode and optional idempotency key', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ run_id: 'run-1', status: 'queued' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.planDay({ mode: 'replan', request_id: 'request-1' });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/calendar/plan-day', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ mode: 'replan', request_id: 'request-1' }),
+    }));
+  });
+});
+
+describe('focus insights client', () => {
+  it('uses the bounded list and explicit try/dismiss endpoints', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(
+      JSON.stringify({ items: [], insight: {} }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.getFocusInsights(3);
+    await api.tryFocusInsight('insight-1');
+    await api.dismissFocusInsight('insight-1');
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/focus/insights?limit=3', expect.objectContaining({
+      method: 'GET',
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/focus/insights/insight-1/try', expect.objectContaining({
+      method: 'POST',
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/focus/insights/insight-1/dismiss', expect.objectContaining({
+      method: 'POST',
+    }));
+  });
+});

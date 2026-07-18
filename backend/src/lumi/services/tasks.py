@@ -594,6 +594,7 @@ class TaskService:
                 Task.status.in_([TaskStatus.ACTIVE, TaskStatus.INBOX]),
                 _not_snoozed(now),
             )
+            .execution_options(populate_existing=True)
             .order_by(Task.due_at.asc().nulls_last(), Task.priority.desc(), Task.created_at.desc())
             .limit(limit)
         )

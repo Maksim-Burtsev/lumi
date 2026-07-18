@@ -16,6 +16,11 @@ const STATE_ERROR_COPY = {
 
 const memorySilencedSessions = new Set<string>();
 let preparedAudioContext: AudioContext | null = null;
+type AlarmPhase = 'focus' | 'break';
+
+function alarmKey(sessionId: string, phase: AlarmPhase): string {
+  return phase === 'focus' ? sessionId : `${sessionId}:break`;
+}
 
 function audioContextConstructor(): typeof AudioContext | undefined {
   return window.AudioContext
@@ -38,23 +43,25 @@ export function prepareFocusAlarm(): void {
   }
 }
 
-export function isFocusAlarmSilenced(sessionId: string): boolean {
-  if (memorySilencedSessions.has(sessionId)) return true;
+export function isFocusAlarmSilenced(sessionId: string, phase: AlarmPhase = 'focus'): boolean {
+  const key = alarmKey(sessionId, phase);
+  if (memorySilencedSessions.has(key)) return true;
   try {
-    return sessionStorage.getItem(`${ALARM_SILENCE_PREFIX}${sessionId}`) === '1';
+    return sessionStorage.getItem(`${ALARM_SILENCE_PREFIX}${key}`) === '1';
   } catch {
     return false;
   }
 }
 
-export function silenceFocusAlarm(sessionId: string): void {
-  memorySilencedSessions.add(sessionId);
+export function silenceFocusAlarm(sessionId: string, phase: AlarmPhase = 'focus'): void {
+  const key = alarmKey(sessionId, phase);
+  memorySilencedSessions.add(key);
   try {
-    sessionStorage.setItem(`${ALARM_SILENCE_PREFIX}${sessionId}`, '1');
+    sessionStorage.setItem(`${ALARM_SILENCE_PREFIX}${key}`, '1');
   } catch {
     /* Some embedded browsers may reject storage writes. */
   }
-  window.dispatchEvent(new CustomEvent(ALARM_STATE_EVENT, { detail: { sessionId } }));
+  window.dispatchEvent(new CustomEvent(ALARM_STATE_EVENT, { detail: { sessionId, phase } }));
 }
 
 function playPreparedFocusAlarm(): void {
@@ -89,9 +96,14 @@ export function FocusTimerCoordinator() {
   const { show } = useToast();
   const notifiedSessionsRef = useRef(new Set<string>());
   const stateErrorNotifiedRef = useRef(false);
-  const session = focusState.data?.active_session ?? null;
+  const focusSession = focusState.data?.active_session ?? null;
+  const breakSession = focusState.data?.active_break ?? null;
+  const session = focusSession ?? breakSession;
+  const phase: AlarmPhase = focusSession ? 'focus' : 'break';
   const sessionId = session?.id ?? null;
-  const targetEndAt = session?.target_end_at ?? null;
+  const targetEndAt = phase === 'break'
+    ? (session?.cycle?.break_target_end_at ?? null)
+    : (session?.target_end_at ?? null);
   const intention = session?.intention ?? '';
 
   useEffect(() => {
@@ -119,8 +131,9 @@ export function FocusTimerCoordinator() {
       alarmStarted = false;
     };
 
+    const notificationKey = alarmKey(sessionId, phase);
     const ring = () => {
-      if (isFocusAlarmSilenced(sessionId)) {
+      if (isFocusAlarmSilenced(sessionId, phase)) {
         stopAlarm();
         return;
       }
@@ -128,15 +141,19 @@ export function FocusTimerCoordinator() {
     };
 
     const startAlarm = () => {
-      if (alarmStarted || isFocusAlarmSilenced(sessionId)) return;
+      if (alarmStarted || isFocusAlarmSilenced(sessionId, phase)) return;
       alarmStarted = true;
-      if (!notifiedSessionsRef.current.has(sessionId)) {
-        notifiedSessionsRef.current.add(sessionId);
+      if (!notifiedSessionsRef.current.has(notificationKey)) {
+        notifiedSessionsRef.current.add(notificationKey);
         haptic('success');
         show(
-          locale === 'ru'
-            ? `«${intention}»: время вышло — завершите сессию или продолжайте считать.`
-            : `“${intention}”: time is up — finish the session or keep counting.`,
+          phase === 'break'
+            ? locale === 'ru'
+              ? `Перерыв после «${intention}» завершён.`
+              : `Break after “${intention}” is over.`
+            : locale === 'ru'
+              ? `«${intention}»: время вышло — завершите сессию или продолжайте считать.`
+              : `“${intention}”: time is up — finish the session or keep counting.`,
           'info',
         );
       }
@@ -158,8 +175,8 @@ export function FocusTimerCoordinator() {
     };
 
     const handleAlarmState = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
-      if (detail?.sessionId === sessionId) stopAlarm();
+      const detail = (event as CustomEvent<{ sessionId?: string; phase?: AlarmPhase }>).detail;
+      if (detail?.sessionId === sessionId && (detail.phase ?? 'focus') === phase) stopAlarm();
     };
 
     scheduleAlarm();
@@ -171,7 +188,7 @@ export function FocusTimerCoordinator() {
       document.removeEventListener('visibilitychange', handleVisibility);
       window.removeEventListener(ALARM_STATE_EVENT, handleAlarmState);
     };
-  }, [intention, locale, sessionId, show, targetEndAt]);
+  }, [intention, locale, phase, sessionId, show, targetEndAt]);
 
   return null;
 }

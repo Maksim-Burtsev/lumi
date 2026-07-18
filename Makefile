@@ -147,6 +147,9 @@ auth-check:
 		tests/test_realtime.py
 
 analytics-check: focus-check
+	docker compose run --rm --build -e LLM_PROVIDER=mock api pytest -q \
+		tests/test_reflection_analysis.py \
+		tests/test_focus_insights.py
 
 frontend-build:
 	cd frontend && npm install && npm run build

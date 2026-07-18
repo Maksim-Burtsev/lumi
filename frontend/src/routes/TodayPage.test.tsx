@@ -4,7 +4,15 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
-import type { ConfirmationDecisionResponse, SettingsResponse, TodayResponse, User } from '../api/types';
+import type {
+  AgentRunDetailResponse,
+  ConfirmationDecisionResponse,
+  FocusSessionResponse,
+  SettingsResponse,
+  Task,
+  TodayResponse,
+  User,
+} from '../api/types';
 import { ToastProvider } from '../components/ui/Toast';
 import TodayPage from './TodayPage';
 
@@ -14,6 +22,7 @@ vi.mock('../components/timeline/Timeline', () => {
     title: string;
     start_at: string;
     end_at: string;
+    subtitle?: string;
     hasPersonalNote?: boolean;
     onPress?: () => void;
     action?: { label: string; onClick: () => void; busy?: boolean };
@@ -33,6 +42,7 @@ vi.mock('../components/timeline/Timeline', () => {
             <span>
               {time(entry.start_at)}–{time(entry.end_at)}
             </span>
+            {entry.subtitle && <span>{entry.subtitle}</span>}
             {entry.secondaryAction && (
               <button type="button" onClick={entry.secondaryAction.onClick}>
                 {entry.secondaryAction.label}
@@ -96,6 +106,22 @@ function makeTodayResponse(overrides: Partial<TodayResponse> = {}): TodayRespons
       tasks_due_today: 0,
       tasks_overdue: 0,
       emails_need_reply: 0,
+    },
+    capacity: {
+      work_minutes: 480,
+      meeting_minutes: 0,
+      planned_minutes: 0,
+      focus_minutes: 0,
+      free_minutes: 480,
+      utilization_percent: 0,
+      over_capacity: false,
+    },
+    next_block: null,
+    planned_tasks: [],
+    planning: {
+      tomorrow_date: '2026-06-13',
+      can_replan: true,
+      proposal_expires_at: null,
     },
     timeline: [],
     needs_attention: [
@@ -183,6 +209,90 @@ function makeTimelineEvent(overrides: Partial<TodayResponse['timeline'][number]>
   } as TodayResponse['timeline'][number];
 }
 
+function makeTask(overrides: Partial<Task> = {}): Task {
+  return {
+    id: 'task-1',
+    title: 'Write launch brief',
+    description: null,
+    status: 'active',
+    priority: 'high',
+    project: 'Lumi',
+    project_id: null,
+    tags: [],
+    due_at: '2026-06-12T18:00:00+04:00',
+    planned_for: '2026-06-12T11:00:00+04:00',
+    target_at: '2026-06-12T11:00:00+04:00',
+    reminder_at: null,
+    snoozed_until: null,
+    estimated_minutes: 45,
+    estimate_source: 'user',
+    review_skips: {},
+    source: 'user',
+    created_at: '2026-06-11T10:00:00Z',
+    completed_at: null,
+    bucket: 'this_week',
+    ...overrides,
+  };
+}
+
+function makeActiveFocusSession(): FocusSessionResponse {
+  return {
+    session: {
+      id: 'focus-1',
+      status: 'active',
+      planned_event_id: 'block-1',
+      task: null,
+      project_id: null,
+      project_name: null,
+      local_date: '2026-06-12',
+      intention: 'Deep work',
+      planned_minutes: 50,
+      started_at: '2026-06-12T10:00:00+04:00',
+      target_end_at: '2026-06-12T10:50:00+04:00',
+      ended_at: null,
+      duration_seconds: null,
+      actual_minutes: null,
+      planned_vs_actual_minutes: null,
+      cycle: {
+        preset: '50/10',
+        focus_minutes: 50,
+        break_minutes: 10,
+        phase: 'focus',
+        break_started_at: null,
+        break_target_end_at: null,
+        break_ended_at: null,
+      },
+      reflection: {
+        outcome: null,
+        raw_text: null,
+        accomplished_text: null,
+        distraction_text: null,
+        next_step_text: null,
+        focus_score: null,
+        input_hash: null,
+        analysis: null,
+      },
+    },
+  };
+}
+
+function makeCompletedRun(id: string): AgentRunDetailResponse {
+  return {
+    run: {
+      id,
+      type: 'plan_day',
+      status: 'completed',
+      created_at: '2026-06-12T08:00:00Z',
+      finished_at: '2026-06-12T08:00:01Z',
+      duration_ms: 1000,
+      result_summary: 'Plan ready',
+      error_message: null,
+    },
+    tool_calls: [],
+    llm_calls: [],
+  };
+}
+
 function renderTodayPage(locale: 'en' | 'ru' = 'ru') {
   vi.spyOn(api, 'getSettings').mockResolvedValue(makeSettingsResponse(locale));
   const queryClient = new QueryClient({
@@ -205,73 +315,130 @@ function renderTodayPage(locale: 'en' | 'ru' = 'ru') {
   return queryClient;
 }
 
-describe('TodayPage timeline gaps', () => {
-  it('shows free blocks for 30 minute gaps between meetings and hides shorter gaps', async () => {
+describe('TodayPage workday', () => {
+  it('shows real capacity, a unified timeline, and tasks planned for today', async () => {
     vi.spyOn(api, 'getToday').mockResolvedValue(
       makeTodayResponse({
+        capacity: {
+          work_minutes: 480,
+          meeting_minutes: 120,
+          planned_minutes: 180,
+          focus_minutes: 50,
+          free_minutes: 180,
+          utilization_percent: 62.5,
+          over_capacity: false,
+        },
         timeline: [
           {
-            id: 'event-1',
-            kind: 'event',
-            title: 'Тутория 2.0 стендап',
+            id: 'meeting-1',
+            kind: 'meeting',
+            title: 'Product review',
             start_at: '2026-06-12T13:00:00+04:00',
-            end_at: '2026-06-12T13:15:00+04:00',
-            source: 'yandex',
+            end_at: '2026-06-12T14:00:00+04:00',
+            source: 'google',
             status: 'confirmed',
             busy: true,
           },
           {
-            id: 'event-2',
-            kind: 'event',
-            title: 'Стендап календаря',
-            start_at: '2026-06-12T13:15:00+04:00',
-            end_at: '2026-06-12T13:30:00+04:00',
-            source: 'yandex',
-            status: 'confirmed',
-            busy: true,
-          },
-          {
-            id: 'event-3',
-            kind: 'event',
-            title: 'Daily MT',
+            id: 'block-1',
+            kind: 'work_block',
+            title: 'Launch brief',
             start_at: '2026-06-12T14:00:00+04:00',
-            end_at: '2026-06-12T14:30:00+04:00',
-            source: 'yandex',
+            end_at: '2026-06-12T14:50:00+04:00',
+            source: 'internal',
             status: 'confirmed',
             busy: true,
           },
           {
-            id: 'event-4',
-            kind: 'event',
-            title: 'Short buffer check',
-            start_at: '2026-06-12T14:45:00+04:00',
-            end_at: '2026-06-12T15:00:00+04:00',
-            source: 'yandex',
+            id: 'session-1',
+            kind: 'focus_session',
+            title: 'Architecture notes',
+            start_at: '2026-06-12T09:00:00+04:00',
+            end_at: '2026-06-12T09:50:00+04:00',
+            source: 'internal',
             status: 'confirmed',
-            busy: true,
+            busy: false,
           },
           {
-            id: 'event-5',
-            kind: 'event',
-            title: '1v1',
-            start_at: '2026-06-12T15:30:00+04:00',
-            end_at: '2026-06-12T16:00:00+04:00',
-            source: 'yandex',
-            status: 'confirmed',
+            id: 'proposal-1',
+            kind: 'proposed',
+            title: 'Alternative focus interval',
+            start_at: '2026-06-12T16:00:00+04:00',
+            end_at: '2026-06-12T16:50:00+04:00',
+            source: 'internal',
+            status: 'proposed',
             busy: true,
+            expires_at: '2026-06-12T15:30:00+04:00',
           },
         ],
+        planned_tasks: [makeTask()],
         needs_attention: [],
       }),
     );
 
-    renderTodayPage();
+    renderTodayPage('en');
 
-    expect(await screen.findAllByText('Free · 30 min')).toHaveLength(2);
-    expect(screen.getByText('13:30–14:00')).toBeInTheDocument();
-    expect(screen.getByText('15:00–15:30')).toBeInTheDocument();
-    expect(screen.queryByText('14:30–14:45')).not.toBeInTheDocument();
-    expect(screen.getByText('Daily MT')).toBeInTheDocument();
+    expect(await screen.findByText('3 h free')).toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: 'Capacity' })).toHaveAttribute('aria-valuenow', '63');
+    expect(screen.getByText('Product review')).toBeInTheDocument();
+    expect(screen.getByText('Launch brief')).toBeInTheDocument();
+    expect(screen.getByText('Architecture notes')).toBeInTheDocument();
+    expect(screen.getByText(/Lumi proposal · valid until/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Write launch brief/ })).toBeInTheDocument();
+  });
+
+  it('starts the next confirmed WorkBlock with its linked event and cycle', async () => {
+    const block = makeTimelineEvent({
+      id: 'block-1',
+      kind: 'work_block',
+      title: 'Deep work',
+      start_at: '2026-06-12T10:00:00+04:00',
+      end_at: '2026-06-12T10:50:00+04:00',
+    });
+    vi.spyOn(api, 'getToday').mockResolvedValue(
+      makeTodayResponse({ next_block: block, timeline: [block], needs_attention: [] }),
+    );
+    const startSpy = vi.spyOn(api, 'startFocusSession').mockResolvedValue(makeActiveFocusSession());
+
+    renderTodayPage('en');
+
+    await screen.findByRole('button', { name: 'Start' });
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+
+    await waitFor(() => {
+      expect(startSpy).toHaveBeenCalledWith({
+        planned_event_id: 'block-1',
+        intention: 'Deep work',
+        planned_minutes: 50,
+        break_minutes: 10,
+      });
+    });
+  });
+
+  it('plans tomorrow through the deterministic plan-day mode', async () => {
+    vi.spyOn(api, 'getToday').mockResolvedValue(makeTodayResponse({ needs_attention: [] }));
+    const planSpy = vi.spyOn(api, 'planDay').mockResolvedValue({ run_id: 'run-tomorrow', status: 'queued' });
+    vi.spyOn(api, 'getAgentRun').mockResolvedValue(makeCompletedRun('run-tomorrow'));
+
+    renderTodayPage('en');
+
+    await screen.findByRole('button', { name: 'Plan tomorrow' });
+    fireEvent.click(screen.getByRole('button', { name: 'Plan tomorrow' }));
+
+    await waitFor(() => expect(planSpy).toHaveBeenCalledWith({ mode: 'tomorrow' }));
+  });
+
+  it('soft-replans only the remaining day through replan mode', async () => {
+    vi.spyOn(api, 'getToday').mockResolvedValue(makeTodayResponse({ needs_attention: [] }));
+    const planSpy = vi.spyOn(api, 'planDay').mockResolvedValue({ run_id: 'run-replan', status: 'queued' });
+    vi.spyOn(api, 'getAgentRun').mockResolvedValue(makeCompletedRun('run-replan'));
+
+    renderTodayPage('en');
+
+    await screen.findByRole('button', { name: 'Replan remaining' });
+    fireEvent.click(screen.getByRole('button', { name: 'Replan remaining' }));
+
+    await waitFor(() => expect(planSpy).toHaveBeenCalledWith({ mode: 'replan' }));
   });
 
   it('shows precomputed quick wins as an inline free-slot nudge, not a duplicate suggestion list', async () => {
@@ -470,6 +637,25 @@ describe('TodayPage personal notes', () => {
   });
 });
 
+describe('TodayPage query states', () => {
+  it('exposes an accessible loading state', () => {
+    vi.spyOn(api, 'getToday').mockReturnValue(new Promise<TodayResponse>(() => undefined));
+
+    renderTodayPage('en');
+
+    expect(screen.getByRole('status', { name: 'Loading workday' })).toBeInTheDocument();
+  });
+
+  it('shows a localized error with retry', async () => {
+    vi.spyOn(api, 'getToday').mockRejectedValue(new Error('offline'));
+
+    renderTodayPage('en');
+
+    expect(await screen.findByText('Could not load the day plan.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+});
+
 describe('TodayPage locale', () => {
   it('renders the empty state in English when the app locale is English', async () => {
     vi.spyOn(api, 'getToday').mockResolvedValue(
@@ -484,7 +670,9 @@ describe('TodayPage locale', () => {
     renderTodayPage('en');
 
     expect(await screen.findByText('No meetings or blocks today')).toBeInTheDocument();
-    expect(screen.getByText('Build plan')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Plan tomorrow' })).toBeInTheDocument();
+    expect(screen.getByText('No upcoming WorkBlock')).toBeInTheDocument();
+    expect(screen.getByText('No tasks planned for today')).toBeInTheDocument();
     expect(screen.getByText('Nothing urgent — everything is under control')).toBeInTheDocument();
     expect(screen.queryByText('Сегодня нет встреч и блоков')).not.toBeInTheDocument();
   });
@@ -539,7 +727,7 @@ describe('TodayPage product scope', () => {
     expect(screen.getByText('Nothing urgent — everything is under control')).toBeInTheDocument();
   });
 
-  it('keeps confirmations and planning suggestions visible', async () => {
+  it('keeps confirmations and dedicated planning actions visible without generic plan cards', async () => {
     const confirmation = makeTodayResponse().needs_attention[0];
     vi.spyOn(api, 'getToday').mockResolvedValue(
       makeTodayResponse({
@@ -559,8 +747,8 @@ describe('TodayPage product scope', () => {
     renderTodayPage('en');
 
     expect(await screen.findByRole('button', { name: /Create task "Alpha"/ })).toBeInTheDocument();
-    expect(screen.getByText('Plan tomorrow')).toBeInTheDocument();
-    expect(screen.getByText('Lumi suggests')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Plan tomorrow' })).toBeInTheDocument();
+    expect(screen.queryByText('Lumi suggests')).not.toBeInTheDocument();
   });
 });
 

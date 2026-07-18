@@ -94,6 +94,7 @@ const ALL_KEYS: QueryKey[] = [
   ['focus-summary'],
   ['focus-sessions'],
   ['focus-session'],
+  ['focus-insights'],
   ['calendar-events'],
   ['free-slots'],
   ['inbox-summary'],
@@ -132,6 +133,7 @@ export function getRealtimeInvalidationKeys(event: RealtimeEvent): QueryKey[] {
       add(['focus-summary']);
       add(['focus-sessions']);
       add(['focus-session']);
+      add(['focus-insights']);
       add(['today']);
     } else if (topic === 'calendar') {
       add(['calendar-events']);
@@ -160,6 +162,7 @@ export function getRealtimeInvalidationKeys(event: RealtimeEvent): QueryKey[] {
       add(['focus-summary']);
       add(['focus-sessions']);
       add(['focus-session']);
+      add(['focus-insights']);
     }
   }
 

@@ -9,7 +9,9 @@ from lumi.db.models import (
     AgentRun,
     AssistantSuggestion,
     CalendarEvent,
+    FocusInsight,
     FocusSession,
+    FocusSessionAnalysis,
     LLMCall,
     Memory,
     Message,
@@ -135,8 +137,26 @@ def focus_session_to_dict(
     project: Project | None = None,
     *,
     timezone: str = "UTC",
+    analysis: FocusSessionAnalysis | None = None,
 ) -> dict[str, Any]:
     project_name = project.name if project is not None else focus_session.project_snapshot
+    actual_minutes = (
+        round(focus_session.duration_seconds / 60, 1)
+        if focus_session.duration_seconds is not None
+        else None
+    )
+    break_minutes = focus_session.break_minutes or 0
+    preset = {
+        (25, 5): "25/5",
+        (50, 10): "50/10",
+        (90, 15): "90/15",
+    }.get((focus_session.planned_minutes, break_minutes), "custom")
+    if focus_session.break_started_at is not None and focus_session.break_ended_at is None:
+        cycle_phase = "break"
+    elif focus_session.status.value == "active":
+        cycle_phase = "focus"
+    else:
+        cycle_phase = "done"
     return {
         "id": str(focus_session.id),
         "status": focus_session.status.value,
@@ -150,17 +170,68 @@ def focus_session_to_dict(
         "project": project_name,
         "intention": focus_session.intention,
         "planned_minutes": focus_session.planned_minutes,
+        "actual_minutes": actual_minutes,
+        "planned_vs_actual_minutes": (
+            round(actual_minutes - focus_session.planned_minutes, 1)
+            if actual_minutes is not None
+            else None
+        ),
+        "cycle": {
+            "preset": preset if break_minutes else None,
+            "focus_minutes": focus_session.planned_minutes,
+            "break_minutes": break_minutes,
+            "phase": cycle_phase,
+            "break_started_at": _iso(focus_session.break_started_at),
+            "break_target_end_at": _iso(focus_session.break_target_end_at),
+            "break_ended_at": _iso(focus_session.break_ended_at),
+        },
         "started_at": _iso(focus_session.started_at),
         "target_end_at": _iso(focus_session.target_end_at),
         "ended_at": _iso(focus_session.ended_at),
         "duration_seconds": focus_session.duration_seconds,
         "local_date": focus_session.started_at.astimezone(get_zone(timezone)).date().isoformat(),
         "reflection": {
+            "outcome": (
+                focus_session.reflection_outcome.value
+                if focus_session.reflection_outcome
+                else None
+            ),
+            "raw_text": focus_session.reflection_text,
             "accomplished_text": focus_session.accomplished_text,
             "distraction_text": focus_session.distraction_text,
             "next_step_text": focus_session.next_step_text,
             "focus_score": focus_session.focus_score,
+            "input_hash": focus_session.reflection_input_hash,
+            "analysis": (
+                {
+                    "status": analysis.status.value,
+                    "schema_version": analysis.schema_version,
+                    "updated_at": _iso(analysis.updated_at),
+                }
+                if analysis is not None
+                else None
+            ),
         },
+    }
+
+
+def focus_insight_to_dict(insight: FocusInsight) -> dict[str, Any]:
+    return {
+        "id": str(insight.id),
+        "kind": insight.kind,
+        "status": insight.status.value,
+        "statement": insight.statement,
+        "window_start": _iso(insight.window_start),
+        "window_end": _iso(insight.window_end),
+        "support_count": insight.support_count,
+        "confidence": float(insight.confidence),
+        "evidence": {
+            **insight.evidence,
+            "supporting_session_ids": list(insight.supporting_session_ids),
+            "distinct_days": insight.distinct_days,
+        },
+        "first_seen_at": _iso(insight.first_seen_at),
+        "last_seen_at": _iso(insight.last_seen_at),
     }
 
 
@@ -172,6 +243,19 @@ def event_to_dict(event: CalendarEvent) -> dict[str, Any]:
         kind = "work_block" if event.source_task_id else "internal"
     else:
         kind = "external"
+    raw_work_block_conflict = metadata.get("work_block_conflict")
+    work_block_conflict = (
+        {
+            "status": "impacted",
+            "external_event_id": raw_work_block_conflict.get("external_event_id"),
+            "alternative_event_id": raw_work_block_conflict.get(
+                "alternative_event_id"
+            ),
+        }
+        if isinstance(raw_work_block_conflict, dict)
+        and raw_work_block_conflict.get("status") == "impacted"
+        else None
+    )
     return {
         "id": str(event.id),
         "kind": kind,
@@ -184,6 +268,8 @@ def event_to_dict(event: CalendarEvent) -> dict[str, Any]:
         "status": event.status.value,
         "source": event.source.value,
         "source_task_id": str(event.source_task_id) if event.source_task_id else None,
+        "work_block_conflict": work_block_conflict,
+        "alternative_for_event_id": metadata.get("alternative_for_event_id"),
         "timezone": event.timezone,
         "created_by": event.created_by,
         "location": metadata.get("location"),

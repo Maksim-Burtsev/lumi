@@ -6,7 +6,14 @@ import { formatTime, formatTimeRange } from '../../lib/format';
 import { useAppLocale } from '../../lib/useAppLocale';
 import { useTimeDisplay } from '../../lib/useTimeDisplay';
 
-export type TimelineEntryKind = 'event' | 'focus' | 'proposed' | 'free' | 'task';
+export type TimelineEntryKind =
+  | 'meeting'
+  | 'work_block'
+  | 'event'
+  | 'focus_session'
+  | 'proposed'
+  | 'free'
+  | 'task';
 
 export interface TimelineEntry {
   id: string;
@@ -25,8 +32,10 @@ export interface TimelineEntry {
 }
 
 const DOTS: Record<TimelineEntryKind, string> = {
+  meeting: 'bg-[var(--hint)]',
+  work_block: 'bg-accent shadow-[0_0_6px_var(--accent-shadow)]',
   event: 'bg-[var(--hint)]',
-  focus: 'bg-accent shadow-[0_0_6px_var(--accent-shadow)]',
+  focus_session: 'bg-[var(--success)]',
   proposed: 'border-2 border-[var(--accent)] bg-transparent',
   free: 'border border-[var(--hint)] bg-transparent opacity-60',
   task: 'bg-[var(--success)]',
@@ -34,10 +43,13 @@ const DOTS: Record<TimelineEntryKind, string> = {
 
 function entryCardClass(kind: TimelineEntryKind): string {
   switch (kind) {
+    case 'meeting':
     case 'event':
       return 'card card-strong px-4 py-3';
-    case 'focus':
+    case 'work_block':
       return 'card card-strong border-l-[3px] border-l-[var(--accent)] px-4 py-3';
+    case 'focus_session':
+      return 'card card-strong border-l-[3px] border-l-[var(--success)] px-4 py-3';
     case 'proposed':
       return 'rounded-card border border-dashed border-[var(--accent-border)] bg-[var(--accent-soft)] px-4 py-3';
     case 'free':

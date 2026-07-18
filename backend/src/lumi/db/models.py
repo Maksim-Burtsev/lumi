@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import enum
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -83,6 +84,27 @@ class FocusSessionStatus(enum.StrEnum):
     ACTIVE = "active"
     COMPLETED = "completed"
     ABANDONED = "abandoned"
+
+
+class ReflectionOutcome(enum.StrEnum):
+    DONE = "done"
+    PROGRESS = "progress"
+    BLOCKED = "blocked"
+
+
+class FocusAnalysisStatus(enum.StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    READY = "ready"
+    FAILED = "failed"
+    SUPERSEDED = "superseded"
+
+
+class FocusInsightStatus(enum.StrEnum):
+    PROPOSED = "proposed"
+    CONFIRMED = "confirmed"
+    DISMISSED = "dismissed"
+    EXPIRED = "expired"
 
 
 class Priority(enum.StrEnum):
@@ -552,6 +574,11 @@ class TaskEvent(Base):
 class FocusSession(Base):
     __tablename__ = "focus_sessions"
     __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "id",
+            name="uq_focus_sessions_user_id_id",
+        ),
         Index("ix_focus_sessions_user_started", "user_id", "started_at"),
         Index("ix_focus_sessions_user_status", "user_id", "status"),
         Index("ix_focus_sessions_user_project", "user_id", "project_id"),
@@ -562,6 +589,14 @@ class FocusSession(Base):
             "user_id",
             unique=True,
             postgresql_where=text("status = 'active'"),
+        ),
+        Index(
+            "uq_focus_sessions_one_active_break",
+            "user_id",
+            unique=True,
+            postgresql_where=text(
+                "break_started_at IS NOT NULL AND break_ended_at IS NULL"
+            ),
         ),
         CheckConstraint(
             "planned_minutes BETWEEN 1 AND 240",
@@ -586,6 +621,10 @@ class FocusSession(Base):
             name="focus_session_focus_score",
         ),
         CheckConstraint(
+            "reflection_outcome IS NULL OR reflection_outcome IN ('done', 'progress', 'blocked')",
+            name="focus_session_reflection_outcome_values",
+        ),
+        CheckConstraint(
             "duration_seconds IS NULL OR duration_seconds >= 0",
             name="focus_session_duration_non_negative",
         ),
@@ -596,6 +635,19 @@ class FocusSession(Base):
         CheckConstraint(
             "planned_event_id IS NULL OR task_id IS NOT NULL",
             name="focus_session_planned_event_requires_task",
+        ),
+        CheckConstraint(
+            "break_minutes IS NULL OR break_minutes BETWEEN 1 AND 60",
+            name="focus_session_break_minutes",
+        ),
+        CheckConstraint(
+            "(break_started_at IS NULL AND break_target_end_at IS NULL "
+            "AND break_ended_at IS NULL) OR "
+            "(status = 'completed' AND break_minutes IS NOT NULL "
+            "AND break_started_at IS NOT NULL "
+            "AND break_target_end_at > break_started_at "
+            "AND (break_ended_at IS NULL OR break_ended_at >= break_started_at))",
+            name="focus_session_break_state",
         ),
         ForeignKeyConstraint(
             ["user_id", "task_id"],
@@ -634,7 +686,256 @@ class FocusSession(Base):
     distraction_text: Mapped[str | None] = mapped_column(Text)
     next_step_text: Mapped[str | None] = mapped_column(Text)
     focus_score: Mapped[int | None] = mapped_column(Integer)
+    reflection_outcome: Mapped[ReflectionOutcome | None] = mapped_column(
+        str_enum(ReflectionOutcome, "reflection_outcome"),
+    )
+    reflection_text: Mapped[str | None] = mapped_column(Text)
+    reflection_input_hash: Mapped[str | None] = mapped_column(Text)
+    break_minutes: Mapped[int | None] = mapped_column(Integer)
+    break_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    break_target_end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    break_ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     seed_batch_id: Mapped[uuid.UUID | None] = mapped_column()
+    created_at: Mapped[datetime] = created_at_col()
+    updated_at: Mapped[datetime] = updated_at_col()
+
+
+class FocusSessionAnalysis(Base):
+    """Versioned extraction derived from an immutable reflection snapshot."""
+
+    __tablename__ = "focus_session_analyses"
+    __table_args__ = (
+        UniqueConstraint(
+            "focus_session_id",
+            "input_hash",
+            "schema_version",
+            "prompt_version",
+            "model_provider",
+            "model_name",
+            name="uq_focus_session_analysis_version",
+        ),
+        Index(
+            "ix_focus_session_analyses_user_status",
+            "user_id",
+            "status",
+            "updated_at",
+        ),
+        Index(
+            "ix_focus_session_analyses_session_created",
+            "focus_session_id",
+            "created_at",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'ready', 'failed', 'superseded')",
+            name="focus_session_analysis_status_values",
+        ),
+        CheckConstraint(
+            "outcome IS NULL OR outcome IN ('done', 'progress', 'blocked')",
+            name="focus_session_analysis_outcome_values",
+        ),
+        CheckConstraint(
+            "work_type IS NULL OR work_type IN "
+            "('deep_work', 'admin', 'communication', 'planning', 'learning', 'creative', 'other')",
+            name="focus_session_analysis_work_type_values",
+        ),
+        CheckConstraint(
+            "outcome_confidence IS NULL OR outcome_confidence BETWEEN 0 AND 1",
+            name="focus_session_analysis_outcome_confidence",
+        ),
+        CheckConstraint(
+            "work_type_confidence IS NULL OR work_type_confidence BETWEEN 0 AND 1",
+            name="focus_session_analysis_work_type_confidence",
+        ),
+        CheckConstraint(
+            "next_action_confidence IS NULL OR next_action_confidence BETWEEN 0 AND 1",
+            name="focus_session_analysis_next_action_confidence",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "focus_session_id"],
+            ["focus_sessions.user_id", "focus_sessions.id"],
+            name="fk_focus_session_analyses_user_session",
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    focus_session_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    input_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[FocusAnalysisStatus] = mapped_column(
+        str_enum(FocusAnalysisStatus, "focus_analysis_status"),
+        nullable=False,
+        default=FocusAnalysisStatus.PENDING,
+    )
+    schema_version: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_version: Mapped[str] = mapped_column(Text, nullable=False)
+    model_provider: Mapped[str] = mapped_column(Text, nullable=False)
+    model_name: Mapped[str] = mapped_column(Text, nullable=False)
+    source_snapshot: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=_JSONB_EMPTY_DICT,
+    )
+    raw_text_snapshot: Mapped[str | None] = mapped_column(Text)
+    outcome: Mapped[str | None] = mapped_column(Text)
+    outcome_source: Mapped[str | None] = mapped_column(Text)
+    outcome_confidence: Mapped[float | None] = mapped_column(Numeric(4, 3))
+    work_type: Mapped[str | None] = mapped_column(Text)
+    work_type_confidence: Mapped[float | None] = mapped_column(Numeric(4, 3))
+    frictions: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default=_JSONB_EMPTY_LIST,
+    )
+    normalized_next_action: Mapped[str | None] = mapped_column(Text)
+    next_action_confidence: Mapped[float | None] = mapped_column(Numeric(4, 3))
+    evidence: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=_JSONB_EMPTY_DICT,
+    )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(Text)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = created_at_col()
+    updated_at: Mapped[datetime] = updated_at_col()
+
+
+class FocusInsight(Base):
+    """Temporary evidence-backed hypothesis, never a durable user preference."""
+
+    __tablename__ = "focus_insights"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "kind",
+            "window_start",
+            "window_end",
+            "context_hash",
+            name="uq_focus_insight_context",
+        ),
+        Index(
+            "ix_focus_insights_user_status_seen",
+            "user_id",
+            "status",
+            "last_seen_at",
+        ),
+        CheckConstraint(
+            "status IN ('proposed', 'confirmed', 'dismissed', 'expired')",
+            name="focus_insight_status_values",
+        ),
+        CheckConstraint(
+            "support_count >= 3",
+            name="focus_insight_support_count_minimum",
+        ),
+        CheckConstraint(
+            "distinct_days >= 2",
+            name="focus_insight_distinct_days_minimum",
+        ),
+        CheckConstraint(
+            "confidence BETWEEN 0 AND 1",
+            name="focus_insight_confidence",
+        ),
+        CheckConstraint(
+            "window_end > window_start",
+            name="focus_insight_window_order",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[FocusInsightStatus] = mapped_column(
+        str_enum(FocusInsightStatus, "focus_insight_status"),
+        nullable=False,
+        default=FocusInsightStatus.PROPOSED,
+    )
+    window_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    window_end: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    support_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    distinct_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    confidence: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False)
+    supporting_session_ids: Mapped[list[str]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default=_JSONB_EMPTY_LIST,
+    )
+    evidence: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=_JSONB_EMPTY_DICT,
+    )
+    context_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = created_at_col()
+    updated_at: Mapped[datetime] = updated_at_col()
+
+
+class PlanningRequest(Base):
+    """Durable idempotency result for one explicit/background planning request."""
+
+    __tablename__ = "planning_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "request_key",
+            name="uq_planning_requests_user_key",
+        ),
+        Index(
+            "ix_planning_requests_user_created",
+            "user_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id"),
+        nullable=False,
+    )
+    request_key: Mapped[str] = mapped_column(Text, nullable=False)
+    mode: Mapped[str] = mapped_column(Text, nullable=False)
+    day_local: Mapped[date] = mapped_column(Date, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    event_ids: Mapped[list[str]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default=_JSONB_EMPTY_LIST,
+    )
     created_at: Mapped[datetime] = created_at_col()
     updated_at: Mapped[datetime] = updated_at_col()
 

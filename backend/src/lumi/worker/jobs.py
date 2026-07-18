@@ -775,9 +775,11 @@ async def enqueue_due_assistant_turns(ctx: dict[str, Any]) -> str:
 
 @_job(AgentRunType.DAILY_PLANNING)
 async def run_daily_planning(*, session, user: User, run: AgentRun, notify: bool,
-                             plan_date: str = "") -> str:
+                             plan_date: str = "", planning_mode="today",
+                             request_id: str = "") -> str:
     from datetime import datetime as _dt
 
+    from lumi.assistant.orchestrator import Button
     from lumi.services.notifier import send_telegram_message
     from lumi.services.planning import PlanningService
     from lumi.utils.time import get_zone
@@ -791,10 +793,13 @@ async def run_daily_planning(*, session, user: User, run: AgentRun, notify: bool
         except ValueError:
             day = None
     summary, created = await PlanningService(session).propose_day_plan(
-        user, day=day, agent_run_id=run.id
+        user,
+        day=day,
+        mode=planning_mode,
+        request_id=request_id or None,
+        agent_run_id=run.id,
     )
     if notify:
-        reply_markup = None
         if created:
             language = _run_reply_language(run, user)
             rendered = render_schedule_message(
@@ -815,7 +820,15 @@ async def run_daily_planning(*, session, user: User, run: AgentRun, notify: bool
                 ],
                 timezone=user.timezone,
                 language=language,
+                confirm_proposed=True,
             )
+            reply_markup = markup_from_buttons([
+                [
+                    Button(text=button.text, callback_data=button.callback_data)
+                    for button in row
+                ]
+                for row in rendered.buttons
+            ])
             await send_telegram_message(
                 user,
                 rendered.plain_text,
@@ -922,6 +935,29 @@ async def summarize_calendar_private_note(
         summary=str(response.get("summary") or ""),
     )
     return f"summarized {event.id}"
+
+
+@_job(AgentRunType.CUSTOM)
+async def extract_focus_reflection(
+    *,
+    session,
+    user: User,
+    run: AgentRun,
+    notify: bool,
+    analysis_id: str = "",
+) -> str:
+    del run, notify
+    if not analysis_id:
+        return "missing reflection analysis id"
+    from lumi.services.reflection_analysis import ReflectionAnalysisService
+
+    analysis = await ReflectionAnalysisService(session).process(
+        user_id=user.id,
+        analysis_id=uuid.UUID(analysis_id),
+    )
+    if analysis is None:
+        return "reflection analysis not found"
+    return f"reflection analysis {analysis.status.value}"
 
 
 @_job(AgentRunType.COMPACTION)
@@ -1615,6 +1651,51 @@ async def recover_pending_calendar_private_note_summaries(ctx: dict[str, Any]) -
             if job_id:
                 enqueued += 1
     return f"enqueued {enqueued} calendar personal note summaries"
+
+
+async def recover_focus_reflection_analyses(ctx: dict[str, Any]) -> str:
+    """Retry durable pending/failed rows and reclaim stale running leases."""
+
+    del ctx
+    from sqlalchemy import or_
+
+    from lumi.db.models import FocusAnalysisStatus, FocusSessionAnalysis
+
+    now = utc_now()
+    stale_before = now - timedelta(minutes=15)
+    async with session_scope() as session:
+        result = await session.execute(
+            select(FocusSessionAnalysis)
+            .where(
+                or_(
+                    FocusSessionAnalysis.status == FocusAnalysisStatus.PENDING,
+                    (
+                        (FocusSessionAnalysis.status == FocusAnalysisStatus.FAILED)
+                        & (FocusSessionAnalysis.next_retry_at <= now)
+                    ),
+                    (
+                        (FocusSessionAnalysis.status == FocusAnalysisStatus.RUNNING)
+                        & (FocusSessionAnalysis.updated_at <= stale_before)
+                    ),
+                )
+            )
+            .order_by(FocusSessionAnalysis.updated_at)
+            .limit(50)
+        )
+        rows = list(result.scalars())
+        enqueued = 0
+        for analysis in rows:
+            if analysis.status == FocusAnalysisStatus.RUNNING:
+                analysis.status = FocusAnalysisStatus.PENDING
+            job_id = await enqueue_job(
+                "extract_focus_reflection",
+                str(analysis.user_id),
+                analysis_id=str(analysis.id),
+                notify=False,
+            )
+            if job_id:
+                enqueued += 1
+    return f"enqueued {enqueued} focus reflection analyses"
 
 
 JOB_BY_AUTOMATION_TYPE = {

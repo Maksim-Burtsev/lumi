@@ -10,9 +10,11 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lumi.api.deps import get_current_user, get_db
-from lumi.api.serializers import focus_session_to_dict
-from lumi.db.models import User
+from lumi.api.serializers import focus_insight_to_dict, focus_session_to_dict
+from lumi.db.models import ReflectionOutcome, User
 from lumi.services.focus import FocusService
+from lumi.services.focus_insights import FocusInsightService
+from lumi.services.reflection_analysis import ReflectionAnalysisService
 
 router = APIRouter()
 
@@ -28,11 +30,14 @@ class FocusStart(BaseModel):
     )
     intention: str = Field(min_length=1, max_length=300)
     planned_minutes: int = Field(ge=1, le=240)
+    break_minutes: int = Field(default=0, ge=0, le=60)
 
 
 class FocusFinish(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    reflection_outcome: ReflectionOutcome | None = None
+    reflection_text: str | None = Field(default=None, max_length=4000)
     accomplished_text: str | None = Field(default=None, max_length=2000)
     distraction_text: str | None = Field(default=None, max_length=2000)
     next_step_text: str | None = Field(default=None, max_length=1000)
@@ -50,6 +55,8 @@ class FocusUpdate(BaseModel):
     intention: str | None = Field(default=None, min_length=1, max_length=300)
     started_at: datetime | None = None
     ended_at: datetime | None = None
+    reflection_outcome: ReflectionOutcome | None = None
+    reflection_text: str | None = Field(default=None, max_length=4000)
     accomplished_text: str | None = Field(default=None, max_length=2000)
     distraction_text: str | None = Field(default=None, max_length=2000)
     next_step_text: str | None = Field(default=None, max_length=1000)
@@ -67,6 +74,8 @@ class FocusLog(BaseModel):
     intention: str = Field(min_length=1, max_length=300)
     logged_at: datetime
     duration_minutes: int = Field(ge=1, le=240)
+    reflection_outcome: ReflectionOutcome | None = None
+    reflection_text: str | None = Field(default=None, max_length=4000)
     accomplished_text: str | None = Field(default=None, max_length=2000)
     distraction_text: str | None = Field(default=None, max_length=2000)
     next_step_text: str | None = Field(default=None, max_length=1000)
@@ -86,12 +95,17 @@ async def _session_or_404(service: FocusService, user: User, session_id: str):
 
 async def _serialize_sessions(service: FocusService, user: User, focus_sessions: list) -> list[dict]:
     tasks, projects = await service.related_entities(user, focus_sessions)
+    analyses = await ReflectionAnalysisService(service.session).current_for_sessions(
+        user_id=user.id,
+        sessions=focus_sessions,
+    )
     return [
         focus_session_to_dict(
             item,
             tasks.get(item.task_id),
             projects.get(item.project_id),
             timezone=user.timezone,
+            analysis=analyses.get(item.id),
         )
         for item in focus_sessions
     ]
@@ -108,10 +122,14 @@ async def focus_state(
 ) -> dict:
     service = FocusService(session)
     active = await service.get_active(user)
+    active_break = await service.get_active_break(user)
     recent = await service.recent_sessions(user)
     serialized = await _serialize_sessions(service, user, ([active] if active else []) + recent)
     return {
         "active_session": serialized[0] if active else None,
+        "active_break": (
+            await _serialize_session(service, user, active_break) if active_break else None
+        ),
         "today": await service.today_totals(user),
         "recent_sessions": serialized[1:] if active else serialized,
     }
@@ -153,6 +171,61 @@ async def focus_summary(
         "project_breakdown": summary.project_breakdown,
         "next_steps": summary.next_steps,
     }
+
+
+@router.get("/focus/insights")
+async def list_focus_insights(
+    limit: int = Query(default=3, ge=1, le=3),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    items = await FocusInsightService(session).list(user, limit=limit)
+    return {"items": [focus_insight_to_dict(item) for item in items]}
+
+
+async def _insight_or_404(
+    service: FocusInsightService,
+    user: User,
+    insight_id: str,
+):
+    try:
+        parsed = uuid.UUID(insight_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="not_found") from exc
+    insight = await service.get(user, parsed)
+    if insight is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    return insight
+
+
+@router.post("/focus/insights/{insight_id}/try")
+async def try_focus_insight(
+    insight_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    service = FocusInsightService(session)
+    insight = await _insight_or_404(service, user, insight_id)
+    try:
+        insight = await service.try_insight(user, insight)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"insight": focus_insight_to_dict(insight)}
+
+
+@router.post("/focus/insights/{insight_id}/dismiss")
+async def dismiss_focus_insight(
+    insight_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    service = FocusInsightService(session)
+    insight = await _insight_or_404(service, user, insight_id)
+    try:
+        insight = await service.dismiss(user, insight)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"insight": focus_insight_to_dict(insight)}
 
 
 @router.get("/focus/sessions")
@@ -217,12 +290,18 @@ async def start_focus_session(
             planned_event_id=payload.planned_event_id,
             intention=payload.intention,
             planned_minutes=payload.planned_minutes,
+            break_minutes=payload.break_minutes,
             **project_fields,
         )
     except ValueError as exc:
         code = str(exc)
-        status = 409 if code == "active_focus_session_exists" else 404
+        status = 409 if code in {
+            "active_focus_session_exists",
+            "active_break_exists",
+            "planned_event_conflicted",
+        } else 404
         if code in {
+            "invalid_focus_break",
             "invalid_focus_intention",
             "planned_event_not_confirmed",
             "planned_event_not_work_block",
@@ -257,6 +336,8 @@ async def log_focus_session(
             distraction_text=payload.distraction_text,
             next_step_text=payload.next_step_text,
             focus_score=payload.focus_score,
+            reflection_outcome=payload.reflection_outcome,
+            reflection_text=payload.reflection_text,
             **project_fields,
         )
     except ValueError as exc:
@@ -283,7 +364,24 @@ async def finish_focus_session(
             distraction_text=payload.distraction_text,
             next_step_text=payload.next_step_text,
             focus_score=payload.focus_score,
+            reflection_outcome=payload.reflection_outcome,
+            reflection_text=payload.reflection_text,
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"session": await _serialize_session(service, user, focus_session)}
+
+
+@router.post("/focus/sessions/{session_id}/break/finish")
+async def finish_focus_break(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    service = FocusService(session)
+    focus_session = await _session_or_404(service, user, session_id)
+    try:
+        focus_session = await service.finish_break(user, focus_session)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"session": await _serialize_session(service, user, focus_session)}

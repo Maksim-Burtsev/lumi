@@ -13,6 +13,7 @@ import type {
   CreateTaskInput,
   FinishFocusSessionInput,
   FocusStateResponse,
+  FocusInsightsResponse,
   LogFocusSessionInput,
   PatchAutomationInput,
   PatchNewsTopicInput,
@@ -62,6 +63,7 @@ export const qk = {
   focus: ['focus'] as const,
   focusTasks: ['tasks', normalizeTaskListQuery({ filter: 'all', limit: 300 })] as const,
   focusSession: (id: string) => ['focus-session', id] as const,
+  focusInsights: (limit = 3) => ['focus-insights', { limit }] as const,
   focusSummary: (query: FocusRangeQuery) => ['focus-summary', query] as const,
   focusSessions: (query: FocusRangeQuery) => ['focus-sessions', query] as const,
   eventsAll: ['calendar-events'] as const,
@@ -315,6 +317,13 @@ export function useFocusSession(id: string | null) {
   });
 }
 
+export function useFocusInsights(limit = 3) {
+  return useQuery({
+    queryKey: qk.focusInsights(limit),
+    queryFn: () => api.getFocusInsights(limit),
+  });
+}
+
 export function useCalendarEvents(start: string, end: string) {
   return useQuery({ queryKey: qk.events(start, end), queryFn: () => api.listCalendarEvents(start, end) });
 }
@@ -523,6 +532,37 @@ function invalidateFocusDerivedQueries(queryClient: ReturnType<typeof useQueryCl
   void queryClient.invalidateQueries({ queryKey: ['focus-summary'] });
   void queryClient.invalidateQueries({ queryKey: ['focus-sessions'] });
   void queryClient.invalidateQueries({ queryKey: ['focus-session'] });
+  void queryClient.invalidateQueries({ queryKey: ['focus-insights'] });
+}
+
+export function useTryFocusInsight() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.tryFocusInsight(id),
+    onSuccess: ({ insight }) => {
+      queryClient.setQueriesData<FocusInsightsResponse>(
+        { queryKey: ['focus-insights'] },
+        (current) => current
+          ? { ...current, items: current.items.map((item) => item.id === insight.id ? insight : item) }
+          : current,
+      );
+    },
+  });
+}
+
+export function useDismissFocusInsight() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.dismissFocusInsight(id),
+    onSuccess: ({ insight }) => {
+      queryClient.setQueriesData<FocusInsightsResponse>(
+        { queryKey: ['focus-insights'] },
+        (current) => current
+          ? { ...current, items: current.items.filter((item) => item.id !== insight.id) }
+          : current,
+      );
+    },
+  });
 }
 
 export function useStartFocusSession() {
@@ -535,10 +575,12 @@ export function useStartFocusSession() {
         | undefined;
       queryClient.setQueryData(qk.focus, {
         active_session: response.session,
+        active_break: null,
         today: previous?.today ?? { focus_seconds: 0, completed_sessions: 0, streak_days: 0 },
         recent_sessions: previous?.recent_sessions ?? [],
       });
       invalidateFocusDerivedQueries(queryClient);
+      void queryClient.invalidateQueries({ queryKey: qk.today });
     },
   });
 }
@@ -557,9 +599,15 @@ export function useFinishFocusSession() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, input }: { id: string; input: FinishFocusSessionInput }) => api.finishFocusSession(id, input),
-    onSuccess: () => {
+    onSuccess: (response) => {
       queryClient.setQueryData<FocusStateResponse>(qk.focus, (current) => (
-        current ? { ...current, active_session: null } : current
+        current
+          ? {
+              ...current,
+              active_session: null,
+              active_break: response.session.cycle?.phase === 'break' ? response.session : null,
+            }
+          : current
       ));
       invalidateFocusDerivedQueries(queryClient);
     },
@@ -596,6 +644,19 @@ export function useAbandonFocusSession() {
         current ? { ...current, active_session: null } : current
       ));
       invalidateFocusDerivedQueries(queryClient);
+    },
+    onSettled: () => invalidateFocusQueries(queryClient),
+  });
+}
+
+export function useFinishFocusBreak() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.finishFocusBreak(id),
+    onSuccess: () => {
+      queryClient.setQueryData<FocusStateResponse>(qk.focus, (current) => (
+        current ? { ...current, active_break: null } : current
+      ));
     },
     onSettled: () => invalidateFocusQueries(queryClient),
   });
@@ -968,7 +1029,7 @@ export interface RunActionOptions {
 }
 
 export interface RunAction {
-  trigger: (startOverride?: () => Promise<RunRef>) => void;
+  trigger: () => void;
   isRunning: boolean;
   status: RunPollStatus;
 }
@@ -984,11 +1045,11 @@ export function useAgentRunAction(options: RunActionOptions): RunAction {
   const runRef = useRef(poller.run);
   runRef.current = poller.run;
 
-  const trigger = useCallback((startOverride?: () => Promise<RunRef>) => {
+  const trigger = useCallback(() => {
     if (runId !== null || starting) return;
     setStarting(true);
     haptic('light');
-    (startOverride ?? optionsRef.current.start)()
+    optionsRef.current.start()
       .then((ref) => setRunId(ref.run_id))
       .catch((error: unknown) => {
         if (error instanceof ApiError && optionsRef.current.onApiError?.(error)) return;

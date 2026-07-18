@@ -75,6 +75,22 @@ function activeState(id: string, targetEndAt: string) {
   };
 }
 
+function activeBreakState(id: string, targetEndAt: string) {
+  return {
+    data: {
+      active_session: null,
+      active_break: {
+        id,
+        intention: 'Write launch brief',
+        cycle: {
+          phase: 'break',
+          break_target_end_at: targetEndAt,
+        },
+      },
+    },
+  };
+}
+
 describe('FocusTimerCoordinator', () => {
   beforeAll(() => {
     vi.stubGlobal('AudioContext', MockAudioContext);
@@ -154,5 +170,20 @@ describe('FocusTimerCoordinator', () => {
     expect(mocks.haptic).not.toHaveBeenCalled();
     expect(mocks.show).not.toHaveBeenCalled();
     expect(oscillatorStart).not.toHaveBeenCalled();
+  });
+
+  it('rings the durable break alarm independently from the focus alarm', async () => {
+    prepareFocusAlarm();
+    silenceFocusAlarm('focus-break', 'focus');
+    mocks.focusState.mockReturnValue(activeBreakState('focus-break', '2026-07-12T08:00:01Z'));
+
+    render(<FocusTimerCoordinator />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+
+    expect(mocks.haptic).toHaveBeenCalledWith('success');
+    expect(mocks.show).toHaveBeenCalledWith(expect.stringContaining('Break after'), 'info');
+    expect(oscillatorStart).toHaveBeenCalledTimes(2);
   });
 });

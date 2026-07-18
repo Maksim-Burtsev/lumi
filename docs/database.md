@@ -18,6 +18,10 @@ erDiagram
     users ||--o{ focus_sessions : tracks
     projects ||--o{ focus_sessions : categorizes
     tasks ||--o{ focus_sessions : links
+    calendar_events ||--o{ focus_sessions : planned_as
+    focus_sessions ||--o{ focus_session_analyses : analyzed_by
+    users ||--o{ focus_session_analyses : owns
+    users ||--o{ focus_insights : owns
     users ||--o{ scheduled_tasks : configures
     scheduled_tasks ||--o{ agent_runs : triggers
     users ||--o{ agent_runs : owns
@@ -58,9 +62,11 @@ erDiagram
 | `projects` | name, normalized_name, status, color, metadata | first-class per-user project identity; unique `(user_id, normalized_name)` |
 | `tasks` | status (inbox/active/done/cancelled), priority, project_id, target_at, due_at, reminder_at, snoozed_until, source, tags[] | `target_at` stores the optional planned day/horizon (`planned_for` in the API), while `due_at` is only a hard deadline; projects and estimates are optional; legacy `project` remains compatible; metadata keeps reminder idempotency and the pre-completion status used by undo |
 | `task_events` | event_type, before/after JSON, actor | full task change audit |
-| `focus_sessions` | status, task_id, project_id, project_snapshot, planned/duration seconds, start/target/end, reflection, score | one active row per user; snapshot preserves history across project rename/delete; demo rows use `seed_batch_id` |
+| `focus_sessions` | status, task_id, planned_event_id, project_id/snapshot, planned/duration seconds, start/target/end, break state, optional quick review, score | one active focus and one active break per user; `planned_event_id` links only to an owned internal WorkBlock and does not complete its Task; manual/edit duration is capped at 240 minutes |
+| `focus_session_analyses` | input hash, schema/prompt/provider/model versions, immutable source snapshot, extracted outcome/work type/frictions/next action/evidence, retry state | versioned best-effort extraction from user-authored quick review; stale versions are superseded and provider failure never changes the source session |
+| `focus_insights` | kind/status/window, statement, supporting session ids, aggregate evidence, support/confidence, context hash, expiry | temporary deterministic weekly hypotheses; minimum three sessions across two days; Try/Dismiss changes only insight status |
 | `memories` | kind, importance 1-5, confidence, tags[], normalized_text | dedupe by keyword-overlap >= 0.75; conflict marked as `potential_conflict` |
-| `calendar_events` | source (internal/google), status (confirmed/tentative/cancelled/proposed), busy | unique (user, source, ext_calendar, ext_event) where ext_event is not null |
+| `calendar_events` | source (internal/google/yandex), status (confirmed/tentative/cancelled/proposed), busy, source_task_id | an internal event with `source_task_id` is a WorkBlock; external rows are never silently moved by planning; unique (user, source, ext_calendar, ext_event) where ext_event is not null |
 | `email_threads` / `email_messages` | historical schema only | retained to avoid destructive migration; no runtime/API/model surface |
 | `news_topics` / `news_items` / `news_digest_runs` | historical schema only | retained to avoid destructive migration; no runtime/API/model surface |
 
@@ -86,7 +92,11 @@ ix_tasks_user_reminder           (user_id, reminder_at) WHERE reminder_at IS NOT
 ix_tasks_user_project_status     (user_id, project_id, status)
 ix_focus_sessions_user_started   (user_id, started_at)
 ix_focus_sessions_user_project   (user_id, project_id)
+ix_focus_sessions_user_planned_event (user_id, planned_event_id)
 uq_focus_sessions_one_active     unique(user_id) WHERE status='active'
+uq_focus_sessions_one_active_break unique(user_id) WHERE break_started_at IS NOT NULL AND break_ended_at IS NULL
+ix_focus_session_analyses_user_status (user_id, status, updated_at)
+ix_focus_insights_user_status_seen (user_id, status, last_seen_at)
 ix_scheduled_tasks_next_run      (next_run_at) WHERE enabled = true
 ix_ui_events_user_id             (user_id, id)
 uq_calendar_events_external      unique(user,source,ext_cal,ext_event) WHERE ext_event IS NOT NULL

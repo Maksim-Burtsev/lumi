@@ -51,6 +51,7 @@ def _future_local_at(user, hour: int, minute: int = 0, *, days: int = 2) -> date
 class PendingTaskProvider:
     name = "pending-task"
     model = "pending-task-1"
+    allow_legacy_agent_plans = True
 
     def __init__(self) -> None:
         self.final_chat_calls = 0
@@ -103,6 +104,7 @@ class PendingTaskProvider:
 class RenameTaskProvider:
     name = "rename-task"
     model = "rename-task-1"
+    allow_legacy_agent_plans = True
 
     def __init__(
         self,
@@ -163,6 +165,7 @@ class RenameTaskProvider:
 class AgentPlannerProvider:
     name = "agent-planner"
     model = "agent-planner-1"
+    allow_legacy_agent_plans = True
 
     def __init__(self, plan: dict | list[dict], *, final_text: str = "final answer") -> None:
         self.plans = list(plan) if isinstance(plan, list) else [plan]
@@ -350,6 +353,7 @@ def _test_localize_ru_fallback(text: str) -> str:
 class PlanningAndRenderProvider:
     name = "planning-and-render"
     model = "planning-and-render-1"
+    allow_legacy_agent_plans = True
 
     def __init__(
         self,
@@ -915,7 +919,7 @@ async def test_agent_planner_create_task_tool_call_creates_task_without_final_ll
     assert result.reply_text == "Создана задача: «Webhook для Lumi на проде» в проекте Lumi"
     assert any(c.tool_name == "create_task" and c.status == "completed" for c in tool_calls)
     trace = run.metadata_["planner_trace"]
-    assert trace["validation_status"] == "validated"
+    assert trace["validation_status"] == "legacy_plan_validated"
     assert trace["mode"] == "tool_calls"
     assert trace["tool_names"] == ["create_task"]
     assert trace["tool_count"] == 1
@@ -1326,7 +1330,7 @@ async def test_agent_planner_empty_tool_call_plan_does_not_call_final_llm_and_re
     assert tool_calls == []
     assert result.reply_text == "Did not perform the action: planner did not return a backend tool."
     trace = run.metadata_["planner_trace"]
-    assert trace["validation_status"] == "validated"
+    assert trace["validation_status"] == "legacy_plan_validated"
     assert trace["mode"] == "tool_calls"
     assert trace["tool_count"] == 0
     assert trace["raw_plan_sanitized"]["mode"] == "tool_calls"

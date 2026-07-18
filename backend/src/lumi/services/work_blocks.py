@@ -6,6 +6,7 @@ import enum
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,6 +45,7 @@ class WorkBlockReason(enum.StrEnum):
     CALENDAR_CONFLICT = "calendar_conflict"
     PROPOSAL_CHANGED = "proposal_changed"
     PROPOSAL_CANCELLED = "proposal_cancelled"
+    PROPOSAL_EXPIRED = "proposal_expired"
 
 
 @dataclass(slots=True)
@@ -74,6 +76,7 @@ class WorkBlockService:
         result = await self.session.execute(
             select(Task)
             .where(Task.id == task_id, Task.user_id == user.id)
+            .execution_options(populate_existing=True)
             .with_for_update()
         )
         return result.scalar_one_or_none()
@@ -158,6 +161,7 @@ class WorkBlockService:
         description: str | None = None,
         created_by: str = "user",
         agent_run_id: uuid.UUID | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> WorkBlockResult:
         await self._lock_user(user)
         task = await self._owned_open_task(user, task_id)
@@ -170,6 +174,15 @@ class WorkBlockService:
             return WorkBlockResult(
                 WorkBlockResultStatus.INVALID,
                 WorkBlockReason.TASK_CLOSED,
+            )
+        if (
+            (metadata or {}).get("plan_batch_id")
+            and task.due_at is not None
+            and end_at > task.due_at
+        ):
+            return WorkBlockResult(
+                WorkBlockResultStatus.STALE,
+                WorkBlockReason.PROPOSAL_CHANGED,
             )
         clean_title = " ".join((title or task.title).split()).strip()
         if not clean_title or status not in {
@@ -205,6 +218,7 @@ class WorkBlockService:
             created_by=created_by,
             source_task_id=task.id,
             agent_run_id=agent_run_id,
+            metadata=metadata,
         )
         await self.session.flush()
         result_status = (
@@ -251,6 +265,24 @@ class WorkBlockService:
                 WorkBlockReason.PROPOSAL_CHANGED,
                 event=event,
             )
+        raw_expiry = (event.metadata_ or {}).get("proposal_expires_at")
+        if isinstance(raw_expiry, str):
+            try:
+                expires_at = datetime.fromisoformat(raw_expiry.replace("Z", "+00:00"))
+            except ValueError:
+                expires_at = None
+            if (
+                expires_at is not None
+                and expires_at.tzinfo is not None
+                and expires_at.utcoffset() is not None
+                and expires_at <= utc_now()
+            ):
+                await self.calendar.cancel_internal_event(user, event, actor="agent")
+                return WorkBlockResult(
+                    WorkBlockResultStatus.STALE,
+                    WorkBlockReason.PROPOSAL_EXPIRED,
+                    event=event,
+                )
 
         task = await self._owned_open_task(user, event.source_task_id)
         if task is None:
@@ -263,6 +295,17 @@ class WorkBlockService:
             return WorkBlockResult(
                 WorkBlockResultStatus.STALE,
                 WorkBlockReason.TASK_CLOSED,
+                event=event,
+            )
+        if (
+            (event.metadata_ or {}).get("plan_batch_id")
+            and task.due_at is not None
+            and event.end_at > task.due_at
+        ):
+            await self.calendar.cancel_internal_event(user, event, actor="agent")
+            return WorkBlockResult(
+                WorkBlockResultStatus.STALE,
+                WorkBlockReason.PROPOSAL_CHANGED,
                 event=event,
             )
 
@@ -286,7 +329,49 @@ class WorkBlockService:
                 event=event,
             )
 
+        replaced_event: CalendarEvent | None = None
+        replaced_event_id = (event.metadata_ or {}).get("alternative_for_event_id")
+        if isinstance(replaced_event_id, str):
+            try:
+                parsed_replaced_event_id = uuid.UUID(replaced_event_id)
+            except ValueError:
+                parsed_replaced_event_id = None
+            if parsed_replaced_event_id is not None:
+                replaced_event = await self.session.scalar(
+                    select(CalendarEvent)
+                    .where(
+                        CalendarEvent.id == parsed_replaced_event_id,
+                        CalendarEvent.user_id == user.id,
+                        CalendarEvent.source == CalendarSource.INTERNAL,
+                        CalendarEvent.source_task_id == event.source_task_id,
+                    )
+                    .with_for_update()
+                )
+
         await self.calendar.confirm_proposed_block(user, event)
+        if (
+            replaced_event is not None
+            and replaced_event.status != CalendarEventStatus.CANCELLED
+        ):
+            replaced_metadata = dict(replaced_event.metadata_ or {})
+            raw_conflict = replaced_metadata.get("work_block_conflict")
+            replacement_conflict = (
+                dict(raw_conflict) if isinstance(raw_conflict, dict) else {}
+            )
+            replacement_conflict.update(
+                {
+                    "status": "replaced",
+                    "alternative_event_id": str(event.id),
+                    "replaced_at": utc_now().isoformat(),
+                }
+            )
+            replaced_metadata["work_block_conflict"] = replacement_conflict
+            replaced_event.metadata_ = replaced_metadata
+            await self.calendar.cancel_internal_event(
+                user,
+                replaced_event,
+                actor="user",
+            )
         await self.session.flush()
         await self.session.refresh(event, attribute_names=["updated_at"])
         return WorkBlockResult(WorkBlockResultStatus.CONFIRMED, event=event)

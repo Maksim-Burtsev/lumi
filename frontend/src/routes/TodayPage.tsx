@@ -7,6 +7,9 @@ import {
   CheckCircle2,
   Clock,
   HelpCircle,
+  ListTodo,
+  Play,
+  RotateCcw,
   Sparkles,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -19,11 +22,21 @@ import {
   useDeleteCalendarPrivateNote,
   useDecideConfirmation,
   useSnoozeTask,
+  useStartFocusSession,
   useToday,
   useUpdateCalendarPrivateNote,
 } from '../api/hooks';
-import type { AttentionItem, SlotSuggestion, Suggestion, TimelineItem, TodaySummary } from '../api/types';
+import type {
+  AttentionItem,
+  SlotSuggestion,
+  Suggestion,
+  Task,
+  TimelineItem,
+  TodayCapacity,
+  TodaySummary,
+} from '../api/types';
 import { PRIVATE_NOTE_MAX_CHARS, PrivateNoteSection } from '../components/calendar/PrivateNoteSection';
+import { prepareFocusAlarm } from '../components/focus/FocusTimerCoordinator';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { EmptyState } from '../components/ui/EmptyState';
@@ -36,7 +49,14 @@ import { useToast } from '../components/ui/Toast';
 import { Rise, Stagger } from '../components/ui/motion';
 import { Timeline } from '../components/timeline/Timeline';
 import type { TimelineEntry } from '../components/timeline/Timeline';
-import { countLabel, formatDateHeading, formatDueLabel, formatSpanMinutes, formatTimeRange } from '../lib/format';
+import {
+  countLabel,
+  formatDateHeading,
+  formatDueLabel,
+  formatSpanMinutes,
+  formatTime,
+  formatTimeRange,
+} from '../lib/format';
 import type { TimeDisplayOptions } from '../lib/format';
 import type { AppLocale } from '../lib/i18n';
 import { useAppLocale } from '../lib/useAppLocale';
@@ -46,7 +66,8 @@ import { haptic } from '../telegram/webapp';
 const TODAY_COPY = {
   en: {
     quietDay: 'Quiet day — focus on important work',
-    planReady: 'Plan ready',
+    tomorrowReady: 'Tomorrow is planned',
+    dayReplanned: 'The rest of the day is replanned',
     saveDecisionError: 'Could not save the decision',
     blockAdded: 'Block added to calendar',
     blockConfirmError: 'Could not confirm the block',
@@ -54,15 +75,36 @@ const TODAY_COPY = {
     taskCompleteError: 'Could not complete the task',
     taskSnoozed: 'Task moved to tomorrow',
     taskSnoozeError: 'Could not move the task',
+    loading: 'Loading workday',
     loadError: 'Could not load the day plan.',
     timelineTask: 'Task',
-    focus: 'Focus',
+    workBlock: 'WorkBlock',
+    actualFocus: 'Actual focus',
+    proposal: 'Lumi proposal',
+    validUntil: 'valid until',
     accept: 'Accept',
     free: 'Free',
-    buildPlan: 'Build plan',
-    schedule: 'Schedule',
+    workday: 'Workday',
+    capacity: 'Capacity',
+    capacityFree: 'free',
+    meetings: 'Meetings',
+    planned: 'WorkBlocks',
+    focused: 'Focused',
+    overCapacity: 'The day is over capacity',
+    nextBlock: 'Next block',
+    noNextBlock: 'No upcoming WorkBlock',
+    noNextHint: 'Use Calendar to reserve a focused interval.',
+    start: 'Start',
+    focusStarted: 'Focus started',
+    focusStartError: 'Could not start focus',
+    planTomorrow: 'Plan tomorrow',
+    replanRemaining: 'Replan remaining',
+    schedule: 'Timeline',
     emptyTitle: 'No meetings or blocks today',
-    emptyHint: 'Tap “Build plan” and Lumi will review tasks and suggest focus blocks.',
+    emptyHint: 'Your workday is open. Reserve a WorkBlock in Calendar when you need one.',
+    plannedTasks: 'Planned tasks',
+    noPlannedTasks: 'No tasks planned for today',
+    addFromTasks: 'Choose work from Tasks or keep the day clear.',
     needsAttention: 'Needs decision',
     lumiSuggests: 'Lumi suggests',
     allClear: 'Nothing urgent — everything is under control',
@@ -77,7 +119,8 @@ const TODAY_COPY = {
   },
   ru: {
     quietDay: 'Спокойный день — можно заняться важным',
-    planReady: 'План готов',
+    tomorrowReady: 'Завтра спланировано',
+    dayReplanned: 'Остаток дня перепланирован',
     saveDecisionError: 'Не удалось сохранить решение',
     blockAdded: 'Блок добавлен в календарь',
     blockConfirmError: 'Не удалось подтвердить блок',
@@ -85,15 +128,36 @@ const TODAY_COPY = {
     taskCompleteError: 'Не удалось выполнить задачу',
     taskSnoozed: 'Задача перенесена на завтра',
     taskSnoozeError: 'Не удалось перенести задачу',
+    loading: 'Загружаем рабочий день',
     loadError: 'Не удалось загрузить план дня.',
     timelineTask: 'Задача',
-    focus: 'Фокус',
+    workBlock: 'WorkBlock',
+    actualFocus: 'Факт фокуса',
+    proposal: 'Предложение Lumi',
+    validUntil: 'до',
     accept: 'Принять',
     free: 'Свободно',
-    buildPlan: 'Собрать план',
-    schedule: 'Расписание',
+    workday: 'Рабочий день',
+    capacity: 'Загрузка',
+    capacityFree: 'свободно',
+    meetings: 'Встречи',
+    planned: 'WorkBlocks',
+    focused: 'Сделано',
+    overCapacity: 'День перегружен',
+    nextBlock: 'Следующий блок',
+    noNextBlock: 'Впереди нет WorkBlock',
+    noNextHint: 'Зарезервируй фокусный интервал в Календаре.',
+    start: 'Начать',
+    focusStarted: 'Фокус запущен',
+    focusStartError: 'Не удалось запустить фокус',
+    planTomorrow: 'Спланировать завтра',
+    replanRemaining: 'Перепланировать остаток',
+    schedule: 'Таймлайн',
     emptyTitle: 'Сегодня нет встреч и блоков',
-    emptyHint: 'Нажми «Собрать план» — Lumi посмотрит задачи и предложит фокус-блоки.',
+    emptyHint: 'Рабочий день свободен. При необходимости добавь WorkBlock в Календаре.',
+    plannedTasks: 'Задачи на сегодня',
+    noPlannedTasks: 'На сегодня нет запланированных задач',
+    addFromTasks: 'Выбери работу в Задачах или оставь день свободным.',
     needsAttention: 'Ждет решения',
     lumiSuggests: 'Lumi предлагает',
     allClear: 'Ничего срочного — всё под контролем',
@@ -142,6 +206,54 @@ function formatDueLabelLocalized(ts: string, locale: AppLocale, timeDisplay: Tim
 
 function formatSpanMinutesLocalized(startTs: string, endTs: string, locale: AppLocale): string {
   return formatSpanMinutes(startTs, endTs, locale);
+}
+
+function formatMinutes(minutes: number, locale: AppLocale): string {
+  const safeMinutes = Math.max(0, Math.round(minutes));
+  const hours = Math.floor(safeMinutes / 60);
+  const remainder = safeMinutes % 60;
+  if (hours === 0) return `${remainder} ${locale === 'en' ? 'min' : 'мин'}`;
+  if (remainder === 0) return `${hours} ${locale === 'en' ? 'h' : 'ч'}`;
+  return `${hours} ${locale === 'en' ? 'h' : 'ч'} ${remainder} ${locale === 'en' ? 'min' : 'мин'}`;
+}
+
+function workBlockMinutes(item: TimelineItem): number {
+  const minutes = Math.round((new Date(item.end_at).getTime() - new Date(item.start_at).getTime()) / 60_000);
+  return Math.max(1, Math.min(240, Number.isFinite(minutes) ? minutes : 25));
+}
+
+function workBlockBreakMinutes(minutes: number): number {
+  if (minutes === 25) return 5;
+  if (minutes === 50) return 10;
+  if (minutes === 90) return 15;
+  return 0;
+}
+
+function timelineSubtitle(
+  item: TimelineItem,
+  locale: AppLocale,
+  timeDisplay: TimeDisplayOptions,
+  copy: (typeof TODAY_COPY)[AppLocale],
+): string | undefined {
+  if (item.kind === 'task') return copy.timelineTask;
+  if (item.kind === 'focus_session') return copy.actualFocus;
+  if (item.kind === 'work_block') return copy.workBlock;
+  if (item.kind === 'proposed') {
+    return item.expires_at
+      ? `${copy.proposal} · ${copy.validUntil} ${formatTime(item.expires_at, timeDisplay)}`
+      : copy.proposal;
+  }
+  if (item.source === 'google') return 'Google';
+  if (item.source === 'yandex') return locale === 'en' ? 'Yandex' : 'Яндекс';
+  return undefined;
+}
+
+function taskMeta(task: Task, locale: AppLocale, timeDisplay: TimeDisplayOptions): string {
+  return [
+    task.project,
+    task.estimated_minutes ? formatMinutes(task.estimated_minutes, locale) : null,
+    task.due_at ? formatDueLabelLocalized(task.due_at, locale, timeDisplay) : null,
+  ].filter(Boolean).join(' · ');
 }
 
 function slotTaskCountLabel(count: number, locale: AppLocale): string {
@@ -285,9 +397,65 @@ function AttentionIcon({ item }: { item: ProductAttentionItem }) {
   return <Icon size={17} strokeWidth={1.9} className={`shrink-0 ${meta.className}`} />;
 }
 
-function TodaySkeleton() {
+function CapacityOverview({
+  capacity,
+  locale,
+  copy,
+}: {
+  capacity: TodayCapacity;
+  locale: AppLocale;
+  copy: (typeof TODAY_COPY)[AppLocale];
+}) {
+  const utilization = Math.max(0, Math.round(capacity.utilization_percent));
+  const barWidth = Math.min(100, utilization);
   return (
-    <div>
+    <div className="mt-4 border-t border-hairline pt-4" aria-label={copy.capacity}>
+      <div className="flex items-end justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-hint">{copy.capacity}</p>
+          <p className="tnum mt-1 text-[18px] font-medium text-ink">
+            {formatMinutes(capacity.free_minutes, locale)} {copy.capacityFree}
+          </p>
+        </div>
+        <span className={`tnum text-[13px] font-medium ${capacity.over_capacity ? 'text-danger' : 'text-hint'}`}>
+          {utilization}%
+        </span>
+      </div>
+      <div
+        role="progressbar"
+        aria-label={copy.capacity}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.min(100, utilization)}
+        className="mt-2 h-1.5 overflow-hidden rounded-full bg-[var(--secondary-bg)]"
+      >
+        <div
+          className={`h-full rounded-full ${capacity.over_capacity ? 'bg-[var(--danger)]' : 'bg-accent'}`}
+          style={{ width: `${barWidth}%` }}
+        />
+      </div>
+      <dl className="tnum mt-3 grid grid-cols-3 gap-2 text-[11.5px] text-hint">
+        <div>
+          <dt>{copy.meetings}</dt>
+          <dd className="mt-0.5 font-medium text-ink">{formatMinutes(capacity.meeting_minutes, locale)}</dd>
+        </div>
+        <div>
+          <dt>{copy.planned}</dt>
+          <dd className="mt-0.5 font-medium text-ink">{formatMinutes(capacity.planned_minutes, locale)}</dd>
+        </div>
+        <div>
+          <dt>{copy.focused}</dt>
+          <dd className="mt-0.5 font-medium text-ink">{formatMinutes(capacity.focus_minutes, locale)}</dd>
+        </div>
+      </dl>
+      {capacity.over_capacity && <p className="mt-3 text-[12.5px] font-medium text-danger">{copy.overCapacity}</p>}
+    </div>
+  );
+}
+
+function TodaySkeleton({ label }: { label: string }) {
+  return (
+    <div role="status" aria-label={label}>
       <div aria-hidden className="card p-5">
         <Skeleton className="h-7 w-44" />
         <Skeleton className="mt-2.5 h-3.5 w-36" />
@@ -335,6 +503,7 @@ export default function TodayPage() {
   const [selectedSlot, setSelectedSlot] = useState<SlotSuggestion | null>(null);
   const confirmBlock = useConfirmBlock();
   const decideConfirmation = useDecideConfirmation();
+  const startFocus = useStartFocusSession();
   const completeTask = useCompleteTask('today');
   const snoozeTask = useSnoozeTask('today');
   const updatePrivateNote = useUpdateCalendarPrivateNote();
@@ -352,11 +521,38 @@ export default function TodayPage() {
     setNoteError(null);
   }, [selectedTimelineEvent?.id, selectedTimelineEvent?.private_note]);
 
-  const planAction = useAgentRunAction({
-    start: () => api.planDay(),
+  const planTomorrowAction = useAgentRunAction({
+    start: () => api.planDay({ mode: 'tomorrow' }),
     invalidate: [qk.eventsAll, qk.freeSlotsAll, qk.tasksAll],
-    successMessage: copy.planReady,
+    successMessage: copy.tomorrowReady,
   });
+  const replanAction = useAgentRunAction({
+    start: () => api.planDay({ mode: 'replan' }),
+    invalidate: [qk.eventsAll, qk.freeSlotsAll, qk.tasksAll],
+    successMessage: copy.dayReplanned,
+  });
+
+  const handleStartNextBlock = (block: TimelineItem) => {
+    if (startFocus.isPending || block.kind !== 'work_block' || block.status !== 'confirmed') return;
+    const plannedMinutes = workBlockMinutes(block);
+    prepareFocusAlarm();
+    startFocus.mutate(
+      {
+        planned_event_id: block.id,
+        intention: block.title,
+        planned_minutes: plannedMinutes,
+        break_minutes: workBlockBreakMinutes(plannedMinutes),
+      },
+      {
+        onSuccess: () => {
+          haptic('success');
+          show(copy.focusStarted, 'success');
+          navigate('/sessions');
+        },
+        onError: () => show(copy.focusStartError, 'error'),
+      },
+    );
+  };
 
   const handleConfirmationDecision = (item: AttentionItem, accept: boolean) => {
     const id = item.ref_id;
@@ -388,15 +584,6 @@ export default function TodayPage() {
 
   const handleSuggestion = (suggestion: Suggestion) => {
     switch (suggestion.action.type) {
-      case 'plan_day': {
-        const date = suggestion.action.payload['date'];
-        if (typeof date === 'string' && date) {
-          planAction.trigger(() => api.planDay(date));
-          break;
-        }
-        planAction.trigger();
-        break;
-      }
       case 'confirm_block': {
         const payload = suggestion.action.payload;
         const candidate = payload['block_id'] ?? payload['event_id'] ?? payload['id'];
@@ -525,15 +712,13 @@ export default function TodayPage() {
 
   const suggestionBusy = (suggestion: Suggestion): boolean => {
     switch (suggestion.action.type) {
-      case 'plan_day':
-        return planAction.isRunning;
       case 'confirm_block':
         return confirmBlock.isPending;
     }
     return false;
   };
 
-  if (todayQuery.isPending) return <TodaySkeleton />;
+  if (todayQuery.isPending) return <TodaySkeleton label={copy.loading} />;
   if (todayQuery.isError) {
     return <ErrorState message={copy.loadError} onRetry={() => void todayQuery.refetch()} />;
   }
@@ -554,18 +739,9 @@ export default function TodayPage() {
       title: item.title,
       start_at: item.start_at,
       end_at: item.end_at,
-      subtitle:
-        item.kind === 'task'
-          ? copy.timelineTask
-          : item.source === 'google'
-            ? 'Google'
-            : item.source === 'yandex'
-              ? locale === 'en' ? 'Yandex' : 'Яндекс'
-              : item.kind === 'focus'
-                ? copy.focus
-                : undefined,
+      subtitle: timelineSubtitle(item, locale, timeDisplay, copy),
       hasPersonalNote: Boolean(item.private_note?.trim()),
-      onPress: item.kind === 'task' ? undefined : () => openTimelineEvent(item),
+      onPress: item.kind === 'task' || item.kind === 'focus_session' ? undefined : () => openTimelineEvent(item),
       action:
         item.kind === 'proposed'
           ? {
@@ -587,40 +763,22 @@ export default function TodayPage() {
       onPress: () => setSelectedSlot(slot),
     }));
 
-  const rawEntries = [...timelineItems, ...slotEntries]
+  const timelineEntries = [...timelineItems, ...slotEntries]
     .sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime());
   const attentionItems = data.needs_attention.filter(isProductAttentionItem);
   const suggestions = data.suggestions.filter(
     (suggestion) =>
       suggestion.kind !== 'email_triage' &&
       suggestion.kind !== 'news_digest' &&
+      suggestion.kind !== 'plan_day' &&
       suggestion.action.type !== 'run_triage' &&
-      suggestion.action.type !== 'run_digest',
+      suggestion.action.type !== 'run_digest' &&
+      suggestion.action.type !== 'plan_day',
   );
   const showSuggestions = suggestions.length > 0 && slotEntries.length === 0;
   const showAllClear = attentionItems.length === 0 && !showSuggestions && slotEntries.length === 0;
-
-  // Agenda rhythm: surface real gaps between items as ghost "free" rows,
-  // so back-to-back meetings and 2-hour windows look different.
-  const timelineEntries: TimelineEntry[] = [];
-  rawEntries.forEach((entry, i) => {
-    if (i > 0) {
-      const prevEnd = new Date(rawEntries[i - 1].end_at).getTime();
-      const start = new Date(entry.start_at).getTime();
-      const end = new Date(entry.end_at).getTime();
-      const gapMin = Math.round((start - prevEnd) / 60000);
-      if (gapMin >= 30 && (!isTodayPayload || (start > nowMs && end > nowMs))) {
-        timelineEntries.push({
-          id: `gap-${i}`,
-          kind: 'free',
-          title: `${copy.free} · ${formatSpanMinutesLocalized(rawEntries[i - 1].end_at, entry.start_at, locale)}`,
-          start_at: rawEntries[i - 1].end_at,
-          end_at: entry.start_at,
-        });
-      }
-    }
-    timelineEntries.push(entry);
-  });
+  const nextBlock = data.next_block;
+  const canStartNextBlock = nextBlock?.kind === 'work_block' && nextBlock.status === 'confirmed';
 
   return (
     <Stagger>
@@ -643,15 +801,59 @@ export default function TodayPage() {
                 />
               </div>
             )}
-            <div className="mt-5 flex flex-wrap gap-2.5">
+
+            <CapacityOverview capacity={data.capacity} locale={locale} copy={copy} />
+
+            <div className="mt-4 border-t border-hairline pt-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-hint">{copy.nextBlock}</p>
+              {nextBlock ? (
+                <div className="mt-2 flex items-center gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[15px] font-semibold text-ink">{nextBlock.title}</p>
+                    <p className="tnum mt-0.5 text-[12.5px] text-hint">
+                      {formatTimeRange(nextBlock.start_at, nextBlock.end_at, timeDisplay)}
+                    </p>
+                  </div>
+                  {canStartNextBlock && (
+                    <Button
+                      size="sm"
+                      icon={<Play size={14} fill="currentColor" />}
+                      busy={startFocus.isPending}
+                      onClick={() => handleStartNextBlock(nextBlock)}
+                    >
+                      {copy.start}
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                <div className="mt-2">
+                  <p className="text-[14px] font-medium text-ink">{copy.noNextBlock}</p>
+                  <p className="mt-0.5 text-[12.5px] text-hint">{copy.noNextHint}</p>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2.5">
               <Button
-                variant="primary"
-                icon={<Sparkles size={16} />}
-                busy={planAction.isRunning}
-                onClick={planAction.trigger}
+                variant="secondary"
+                icon={<CalendarDays size={16} />}
+                busy={planTomorrowAction.isRunning}
+                disabled={replanAction.isRunning}
+                onClick={() => planTomorrowAction.trigger()}
               >
-                {copy.buildPlan}
+                {copy.planTomorrow}
               </Button>
+              {data.planning.can_replan && (
+                <Button
+                  variant="ghost"
+                  icon={<RotateCcw size={15} />}
+                  busy={replanAction.isRunning}
+                  disabled={planTomorrowAction.isRunning}
+                  onClick={() => replanAction.trigger()}
+                >
+                  {copy.replanRemaining}
+                </Button>
+              )}
             </div>
           </div>
         </Card>
@@ -669,6 +871,56 @@ export default function TodayPage() {
             hint={copy.emptyHint}
           />
         )}
+      </Rise>
+
+      {/* ----------------------------------------------------------- Planned tasks */}
+      <Rise>
+        <SectionHeader
+          title={copy.plannedTasks}
+          action={(
+            <button
+              type="button"
+              onClick={() => navigate('/tasks')}
+              className="text-[12.5px] font-medium text-accent-text"
+            >
+              {copy.openTasks}
+            </button>
+          )}
+        />
+        <Card className="card-strong overflow-hidden !p-0">
+          {data.planned_tasks.length > 0 ? (
+            <div className="divide-y divide-hairline">
+              {data.planned_tasks.map((task) => {
+                const meta = taskMeta(task, locale, timeDisplay);
+                return (
+                  <button
+                    key={task.id}
+                    type="button"
+                    onClick={() => navigate('/tasks')}
+                    className="flex min-h-[52px] w-full items-center gap-3 px-4 py-2.5 text-left transition-colors active:bg-[var(--secondary-bg)]"
+                  >
+                    <span
+                      aria-hidden
+                      className="h-2 w-2 shrink-0 rounded-full bg-[var(--success)]"
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[14px] font-medium text-ink">{task.title}</span>
+                      {meta && <span className="block truncate text-[12px] text-hint">{meta}</span>}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="flex items-start gap-3 px-4 py-4">
+              <ListTodo size={17} className="mt-0.5 shrink-0 text-hint" />
+              <div>
+                <p className="text-[13.5px] font-medium text-ink">{copy.noPlannedTasks}</p>
+                <p className="mt-0.5 text-[12.5px] leading-relaxed text-hint">{copy.addFromTasks}</p>
+              </div>
+            </div>
+          )}
+        </Card>
       </Rise>
 
       {/* ----------------------------------------------------------- Needs attention */}

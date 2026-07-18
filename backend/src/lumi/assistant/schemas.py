@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -321,6 +321,7 @@ class CalendarRequest(BaseModel):
     start_at_local: datetime | None = None
     end_at_local: datetime | None = None
     time_window_local: TimeWindow | None = None
+    date_local: date | None = None
     requires_confirmation: bool = True
     confidence: float = 0.0
 
@@ -348,6 +349,10 @@ class CalendarRequest(BaseModel):
 class CalendarPrivateNoteRequest(BaseModel):
     event_id: uuid.UUID | None = None
     event_query: str | None = None
+    recency_hint: Literal[
+        "last_created_calendar_block",
+        "last_touched_calendar_event",
+    ] | None = None
     private_note: str | None = None
     confidence: float = 0.0
     requires_confirmation: bool = False
@@ -717,6 +722,7 @@ class PlannedToolCall(BaseModel):
 class AgentPlan(BaseModel):
     """Planner output: model chooses a final answer or typed backend tools."""
 
+    command_core: bool = False
     mode: Literal[
         "final_answer",
         "tool_calls",

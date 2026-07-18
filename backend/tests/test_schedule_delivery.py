@@ -132,7 +132,15 @@ async def test_run_daily_planning_sends_rich_schedule_for_proposed_blocks(monkey
         end_at=start + timedelta(hours=1),
     )
 
-    async def fake_propose_day_plan(self, user_arg, *, day=None, agent_run_id=None):
+    async def fake_propose_day_plan(
+        self,
+        user_arg,
+        *,
+        day=None,
+        mode="today",
+        request_id=None,
+        agent_run_id=None,
+    ):
         return "Plan ready.\n\nProposed blocks (waiting for confirmation):\n• 15:00–16:00 Deep work", [event]
 
     async def fake_send_telegram_message(user_arg, text, **kwargs):
@@ -154,4 +162,8 @@ async def test_run_daily_planning_sends_rich_schedule_for_proposed_blocks(monkey
     assert "🟪" not in sent[0]["rich_html"]
     assert "<th>" not in sent[0]["rich_html"]
     assert sent[0]["open_app_button"] is True
-    assert sent[0]["reply_markup"] is None
+    assert sent[0]["reply_markup"].inline_keyboard[0][0].text == "✓ 15:00 Deep work"
+    assert (
+        sent[0]["reply_markup"].inline_keyboard[0][0].callback_data
+        == f"block_confirm:{event.id}"
+    )

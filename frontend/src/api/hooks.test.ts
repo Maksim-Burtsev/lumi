@@ -4,7 +4,8 @@ import { createElement, type PropsWithChildren } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { api } from './client';
-import { normalizeTaskListQuery, qk, useInfiniteTasks } from './hooks';
+import { ToastProvider } from '../components/ui/Toast';
+import { normalizeTaskListQuery, qk, useAgentRunAction, useInfiniteTasks } from './hooks';
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -96,5 +97,29 @@ describe('task query keys', () => {
       offset: 20,
       project_id: undefined,
     });
+  });
+});
+
+describe('agent run actions', () => {
+  it('uses the configured start callback when React passes a click event', () => {
+    const start = vi.fn(() => new Promise<never>(() => undefined));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: PropsWithChildren) => createElement(
+      QueryClientProvider,
+      { client: queryClient },
+      createElement(ToastProvider, null, children),
+    );
+    const { result } = renderHook(
+      () => useAgentRunAction({ start }),
+      { wrapper },
+    );
+
+    act(() => {
+      (result.current.trigger as (event: unknown) => void)({ type: 'click' });
+    });
+
+    expect(start).toHaveBeenCalledOnce();
   });
 });

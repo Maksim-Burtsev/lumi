@@ -106,7 +106,66 @@ async def test_focus_session_lifecycle_tracks_task_project_and_reflection(client
     assert body["recent_sessions"][0]["id"] == finished["id"]
 
 
-async def test_focus_start_links_confirmed_work_block_and_keeps_planned_duration(
+async def test_focus_break_cycle_survives_state_and_excludes_break_from_actual(client):
+    start = await client.post(
+        "/api/focus/sessions",
+        json={
+            "intention": "One complete cycle",
+            "planned_minutes": 25,
+            "break_minutes": 5,
+        },
+    )
+    assert start.status_code == 201
+    active = start.json()["session"]
+    assert active["cycle"] == {
+        "preset": "25/5",
+        "focus_minutes": 25,
+        "break_minutes": 5,
+        "phase": "focus",
+        "break_started_at": None,
+        "break_target_end_at": None,
+        "break_ended_at": None,
+    }
+    assert active["actual_minutes"] is None
+    assert active["planned_vs_actual_minutes"] is None
+
+    finish = await client.post(f"/api/focus/sessions/{active['id']}/finish", json={})
+    assert finish.status_code == 200
+    completed = finish.json()["session"]
+    assert completed["cycle"]["phase"] == "break"
+    assert completed["cycle"]["break_started_at"] is not None
+    assert completed["cycle"]["break_target_end_at"] is not None
+    focus_actual = completed["actual_minutes"]
+
+    reopened = await client.get("/api/focus/state")
+    assert reopened.status_code == 200
+    assert reopened.json()["active_session"] is None
+    assert reopened.json()["active_break"]["id"] == active["id"]
+    assert reopened.json()["active_break"]["cycle"]["phase"] == "break"
+
+    blocked = await client.post(
+        "/api/focus/sessions",
+        json={"intention": "Wait for break", "planned_minutes": 50, "break_minutes": 10},
+    )
+    assert blocked.status_code == 409
+    assert blocked.json() == {"error": "active_break_exists"}
+
+    ended = await client.post(f"/api/focus/sessions/{active['id']}/break/finish")
+    assert ended.status_code == 200
+    assert ended.json()["session"]["cycle"]["phase"] == "done"
+    assert ended.json()["session"]["actual_minutes"] == focus_actual
+    repeated = await client.post(f"/api/focus/sessions/{active['id']}/break/finish")
+    assert repeated.status_code == 200
+
+    next_focus = await client.post(
+        "/api/focus/sessions",
+        json={"intention": "Next cycle", "planned_minutes": 50, "break_minutes": 10},
+    )
+    assert next_focus.status_code == 201
+    assert next_focus.json()["session"]["cycle"]["preset"] == "50/10"
+
+
+async def test_focus_start_links_confirmed_work_block_and_derives_event_duration(
     client,
     db_session,
 ):
@@ -136,7 +195,11 @@ async def test_focus_start_links_confirmed_work_block_and_keeps_planned_duration
     focus_session = response.json()["session"]
     assert focus_session["planned_event_id"] == str(event.id)
     assert focus_session["task"]["id"] == str(task.id)
-    assert focus_session["planned_minutes"] == 25
+    assert focus_session["planned_minutes"] == 90
+    assert (
+        parse_iso(focus_session["target_end_at"])
+        - parse_iso(focus_session["started_at"])
+    ) == timedelta(minutes=90)
     assert serialized_event["kind"] == "work_block"
     assert serialized_event["source_task_id"] == str(task.id)
     assert serialized_event["timezone"] == user.timezone
@@ -148,6 +211,8 @@ async def test_focus_start_links_confirmed_work_block_and_keeps_planned_duration
 
     finished = await client.post(f"/api/focus/sessions/{focus_session['id']}/finish", json={})
     assert finished.status_code == 200
+    assert finished.json()["session"]["actual_minutes"] is not None
+    assert finished.json()["session"]["planned_vs_actual_minutes"] is not None
     await db_session.refresh(task)
     assert task.status == TaskStatus.INBOX
 
@@ -450,7 +515,15 @@ async def test_focus_sessions_list_and_patch_completed_review(client):
     session = patched.json()["session"]
     assert session["intention"] == "Updated reviewable session"
     assert session["project_name"] == "QA Project"
-    assert session["reflection"] == {
+    assert {
+        key: session["reflection"][key]
+        for key in (
+            "accomplished_text",
+            "distraction_text",
+            "next_step_text",
+            "focus_score",
+        )
+    } == {
         "accomplished_text": "Filled later",
         "distraction_text": "Slack",
         "next_step_text": "Retest",
@@ -691,7 +764,16 @@ async def test_focus_patch_preserves_omitted_fields_and_explicit_null_clears(cli
         json={"intention": "Changed only intention"},
     )
     assert partial.status_code == 200
-    assert partial.json()["session"]["reflection"] == {
+    partial_reflection = partial.json()["session"]["reflection"]
+    assert {
+        key: partial_reflection[key]
+        for key in (
+            "accomplished_text",
+            "distraction_text",
+            "next_step_text",
+            "focus_score",
+        )
+    } == {
         "accomplished_text": "Accomplished",
         "distraction_text": "Notifications",
         "next_step_text": "Continue",
@@ -716,7 +798,15 @@ async def test_focus_patch_preserves_omitted_fields_and_explicit_null_clears(cli
     assert body["task"] is None
     assert body["project_id"] is None
     assert body["project_name"] is None
-    assert body["reflection"] == {
+    assert {
+        key: body["reflection"][key]
+        for key in (
+            "accomplished_text",
+            "distraction_text",
+            "next_step_text",
+            "focus_score",
+        )
+    } == {
         "accomplished_text": None,
         "distraction_text": None,
         "next_step_text": None,
@@ -1139,6 +1229,7 @@ async def test_focus_mutations_emit_realtime_focus_topic(client, db_session):
     focus_events = [event for event in events if "focus" in event.topics]
     assert [event.event_type for event in focus_events] == [
         "focus.logged",
+        "focus.reflection_analysis.ready",
         "focus.updated",
         "focus.deleted",
         "focus.started",

@@ -7,9 +7,15 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from lumi.api.serializers import task_to_dict
 from lumi.db.models import (
     AgentRun,
+    AgentRunType,
+    CalendarEvent,
     CalendarEventStatus,
+    CalendarSource,
+    Task,
+    TaskStatus,
     User,
 )
 from lumi.i18n import normalize_app_locale
@@ -17,6 +23,9 @@ from lumi.services.action_policy import policy_for_action, policy_to_dict
 from lumi.services.assistant_suggestions import AssistantSuggestionService
 from lumi.services.calendar import CalendarService
 from lumi.services.confirmations import ConfirmationService
+from lumi.services.focus import FocusService
+from lumi.services.planning import next_planning_workday
+from lumi.services.planning_settings import planning_work_window
 from lumi.services.tasks import TaskService
 from lumi.utils.time import fmt_local, greeting_for, local_day_bounds, local_now, utc_now
 
@@ -36,29 +45,39 @@ class TodayService:
 
         events = [
             event for event in await self.calendar.list_events(user, day_start, day_end)
-            if not (event.status == CalendarEventStatus.PROPOSED and event.end_at <= now)
+            if not _proposal_is_stale(event, now)
         ]
-        timeline = [
-            {
-                "id": str(e.id),
-                "kind": (
-                    "proposed" if e.status == CalendarEventStatus.PROPOSED
-                    else ("focus" if e.source.value == "internal" and e.created_by == "agent" else "event")
-                ),
-                "title": e.title,
-                "start_at": e.start_at.isoformat(),
-                "end_at": e.end_at.isoformat(),
-                "source": e.source.value,
-                "status": e.status.value,
-                "busy": e.busy,
-                "meeting_url": e.metadata_.get("meeting_url"),
-                **_private_note_fields(e.metadata_ or {}),
-            }
-            for e in events
-        ]
+        timeline = [_event_timeline_item(event) for event in events]
+        focus = FocusService(self.session)
+        focus_sessions = await focus.completed_between(user, day_start, day_end)
+        active_focus = await focus.get_active(user)
+        if (
+            active_focus is not None
+            and active_focus.started_at < day_end
+            and active_focus.target_end_at > day_start
+        ):
+            focus_sessions.append(active_focus)
+        for session in focus_sessions:
+            timeline.append({
+                "id": f"focus-{session.id}",
+                "kind": "focus_session",
+                "title": session.intention,
+                "start_at": session.started_at.isoformat(),
+                "end_at": (session.ended_at or session.target_end_at).isoformat(),
+                "source": "internal",
+                "status": "confirmed",
+                "busy": False,
+            })
         meetings_today = len([
             e for e in events
-            if e.busy and e.status in (CalendarEventStatus.CONFIRMED, CalendarEventStatus.TENTATIVE)
+            if (
+                e.busy
+                and e.source_task_id is None
+                and e.status in (
+                    CalendarEventStatus.CONFIRMED,
+                    CalendarEventStatus.TENTATIVE,
+                )
+            )
         ])
 
         task_counts = await self.tasks.count_summary(user)
@@ -66,6 +85,19 @@ class TodayService:
 
         # Tasks with a concrete due time today belong on the schedule, not in a side list.
         scheduled_task_ids = {e.source_task_id for e in events if e.source_task_id}
+        open_task_ids = (
+            set(
+                await self.session.scalars(
+                    select(Task.id).where(
+                        Task.id.in_(scheduled_task_ids),
+                        Task.user_id == user.id,
+                        Task.status.in_((TaskStatus.INBOX, TaskStatus.ACTIVE)),
+                    )
+                )
+            )
+            if scheduled_task_ids
+            else set()
+        )
         for task in active_tasks:
             if task.id in scheduled_task_ids:
                 continue  # already visible as its focus block
@@ -81,6 +113,93 @@ class TodayService:
                     "busy": False,
                 })
         timeline.sort(key=lambda item: item["start_at"])
+        work_window = planning_work_window(user.settings, now, user.timezone)
+        work_minutes = _window_minutes(work_window)
+        free_slots = await self.calendar.find_free_slots(
+            user,
+            day=now,
+            duration_minutes=1,
+        )
+        free_minutes = sum(
+            _interval_minutes(start, end)
+            for start, end in free_slots
+        )
+        meeting_minutes = sum(
+            _event_minutes_in_window(event, work_window)
+            for event in events
+            if (
+                event.busy
+                and event.source_task_id is None
+                and event.status in (
+                    CalendarEventStatus.CONFIRMED,
+                    CalendarEventStatus.TENTATIVE,
+                )
+            )
+        )
+        planned_minutes = sum(
+            _event_minutes_in_window(event, work_window)
+            for event in events
+            if (
+                event.source == CalendarSource.INTERNAL
+                and event.source_task_id is not None
+                and event.status in (
+                    CalendarEventStatus.CONFIRMED,
+                    CalendarEventStatus.PROPOSED,
+                )
+            )
+        )
+        focus_minutes = sum(
+            max(0, (session.duration_seconds or 0) // 60)
+            for session in focus_sessions
+        )
+        occupied_minutes = meeting_minutes + planned_minutes
+        utilization_percent = (
+            round(occupied_minutes * 100 / work_minutes)
+            if work_minutes
+            else 0
+        )
+        work_blocks = [
+            event
+            for event in events
+            if (
+                event.source == CalendarSource.INTERNAL
+                and event.source_task_id is not None
+                and event.source_task_id in open_task_ids
+                and event.status == CalendarEventStatus.CONFIRMED
+                and event.end_at > now
+                and (
+                    active_focus is None
+                    or active_focus.planned_event_id != event.id
+                )
+                and not _work_block_is_impacted(event)
+            )
+        ]
+        next_block = (
+            _event_timeline_item(min(work_blocks, key=lambda event: event.start_at))
+            if work_blocks
+            else None
+        )
+        planned_task_ids = {
+            event.source_task_id
+            for event in events
+            if event.source_task_id is not None
+        }
+        planned_tasks = [
+            task_to_dict(task, timezone=user.timezone, now=now)
+            for task in active_tasks
+            if (
+                task.id in planned_task_ids
+                or (task.target_at is not None and day_start <= task.target_at < day_end)
+                or (task.due_at is not None and day_start <= task.due_at < day_end)
+            )
+        ]
+        tomorrow = next_planning_workday(user, now=now)
+        proposal_expiries = [
+            expiry
+            for event in events
+            if event.status == CalendarEventStatus.PROPOSED
+            if (expiry := _proposal_expiry(event)) is not None
+        ]
 
         # --- needs attention ------------------------------------------------
         needs_attention: list[dict] = []
@@ -139,9 +258,6 @@ class TodayService:
                 "action": {"type": "plan_day", "payload": {}},
             })
         if now_local.hour >= 17 and len(suggestions) < 3:
-            from datetime import timedelta as _td
-
-            tomorrow = (now_local + _td(days=1)).strftime("%Y-%m-%d")
             suggestions.append({
                 "id": "suggest-plan-tomorrow",
                 "kind": "plan_day",
@@ -151,7 +267,10 @@ class TodayService:
                     "Evening is a good time to block out tomorrow.",
                     "Вечер — лучшее время разложить завтрашний день по слотам",
                 ),
-                "action": {"type": "plan_day", "payload": {"date": tomorrow}},
+                "action": {
+                    "type": "plan_day",
+                    "payload": {"date": tomorrow.strftime("%Y-%m-%d")},
+                },
             })
         # --- precomputed slot suggestions ------------------------------------
         slot_suggestions = []
@@ -179,7 +298,12 @@ class TodayService:
         # --- recent runs ------------------------------------------------------
         runs_result = await self.session.execute(
             select(AgentRun)
-            .where(AgentRun.user_id == user.id)
+            .where(
+                AgentRun.user_id == user.id,
+                AgentRun.type.notin_(
+                    (AgentRunType.EMAIL_TRIAGE, AgentRunType.NEWS_DIGEST)
+                ),
+            )
             .order_by(AgentRun.created_at.desc())
             .limit(5)
         )
@@ -197,12 +321,104 @@ class TodayService:
                 "tasks_due_today": task_counts["tasks_due_today"],
                 "tasks_overdue": task_counts["tasks_overdue"],
             },
+            "capacity": {
+                "work_minutes": work_minutes,
+                "meeting_minutes": meeting_minutes,
+                "planned_minutes": planned_minutes,
+                "focus_minutes": focus_minutes,
+                "free_minutes": free_minutes,
+                "utilization_percent": utilization_percent,
+                "over_capacity": occupied_minutes > work_minutes if work_minutes else False,
+            },
+            "next_block": next_block,
+            "planned_tasks": planned_tasks,
+            "planning": {
+                "tomorrow_date": tomorrow.strftime("%Y-%m-%d"),
+                "can_replan": any(
+                    event.status == CalendarEventStatus.PROPOSED
+                    and event.start_at >= now
+                    for event in events
+                ),
+                "proposal_expires_at": (
+                    min(proposal_expiries).isoformat()
+                    if proposal_expiries
+                    else None
+                ),
+            },
             "timeline": timeline,
             "needs_attention": needs_attention,
             "suggestions": suggestions,
             "slot_suggestions": slot_suggestions,
             "recent_runs": recent_runs,
         }
+
+
+def _proposal_expiry(event: CalendarEvent) -> datetime | None:
+    raw_expiry = (event.metadata_ or {}).get("proposal_expires_at")
+    if not isinstance(raw_expiry, str):
+        return None
+    try:
+        expiry = datetime.fromisoformat(raw_expiry.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if expiry.tzinfo is None or expiry.utcoffset() is None:
+        return None
+    return expiry
+
+
+def _proposal_is_stale(event: CalendarEvent, now: datetime) -> bool:
+    if event.status != CalendarEventStatus.PROPOSED:
+        return False
+    expiry = _proposal_expiry(event)
+    return event.end_at <= now or (expiry is not None and expiry <= now)
+
+
+def _work_block_is_impacted(event: CalendarEvent) -> bool:
+    conflict = (event.metadata_ or {}).get("work_block_conflict")
+    return isinstance(conflict, dict) and conflict.get("status") == "impacted"
+
+
+def _event_timeline_item(event: CalendarEvent) -> dict:
+    if event.status == CalendarEventStatus.PROPOSED:
+        kind = "proposed"
+    elif event.source == CalendarSource.INTERNAL and event.source_task_id is not None:
+        kind = "work_block"
+    elif event.source != CalendarSource.INTERNAL:
+        kind = "meeting"
+    else:
+        kind = "event"
+    expiry = _proposal_expiry(event)
+    return {
+        "id": str(event.id),
+        "kind": kind,
+        "title": event.title,
+        "start_at": event.start_at.isoformat(),
+        "end_at": event.end_at.isoformat(),
+        "source": event.source.value,
+        "status": event.status.value,
+        "busy": event.busy,
+        "meeting_url": (event.metadata_ or {}).get("meeting_url"),
+        "expires_at": expiry.isoformat() if expiry else None,
+        **_private_note_fields(event.metadata_ or {}),
+    }
+
+
+def _interval_minutes(start: datetime, end: datetime) -> int:
+    return max(0, int((end - start).total_seconds() // 60))
+
+
+def _window_minutes(window: tuple[datetime, datetime] | None) -> int:
+    return _interval_minutes(*window) if window is not None else 0
+
+
+def _event_minutes_in_window(
+    event: CalendarEvent,
+    window: tuple[datetime, datetime] | None,
+) -> int:
+    if window is None:
+        return 0
+    start, end = window
+    return _interval_minutes(max(start, event.start_at), min(end, event.end_at))
 
 
 def _parse_dt(value) -> datetime | None:

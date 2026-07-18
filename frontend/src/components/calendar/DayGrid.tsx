@@ -1,5 +1,5 @@
 import { useMemo, useRef } from 'react';
-import { StickyNote } from 'lucide-react';
+import { AlertTriangle, StickyNote, Timer } from 'lucide-react';
 import type { CalendarEvent } from '../../api/types';
 import { formatTime } from '../../lib/format';
 import type { AppLocale } from '../../lib/i18n';
@@ -79,14 +79,24 @@ function layoutEvents(events: CalendarEvent[], dayStart: Date): Positioned[] {
 }
 
 function eventClasses(event: CalendarEvent): string {
+  if (event.work_block_conflict?.status === 'impacted') {
+    return 'border border-[var(--danger)] bg-[var(--danger-soft)]';
+  }
   if (event.status === 'proposed') {
     return 'border border-dashed border-[var(--accent-border)] bg-[var(--accent-soft)]';
   }
-  if (event.source === 'internal') {
+  if (isWorkBlock(event)) {
     return 'border-l-[3px] border-l-[var(--accent)] bg-[var(--accent-soft)]';
+  }
+  if (event.source === 'internal') {
+    return 'border-l-[3px] border-l-[var(--accent-border)] bg-[var(--surface)]';
   }
   // external (google / yandex) — solid, muted
   return 'bg-[var(--secondary-bg)] border-l-[3px] border-l-[var(--hint)]';
+}
+
+function isWorkBlock(event: CalendarEvent): boolean {
+  return event.kind === 'work_block' || Boolean(event.source_task_id);
 }
 
 const SOURCE_LABELS: Record<AppLocale, Record<string, string>> = {
@@ -100,6 +110,17 @@ export function DayGrid({ events, dayStart, locale, onEventTap, onEmptyTap, nowL
   const allDayLabel = locale === 'en' ? 'all day' : 'весь день';
   const createBlockLabel = locale === 'en' ? 'Create block' : 'Создать блок';
   const proposedLabel = locale === 'en' ? 'proposal' : 'предложение';
+  const workBlockLabel = locale === 'en' ? 'WorkBlock' : 'Рабочий блок';
+  const externalMeetingLabel = locale === 'en' ? 'External meeting' : 'Внешняя встреча';
+  const internalEventLabel = locale === 'en' ? 'Internal event' : 'Внутреннее событие';
+  const eventAriaLabel = (event: CalendarEvent) => {
+    const kind = isWorkBlock(event)
+      ? workBlockLabel
+      : event.source === 'internal'
+        ? internalEventLabel
+        : externalMeetingLabel;
+    return `${kind}: ${event.title}, ${formatTime(event.start_at, timeDisplay)}–${formatTime(event.end_at, timeDisplay)}`;
+  };
 
   const DAY_MIN = 24 * 60;
   const visible = events.filter((e) => e.status !== 'cancelled');
@@ -154,8 +175,10 @@ export function DayGrid({ events, dayStart, locale, onEventTap, onEmptyTap, nowL
             <button
               key={e.id}
               onClick={() => onEventTap(e)}
-              className="flex w-full items-center gap-2 rounded-xl bg-[var(--secondary-bg)] px-3.5 py-2 text-left text-[13px] font-medium text-ink"
+              aria-label={eventAriaLabel(e)}
+              className={`flex w-full items-center gap-2 rounded-xl px-3.5 py-2 text-left text-[13px] font-medium text-ink ${eventClasses(e)}`}
             >
+              {isWorkBlock(e) && <Timer size={13} className="shrink-0 text-accent-text" aria-hidden="true" />}
               <span className="min-w-0 flex-1 truncate">{e.title}</span>
               {e.private_note && <StickyNote size={13} className="shrink-0 text-hint" aria-hidden="true" />}
               <span className="shrink-0 text-[11.5px] font-normal text-hint">{allDayLabel}</span>
@@ -206,6 +229,7 @@ export function DayGrid({ events, dayStart, locale, onEventTap, onEmptyTap, nowL
                 e.stopPropagation();
                 onEventTap(event);
               }}
+              aria-label={eventAriaLabel(event)}
               className={`absolute z-10 overflow-hidden rounded-lg text-left transition-transform active:scale-[0.99] ${
                 height < 32 ? 'px-2 py-[2px]' : 'px-2.5 py-1.5'
               } ${eventClasses(event)}`}
@@ -217,11 +241,18 @@ export function DayGrid({ events, dayStart, locale, onEventTap, onEmptyTap, nowL
               }}
             >
               <p
-                className={`truncate pr-4 font-medium leading-tight text-ink ${
+                className={`flex min-w-0 items-center gap-1 truncate pr-4 font-medium leading-tight text-ink ${
                   height < 32 ? 'text-[11px]' : 'text-[12.5px]'
                 }`}
               >
-                {height < 32 ? `${formatTime(event.start_at, timeDisplay)} ${event.title}` : event.title}
+                {event.work_block_conflict?.status === 'impacted' ? (
+                  <AlertTriangle size={height < 32 ? 10 : 12} className="shrink-0 text-danger" aria-hidden="true" />
+                ) : isWorkBlock(event) ? (
+                  <Timer size={height < 32 ? 10 : 12} className="shrink-0 text-accent-text" aria-hidden="true" />
+                ) : null}
+                <span className="truncate">
+                  {height < 32 ? `${formatTime(event.start_at, timeDisplay)} ${event.title}` : event.title}
+                </span>
               </p>
               {event.private_note && (
                 <StickyNote
