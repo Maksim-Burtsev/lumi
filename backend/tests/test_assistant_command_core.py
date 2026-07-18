@@ -46,6 +46,11 @@ class ScriptedPlannerLLM:
         return self.response
 
 
+class FailingPlannerLLM:
+    async def complete_json(self, **_kwargs) -> dict:
+        raise TimeoutError("provider timeout")
+
+
 def _test_user() -> User:
     return User(
         id=uuid.uuid4(),
@@ -258,6 +263,26 @@ async def test_strict_validation_failure_cannot_become_a_regex_calendar_command(
         plan,
     )
 
+    assert guarded.command_core is True
+    assert guarded.mode == "final_answer"
+    assert guarded.tool_calls == []
+
+
+@pytest.mark.asyncio
+async def test_strict_provider_failure_cannot_become_a_regex_calendar_command() -> None:
+    planner = AgentPlanner(llm=FailingPlannerLLM())
+    plan = await planner.plan(
+        user=_test_user(),
+        text="what is on my calendar tomorrow?",
+    )
+
+    guarded = _with_schedule_read_guard(
+        _test_user(),
+        "what is on my calendar tomorrow?",
+        plan,
+    )
+
+    assert planner.last_trace["validation_status"] == "llm_error"
     assert guarded.command_core is True
     assert guarded.mode == "final_answer"
     assert guarded.tool_calls == []

@@ -95,15 +95,18 @@ class AgentPlanner:
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("agent planner LLM call failed", fields={"error": str(exc)})
+            fallback_plan = AgentPlan(
+                command_core=not self.allow_legacy_agent_plans,
+            )
             self.last_trace = _planner_trace(
                 raw=None,
-                plan=AgentPlan.empty(),
+                plan=fallback_plan,
                 validation_status="llm_error",
                 validation_error=str(exc),
                 media_context=media_context,
                 available_media=available_media,
             )
-            return AgentPlan.empty()
+            return fallback_plan
 
         try:
             if _looks_like_legacy_signals(raw) and self.allow_legacy_agent_plans:
