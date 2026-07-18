@@ -19,12 +19,11 @@ from lumi.db.models import (
 )
 from lumi.services.assistant_suggestions import AssistantSuggestionService
 from lumi.services.audit import AuditService
+from lumi.services.planning_settings import planning_work_window
 from lumi.services.realtime import RealtimeEventService
 from lumi.utils.links import extract_links
-from lumi.utils.time import get_zone, local_day_bounds, utc_now
+from lumi.utils.time import local_day_bounds, utc_now
 
-DEFAULT_DAY_START_HOUR = 9
-DEFAULT_DAY_END_HOUR = 19
 MEETING_BUFFER = timedelta(minutes=10)
 PRIVATE_NOTE_MAX_CHARS = 4000
 PRIVATE_NOTE_SUMMARY_THRESHOLD_CHARS = 600
@@ -211,6 +210,11 @@ class CalendarService:
         self.session = session
         self.audit = AuditService(session)
 
+    async def _lock_user(self, user: User) -> None:
+        await self.session.execute(
+            select(User.id).where(User.id == user.id).with_for_update()
+        )
+
     async def list_events(self, user: User, start: datetime, end: datetime) -> list[CalendarEvent]:
         result = await self.session.execute(
             select(CalendarEvent)
@@ -279,6 +283,7 @@ class CalendarService:
             details={"summary_status": metadata.get("private_note_summary_status")},
         )
         await self._emit_calendar_changed(event, "calendar_event.private_note.updated")
+        await self.session.refresh(event, attribute_names=["updated_at"])
         return event
 
     async def delete_private_note(self, user: User, event: CalendarEvent) -> CalendarEvent:
@@ -298,6 +303,7 @@ class CalendarService:
             details={},
         )
         await self._emit_calendar_changed(event, "calendar_event.private_note.deleted")
+        await self.session.refresh(event, attribute_names=["updated_at"])
         return event
 
     async def write_private_note_summary(
@@ -379,6 +385,7 @@ class CalendarService:
         user_response_status: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> CalendarEvent:
+        await self._lock_user(user)
         detail_links = _clean_links(
             links if links is not None else extract_links(description, meeting_url, external_url),
             meeting_url=meeting_url,
@@ -426,12 +433,14 @@ class CalendarService:
 
     async def cancel_proposed_blocks(self, user: User, *, day: datetime) -> int:
         """Cancel all agent-proposed (still unaccepted) blocks for the given day."""
+        await self._lock_user(user)
         day_start, day_end = local_day_bounds(day, user.timezone)
         result = await self.session.execute(
             select(CalendarEvent).where(
                 CalendarEvent.user_id == user.id,
                 CalendarEvent.source == CalendarSource.INTERNAL,
                 CalendarEvent.status == CalendarEventStatus.PROPOSED,
+                CalendarEvent.source_task_id.is_not(None),
                 CalendarEvent.start_at < day_end,
                 CalendarEvent.end_at > day_start,
             )
@@ -455,10 +464,13 @@ class CalendarService:
         return cancelled
 
     async def confirm_proposed_block(self, user: User, event: CalendarEvent) -> CalendarEvent:
+        await self._lock_user(user)
         event.status = CalendarEventStatus.CONFIRMED
         await self.audit.log(user_id=user.id, actor="user", entity_type="calendar_event",
                              entity_id=event.id, action="confirmed", details={})
         await self._emit_calendar_changed(event, "calendar_event.confirmed")
+        await self.session.flush()
+        await self.session.refresh(event, attribute_names=["updated_at"])
         return event
 
     async def update_internal_event(
@@ -477,6 +489,7 @@ class CalendarService:
             raise ValueError("event_not_found")
         if event.source != CalendarSource.INTERNAL:
             raise ExternalCalendarMutationError("external_calendar_update_unsupported")
+        await self._lock_user(user)
         new_start_at = start_at or event.start_at
         new_end_at = end_at or event.end_at
         if new_end_at <= new_start_at:
@@ -541,6 +554,7 @@ class CalendarService:
             raise ValueError("event_not_found")
         if event.source != CalendarSource.INTERNAL:
             raise ExternalCalendarMutationError("external_calendar_cancel_unsupported")
+        await self._lock_user(user)
         event.status = CalendarEventStatus.CANCELLED
         await self.audit.log(
             user_id=user.id,
@@ -561,22 +575,13 @@ class CalendarService:
         *,
         day: datetime,
         duration_minutes: int = 60,
-        day_start_hour: int | None = None,
-        day_end_hour: int | None = None,
     ) -> list[tuple[datetime, datetime]]:
         """Free windows in the user's working day, UTC tuples."""
-        zone = get_zone(user.timezone)
+        work_window = planning_work_window(user.settings, day, user.timezone)
+        if work_window is None:
+            return []
+        window_start, window_end = work_window
         day_utc_start, day_utc_end = local_day_bounds(day, user.timezone)
-        local_date = day_utc_start.astimezone(zone).date()
-
-        settings = user.settings or {}
-        start_hour = day_start_hour or settings.get("day_start_hour", DEFAULT_DAY_START_HOUR)
-        end_hour = day_end_hour or settings.get("day_end_hour", DEFAULT_DAY_END_HOUR)
-
-        window_start = datetime(local_date.year, local_date.month, local_date.day,
-                                start_hour, tzinfo=zone).astimezone(day_utc_start.tzinfo)
-        window_end = datetime(local_date.year, local_date.month, local_date.day,
-                              end_hour, tzinfo=zone).astimezone(day_utc_start.tzinfo)
 
         # Don't propose slots in the past.
         now = utc_now()
@@ -628,6 +633,7 @@ class CalendarService:
         attendees: list[dict[str, Any]] | None = None,
         user_response_status: str | None = None,
     ) -> CalendarEvent:
+        await self._lock_user(user)
         result = await self.session.execute(
             select(CalendarEvent).where(
                 CalendarEvent.user_id == user.id,
@@ -696,6 +702,7 @@ class CalendarService:
         seen_event_ids: set[str],
     ) -> int:
         """Cancel external events in a sync window that the provider no longer returns."""
+        await self._lock_user(user)
         result = await self.session.execute(
             select(CalendarEvent).where(
                 CalendarEvent.user_id == user.id,

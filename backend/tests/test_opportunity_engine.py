@@ -30,6 +30,7 @@ async def test_due_opportunity_job_precomputes_short_task_suggestion(user):
             kind="task_suggestions",
             scope_key="today",
             reason="test",
+            payload={"date": "2030-01-07T10:00:00+03:00"},
             delay_seconds=0,
         )
 

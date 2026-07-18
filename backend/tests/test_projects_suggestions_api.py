@@ -18,6 +18,7 @@ from lumi.db.session import session_scope
 from lumi.main import app
 from lumi.services import today as today_module
 from lumi.services.assistant_suggestions import AssistantSuggestionService
+from lumi.services.calendar import CalendarService
 from lumi.services.users import UserService
 from lumi.utils.time import utc_now
 
@@ -185,6 +186,145 @@ async def test_calendar_changes_enqueue_task_suggestion_refresh(client):
         )
         job = result.scalar_one()
         assert job.reason == "calendar_event.cancelled"
+
+
+async def test_work_block_api_creates_and_confirms_idempotently(client):
+    task = await client.post("/api/tasks", json={"title": "Write launch notes"})
+    task_id = task.json()["task"]["id"]
+
+    created = await client.post(
+        "/api/calendar/work-blocks",
+        json={
+            "task_id": task_id,
+            "start_at": "2035-07-11T10:00:00+03:00",
+            "end_at": "2035-07-11T11:00:00+03:00",
+            "status": "proposed",
+        },
+    )
+
+    assert created.status_code == 201
+    body = created.json()
+    assert set(body) == {"status", "reason", "event", "conflict_event_id"}
+    assert body["status"] == "proposed"
+    assert body["reason"] is None
+    assert body["conflict_event_id"] is None
+    assert body["event"]["kind"] == "work_block"
+    assert body["event"]["title"] == "Write launch notes"
+    assert body["event"]["source_task_id"] == task_id
+
+    stale = await client.post(
+        f"/api/calendar/work-blocks/{body['event']['id']}/confirm",
+        json={"expected_updated_at": "2035-07-11T09:00:00+00:00"},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["status"] == "stale"
+    assert stale.json()["reason"] == "proposal_changed"
+
+    confirmed = await client.post(f"/api/calendar/work-blocks/{body['event']['id']}/confirm")
+    assert confirmed.status_code == 200
+    assert confirmed.json()["status"] == "confirmed"
+    assert confirmed.json()["event"]["status"] == "confirmed"
+
+    repeated = await client.post(f"/api/calendar/work-blocks/{body['event']['id']}/confirm")
+    assert repeated.status_code == 200
+    assert repeated.json()["status"] == "already_confirmed"
+
+
+async def test_work_block_api_returns_structured_not_found_invalid_and_conflict(client):
+    missing = await client.post(
+        "/api/calendar/work-blocks",
+        json={
+            "task_id": "00000000-0000-0000-0000-000000000001",
+            "title": "Missing task",
+            "start_at": "2035-07-11T10:00:00+03:00",
+            "end_at": "2035-07-11T11:00:00+03:00",
+        },
+    )
+    assert missing.status_code == 404
+    assert missing.json() == {
+        "status": "not_found",
+        "reason": "task_not_found",
+        "event": None,
+        "conflict_event_id": None,
+    }
+
+    first_task = await client.post("/api/tasks", json={"title": "First block"})
+    first = await client.post(
+        "/api/calendar/work-blocks",
+        json={
+            "task_id": first_task.json()["task"]["id"],
+            "title": "First block",
+            "start_at": "2035-07-11T10:00:00+03:00",
+            "end_at": "2035-07-11T11:00:00+03:00",
+            "status": "confirmed",
+        },
+    )
+    assert first.status_code == 201
+
+    second_task = await client.post("/api/tasks", json={"title": "Second block"})
+    conflict = await client.post(
+        "/api/calendar/work-blocks",
+        json={
+            "task_id": second_task.json()["task"]["id"],
+            "title": "Second block",
+            "start_at": "2035-07-11T10:30:00+03:00",
+            "end_at": "2035-07-11T11:30:00+03:00",
+        },
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["status"] == "conflict"
+    assert conflict.json()["reason"] == "calendar_conflict"
+    assert conflict.json()["event"] is None
+    assert conflict.json()["conflict_event_id"] == first.json()["event"]["id"]
+
+    invalid = await client.post(
+        "/api/calendar/work-blocks",
+        json={
+            "task_id": second_task.json()["task"]["id"],
+            "title": "Outside work hours",
+            "start_at": "2035-07-11T07:00:00+03:00",
+            "end_at": "2035-07-11T08:00:00+03:00",
+        },
+    )
+    assert invalid.status_code == 422
+    assert invalid.json()["status"] == "invalid"
+    assert invalid.json()["reason"] == "outside_work_hours"
+
+
+async def test_legacy_confirm_endpoint_supports_generic_and_work_blocks(client):
+    async with session_scope() as session:
+        user = await UserService(session).ensure_user(TEST_TELEGRAM_ID)
+        generic = await CalendarService(session).create_internal_block(
+            user,
+            title="Generic proposal",
+            start_at=datetime.fromisoformat("2035-07-11T12:00:00+03:00"),
+            end_at=datetime.fromisoformat("2035-07-11T13:00:00+03:00"),
+            status=CalendarEventStatus.PROPOSED,
+        )
+        generic_id = str(generic.id)
+
+    generic_confirmed = await client.post(f"/api/calendar/blocks/{generic_id}/confirm")
+    assert generic_confirmed.status_code == 200
+    assert set(generic_confirmed.json()) == {"event"}
+    assert generic_confirmed.json()["event"]["status"] == "confirmed"
+
+    task = await client.post("/api/tasks", json={"title": "Legacy work block"})
+    work_block = await client.post(
+        "/api/calendar/work-blocks",
+        json={
+            "task_id": task.json()["task"]["id"],
+            "title": "Legacy work block",
+            "start_at": "2035-07-11T14:00:00+03:00",
+            "end_at": "2035-07-11T15:00:00+03:00",
+        },
+    )
+    legacy_confirmed = await client.post(
+        f"/api/calendar/blocks/{work_block.json()['event']['id']}/confirm"
+    )
+    assert legacy_confirmed.status_code == 200
+    assert set(legacy_confirmed.json()) == {"event"}
+    assert legacy_confirmed.json()["event"]["kind"] == "work_block"
+    assert legacy_confirmed.json()["event"]["status"] == "confirmed"
 
 
 async def test_pending_suggestions_can_be_listed_and_dismissed(client):

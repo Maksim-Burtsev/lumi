@@ -129,6 +129,8 @@ planning-check:
 		tests/test_calendar_slots.py \
 		tests/test_calendar_sync.py \
 		tests/test_planning_settings.py \
+		tests/test_work_blocks.py \
+		tests/test_work_block_migration.py \
 		tests/test_opportunity_engine.py \
 		tests/test_projects_suggestions_api.py \
 		tests/test_schedule_delivery.py \

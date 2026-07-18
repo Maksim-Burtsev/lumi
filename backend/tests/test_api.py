@@ -171,6 +171,51 @@ async def test_patch_settings_rejects_invalid_time_format_in_settings_payload(cl
     assert response.json() == {"error": "invalid_time_format"}
 
 
+async def test_patch_settings_preserves_planning_validation_error(client):
+    response = await client.patch(
+        "/api/settings",
+        json={"settings": {"planning": {"work_hours": {"start": "19:00", "end": "09:00"}}}},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"error": "invalid_work_hours"}
+
+
+async def test_patch_settings_deep_merges_partial_planning_update(client):
+    initial = await client.patch(
+        "/api/settings",
+        json={
+            "settings": {
+                "planning": {
+                    "work_days": [1, 3],
+                    "work_hours": {"start": "08:30", "end": "17:45"},
+                    "quiet_hours": {"start": "20:30", "end": "08:15"},
+                    "proactive_level": "active",
+                }
+            }
+        },
+    )
+    assert initial.status_code == 200
+
+    updated = await client.patch(
+        "/api/settings",
+        json={
+            "settings": {
+                "planning": {"work_hours": {"start": "09:15"}},
+                "theme_mode": "dark",
+            }
+        },
+    )
+
+    assert updated.status_code == 200
+    settings = updated.json()["user"]["settings"]
+    assert settings["theme_mode"] == "dark"
+    assert settings["planning"]["work_days"] == [1, 3]
+    assert settings["planning"]["work_hours"] == {"start": "09:15", "end": "17:45"}
+    assert settings["planning"]["quiet_hours"] == {"start": "20:30", "end": "08:15"}
+    assert settings["planning"]["proactive_level"] == "active"
+
+
 async def test_timezones_endpoint_returns_full_selectable_list(client):
     response = await client.get("/api/timezones")
 

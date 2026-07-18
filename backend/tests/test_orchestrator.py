@@ -2088,7 +2088,7 @@ async def test_agent_loop_read_calendar_then_ask_user_sends_final_answer_not_cal
     )
 
 
-async def test_agent_loop_shifts_flexible_calendar_block_away_from_conflicts():
+async def test_agent_loop_never_silently_shifts_flexible_calendar_block():
     provider = AgentPlannerProvider([
         {
             "mode": "tool_calls",
@@ -2167,23 +2167,17 @@ async def test_agent_loop_shifts_flexible_calendar_block_away_from_conflicts():
         tool_calls = (await session.execute(select(ToolCall).order_by(ToolCall.created_at))).scalars().all()
 
     requested_start = local_to_utc(datetime(2026, 6, 22, 20, 0), user.timezone)
-    expected_start = local_to_utc(datetime(2026, 6, 22, 21, 30), user.timezone)
-    expected_end = local_to_utc(datetime(2026, 6, 22, 22, 15), user.timezone)
     created = [event for event in events if event.title == "QA blocco senza sovrapposizione"]
-    assert len(created) == 1
-    assert created[0].start_at == expected_start
-    assert created[0].end_at == expected_end
-    assert created[0].status == CalendarEventStatus.CONFIRMED
-    assert created[0].metadata_["reply_language"] == "it"
-    assert created[0].metadata_["adjusted_from_start_at"] == requested_start.isoformat()
-    assert "21:30" in result.reply_text
-    assert not any(
-        event.title == "QA blocco senza sovrapposizione" and event.start_at == requested_start
+    assert created == []
+    assert "20:00" in result.reply_text
+    assert tool_calls[-1].tool_name == "create_internal_calendar_block"
+    assert tool_calls[-1].status == "skipped"
+    assert tool_calls[-1].result_json["reason"] == "calendar_conflict"
+    assert tool_calls[-1].result_json["conflict_event_id"]
+    assert all(
+        event.start_at != requested_start or event.title != "QA blocco senza sovrapposizione"
         for event in events
     )
-    assert tool_calls[-1].tool_name == "create_internal_calendar_block"
-    assert tool_calls[-1].status == "completed"
-    assert tool_calls[-1].result_json["event_id"] == str(created[0].id)
 
 
 async def test_agent_loop_rejects_fixed_calendar_block_conflict_without_creating():
