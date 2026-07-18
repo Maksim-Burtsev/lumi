@@ -366,8 +366,8 @@ describe('FocusPage', () => {
     fireEvent.change(screen.getByLabelText('Intent'), { target: { value: 'Написать черновик спецификации' } });
     await user.click(screen.getByRole('button', { name: /choose task/i }));
     await user.click(screen.getByText('Focus timer v1'));
-    await screen.findByRole('button', { name: /start 45 min/i });
-    fireEvent.click(screen.getByRole('button', { name: /start 45 min/i }));
+    await screen.findByRole('button', { name: /start 25 min/i });
+    fireEvent.click(screen.getByRole('button', { name: /start 25 min/i }));
 
     await waitFor(() => {
       expect(start).toHaveBeenCalledWith({
@@ -375,7 +375,8 @@ describe('FocusPage', () => {
         project_id: LUMI_PROJECT_ID,
         project_name: 'Lumi',
         intention: 'Написать черновик спецификации',
-        planned_minutes: 45,
+        planned_minutes: 25,
+        break_minutes: 5,
       });
     });
     expect(await screen.findByText('Написать черновик спецификации')).toBeInTheDocument();
@@ -415,7 +416,8 @@ describe('FocusPage', () => {
 
     await user.click(await screen.findByRole('button', { name: /start session/i }));
     fireEvent.change(screen.getByLabelText('Intent'), { target: { value: 'Пишу текст' } });
-    fireEvent.change(screen.getByLabelText('Custom duration'), { target: { value: '37' } });
+    await user.click(screen.getByRole('button', { name: /^custom$/i }));
+    fireEvent.change(screen.getByLabelText('Focus minutes'), { target: { value: '37' } });
     await user.click(screen.getByRole('button', { name: /choose task/i }));
     await user.type(screen.getByPlaceholderText('Search tasks'), 'пост');
 
@@ -433,8 +435,37 @@ describe('FocusPage', () => {
         project_name: 'Content',
         intention: 'Пишу текст',
         planned_minutes: 37,
+        break_minutes: 5,
       });
     });
+  });
+
+  it('starts the 50/10 focus and break preset as one durable cycle', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'getFocusState').mockResolvedValue(EMPTY_STATE);
+    vi.spyOn(api, 'getFocusSummary').mockResolvedValue(SUMMARY);
+    vi.spyOn(api, 'listTasks').mockResolvedValue(TASKS);
+    const start = vi.spyOn(api, 'startFocusSession').mockResolvedValue({
+      session: makeSession({
+        status: 'active',
+        planned_minutes: 50,
+        started_at: new Date().toISOString(),
+        target_end_at: new Date(Date.now() + 50 * 60_000).toISOString(),
+        ended_at: null,
+        duration_seconds: null,
+      }),
+    });
+
+    renderFocusPage('en');
+
+    await user.click(await screen.findByRole('button', { name: /start session/i }));
+    await user.click(screen.getByRole('button', { name: '50/10' }));
+    await user.click(screen.getByRole('button', { name: /start 50 min/i }));
+
+    await waitFor(() => expect(start).toHaveBeenCalledWith(expect.objectContaining({
+      planned_minutes: 50,
+      break_minutes: 10,
+    })));
   });
 
   it('lets project override task project in the start flow', async () => {
@@ -469,8 +500,8 @@ describe('FocusPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /choose project/i }));
     const projectPicker = screen.getByRole('dialog', { name: /choose project/i });
     await user.click(within(projectPicker).getByRole('button', { name: 'QA Project' }));
-    await screen.findByRole('button', { name: /start 45 min/i });
-    fireEvent.click(screen.getByRole('button', { name: /start 45 min/i }));
+    await screen.findByRole('button', { name: /start 25 min/i });
+    fireEvent.click(screen.getByRole('button', { name: /start 25 min/i }));
 
     await waitFor(() => {
       expect(start).toHaveBeenCalledWith({
@@ -478,7 +509,8 @@ describe('FocusPage', () => {
         project_id: QA_PROJECT_ID,
         project_name: 'QA Project',
         intention: 'Override project',
-        planned_minutes: 45,
+        planned_minutes: 25,
+        break_minutes: 5,
       });
     });
   });
@@ -627,6 +659,63 @@ describe('FocusPage', () => {
     expect(screen.getByLabelText('Session progress')).toHaveTextContent('+');
   });
 
+  it('restores an active break and can finish it without showing focus analytics', async () => {
+    const user = userEvent.setup();
+    const breakSession = makeSession({
+      status: 'completed',
+      intention: 'Break-safe work',
+      actual_minutes: 25,
+      planned_vs_actual_minutes: 0,
+      cycle: {
+        preset: '25/5',
+        focus_minutes: 25,
+        break_minutes: 5,
+        phase: 'break',
+        break_started_at: new Date(Date.now() - 60_000).toISOString(),
+        break_target_end_at: new Date(Date.now() + 4 * 60_000).toISOString(),
+        break_ended_at: null,
+      },
+    });
+    vi.spyOn(api, 'getFocusState').mockResolvedValue({
+      ...EMPTY_STATE,
+      active_break: breakSession,
+    });
+    vi.spyOn(api, 'getFocusSummary').mockResolvedValue(SUMMARY);
+    vi.spyOn(api, 'listFocusSessions').mockResolvedValue({ items: [] });
+    const finishBreak = vi.spyOn(api, 'finishFocusBreak').mockResolvedValue({
+      session: {
+        ...breakSession,
+        cycle: { ...breakSession.cycle!, phase: 'done', break_ended_at: new Date().toISOString() },
+      },
+    });
+
+    renderFocusPage('en');
+
+    expect(await screen.findByText('break running')).toBeInTheDocument();
+    expect(screen.getByLabelText('Break progress')).toBeInTheDocument();
+    expect(screen.queryByText('Analytics')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /skip break/i }));
+
+    await waitFor(() => expect(finishBreak).toHaveBeenCalledWith(breakSession.id));
+  });
+
+  it('shows planned versus actual time for completed sessions', async () => {
+    const completed = makeSession({
+      actual_minutes: 52,
+      planned_vs_actual_minutes: 7,
+    });
+    vi.spyOn(api, 'getFocusState').mockResolvedValue({
+      ...EMPTY_STATE,
+      recent_sessions: [completed],
+    });
+    vi.spyOn(api, 'getFocusSummary').mockResolvedValue(SUMMARY);
+    vi.spyOn(api, 'listFocusSessions').mockResolvedValue({ items: [completed] });
+
+    renderFocusPage('en');
+
+    expect(await screen.findByText(/Planned 45 · Actual 52 \(\+7\)/)).toBeInTheDocument();
+  });
+
   it('has no deceptive active edit action and confirms cancellation in the shared sheet stack', async () => {
     const user = userEvent.setup();
     const session = makeSession({
@@ -684,7 +773,7 @@ describe('FocusPage', () => {
     expect(screen.queryByText('Готов к сессии?')).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /start session/i }));
-    await user.click(screen.getByRole('button', { name: /start 45 min/i }));
+    await user.click(screen.getByRole('button', { name: /start 25 min/i }));
 
     await waitFor(() => {
       expect(start).toHaveBeenCalledWith({
@@ -692,7 +781,8 @@ describe('FocusPage', () => {
         project_id: null,
         project_name: null,
         intention: 'Session',
-        planned_minutes: 45,
+        planned_minutes: 25,
+        break_minutes: 5,
       });
     });
   });

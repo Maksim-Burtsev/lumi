@@ -106,6 +106,65 @@ async def test_focus_session_lifecycle_tracks_task_project_and_reflection(client
     assert body["recent_sessions"][0]["id"] == finished["id"]
 
 
+async def test_focus_break_cycle_survives_state_and_excludes_break_from_actual(client):
+    start = await client.post(
+        "/api/focus/sessions",
+        json={
+            "intention": "One complete cycle",
+            "planned_minutes": 25,
+            "break_minutes": 5,
+        },
+    )
+    assert start.status_code == 201
+    active = start.json()["session"]
+    assert active["cycle"] == {
+        "preset": "25/5",
+        "focus_minutes": 25,
+        "break_minutes": 5,
+        "phase": "focus",
+        "break_started_at": None,
+        "break_target_end_at": None,
+        "break_ended_at": None,
+    }
+    assert active["actual_minutes"] is None
+    assert active["planned_vs_actual_minutes"] is None
+
+    finish = await client.post(f"/api/focus/sessions/{active['id']}/finish", json={})
+    assert finish.status_code == 200
+    completed = finish.json()["session"]
+    assert completed["cycle"]["phase"] == "break"
+    assert completed["cycle"]["break_started_at"] is not None
+    assert completed["cycle"]["break_target_end_at"] is not None
+    focus_actual = completed["actual_minutes"]
+
+    reopened = await client.get("/api/focus/state")
+    assert reopened.status_code == 200
+    assert reopened.json()["active_session"] is None
+    assert reopened.json()["active_break"]["id"] == active["id"]
+    assert reopened.json()["active_break"]["cycle"]["phase"] == "break"
+
+    blocked = await client.post(
+        "/api/focus/sessions",
+        json={"intention": "Wait for break", "planned_minutes": 50, "break_minutes": 10},
+    )
+    assert blocked.status_code == 409
+    assert blocked.json() == {"error": "active_break_exists"}
+
+    ended = await client.post(f"/api/focus/sessions/{active['id']}/break/finish")
+    assert ended.status_code == 200
+    assert ended.json()["session"]["cycle"]["phase"] == "done"
+    assert ended.json()["session"]["actual_minutes"] == focus_actual
+    repeated = await client.post(f"/api/focus/sessions/{active['id']}/break/finish")
+    assert repeated.status_code == 200
+
+    next_focus = await client.post(
+        "/api/focus/sessions",
+        json={"intention": "Next cycle", "planned_minutes": 50, "break_minutes": 10},
+    )
+    assert next_focus.status_code == 201
+    assert next_focus.json()["session"]["cycle"]["preset"] == "50/10"
+
+
 async def test_focus_start_links_confirmed_work_block_and_keeps_planned_duration(
     client,
     db_session,
@@ -148,6 +207,8 @@ async def test_focus_start_links_confirmed_work_block_and_keeps_planned_duration
 
     finished = await client.post(f"/api/focus/sessions/{focus_session['id']}/finish", json={})
     assert finished.status_code == 200
+    assert finished.json()["session"]["actual_minutes"] is not None
+    assert finished.json()["session"]["planned_vs_actual_minutes"] is not None
     await db_session.refresh(task)
     assert task.status == TaskStatus.INBOX
 

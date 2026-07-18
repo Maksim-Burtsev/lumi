@@ -4,9 +4,14 @@ import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from lumi.db.models import CalendarEventStatus, CalendarSource, TaskStatus, User
+import pytest
+from sqlalchemy import select
+
+from lumi.api.serializers import event_to_dict
+from lumi.db.models import CalendarEvent, CalendarEventStatus, CalendarSource, TaskStatus, User
 from lumi.db.session import session_scope
 from lumi.services.calendar import CalendarService
+from lumi.services.focus import FocusService
 from lumi.services.planning import PlanningService
 from lumi.services.tasks import TaskService
 from lumi.services.users import UserService
@@ -159,6 +164,143 @@ async def test_work_block_confirmation_rechecks_external_conflict(db_session):
     assert confirmed.conflict is external
     assert result.event.status == CalendarEventStatus.PROPOSED
     assert external.start_at == start_at + timedelta(minutes=30)
+
+
+async def test_external_move_marks_work_block_and_creates_one_explicit_alternative(
+    db_session,
+):
+    user = await _work_user(db_session)
+    task = await TaskService(db_session).create_task(user, title="Protected work")
+    calendar = CalendarService(db_session)
+    start_at = datetime(2035, 7, 11, 10, tzinfo=UTC)
+    created = await WorkBlockService(db_session).create(
+        user,
+        task_id=task.id,
+        title="Protected work",
+        start_at=start_at,
+        end_at=start_at + timedelta(hours=1),
+        status=CalendarEventStatus.CONFIRMED,
+    )
+    assert created.event is not None
+    external = await calendar.upsert_external_event(
+        user,
+        source=CalendarSource.GOOGLE,
+        external_calendar_id="primary",
+        external_event_id="moving-meeting",
+        title="Moving meeting",
+        start_at=start_at + timedelta(hours=3),
+        end_at=start_at + timedelta(hours=4),
+    )
+
+    moved = await calendar.upsert_external_event(
+        user,
+        source=CalendarSource.GOOGLE,
+        external_calendar_id="primary",
+        external_event_id="moving-meeting",
+        title="Moving meeting",
+        start_at=start_at + timedelta(minutes=15),
+        end_at=start_at + timedelta(minutes=45),
+    )
+
+    payload = event_to_dict(created.event)
+    assert created.event.start_at == start_at
+    assert moved.id == external.id
+    assert moved.start_at == start_at + timedelta(minutes=15)
+    assert payload["work_block_conflict"]["status"] == "impacted"
+    assert payload["work_block_conflict"]["external_event_id"] == str(external.id)
+    with pytest.raises(ValueError, match="planned_event_conflicted"):
+        await FocusService(db_session).start_session(
+            user,
+            planned_event_id=created.event.id,
+            intention="Must use the alternative",
+            planned_minutes=60,
+        )
+    alternative_id = uuid.UUID(payload["work_block_conflict"]["alternative_event_id"])
+    alternative = await db_session.get(CalendarEvent, alternative_id)
+    assert alternative is not None
+    assert alternative.status == CalendarEventStatus.PROPOSED
+    assert alternative.start_at != created.event.start_at
+    assert event_to_dict(alternative)["alternative_for_event_id"] == str(created.event.id)
+
+    await calendar.upsert_external_event(
+        user,
+        source=CalendarSource.GOOGLE,
+        external_calendar_id="primary",
+        external_event_id="moving-meeting",
+        title="Moving meeting",
+        start_at=start_at + timedelta(minutes=15),
+        end_at=start_at + timedelta(minutes=45),
+    )
+    alternatives = list(
+        (
+            await db_session.execute(
+                select(CalendarEvent).where(
+                    CalendarEvent.user_id == user.id,
+                    CalendarEvent.metadata_["alternative_for_event_id"].astext
+                    == str(created.event.id),
+                )
+            )
+        ).scalars()
+    )
+    assert [item.id for item in alternatives] == [alternative_id]
+
+    cancelled = await calendar.reconcile_external_events(
+        user,
+        source=CalendarSource.GOOGLE,
+        external_calendar_id="primary",
+        start_at=start_at.replace(hour=0),
+        end_at=start_at.replace(hour=23),
+        seen_event_ids=set(),
+    )
+    assert cancelled == 1
+    assert created.event.start_at == start_at
+    assert event_to_dict(created.event)["work_block_conflict"] is None
+    assert (created.event.metadata_["work_block_conflict"])["status"] == "resolved"
+    assert alternative.status == CalendarEventStatus.CANCELLED
+
+
+async def test_accepting_conflict_alternative_cancels_only_original_work_block(
+    user,
+    db_session,
+):
+    task = await TaskService(db_session).create_task(user, title="Explicit replacement")
+    calendar = CalendarService(db_session)
+    start_at = datetime(2035, 7, 11, 10, tzinfo=UTC)
+    original = await WorkBlockService(db_session).create(
+        user,
+        task_id=task.id,
+        title="Explicit replacement",
+        start_at=start_at,
+        end_at=start_at + timedelta(hours=1),
+        status=CalendarEventStatus.CONFIRMED,
+    )
+    assert original.event is not None
+    external = await calendar.upsert_external_event(
+        user,
+        source=CalendarSource.GOOGLE,
+        external_calendar_id="primary",
+        external_event_id="accepted-alternative-meeting",
+        title="Fixed meeting",
+        start_at=start_at + timedelta(minutes=15),
+        end_at=start_at + timedelta(minutes=45),
+    )
+    conflict = event_to_dict(original.event)["work_block_conflict"]
+    assert conflict is not None
+    alternative_id = uuid.UUID(conflict["alternative_event_id"])
+
+    confirmed = await WorkBlockService(db_session).confirm(
+        user,
+        event_id=alternative_id,
+    )
+
+    assert confirmed.status == WorkBlockResultStatus.CONFIRMED
+    assert confirmed.event is not None
+    assert confirmed.event.status == CalendarEventStatus.CONFIRMED
+    assert original.event.status == CalendarEventStatus.CANCELLED
+    assert original.event.metadata_["work_block_conflict"]["status"] == "replaced"
+    assert external.status == CalendarEventStatus.CONFIRMED
+    assert external.start_at == start_at + timedelta(minutes=15)
+    assert external.end_at == start_at + timedelta(minutes=45)
 
 
 async def test_concurrent_work_block_confirmation_is_idempotent():

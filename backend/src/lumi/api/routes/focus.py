@@ -28,6 +28,7 @@ class FocusStart(BaseModel):
     )
     intention: str = Field(min_length=1, max_length=300)
     planned_minutes: int = Field(ge=1, le=240)
+    break_minutes: int = Field(default=0, ge=0, le=60)
 
 
 class FocusFinish(BaseModel):
@@ -108,10 +109,14 @@ async def focus_state(
 ) -> dict:
     service = FocusService(session)
     active = await service.get_active(user)
+    active_break = await service.get_active_break(user)
     recent = await service.recent_sessions(user)
     serialized = await _serialize_sessions(service, user, ([active] if active else []) + recent)
     return {
         "active_session": serialized[0] if active else None,
+        "active_break": (
+            await _serialize_session(service, user, active_break) if active_break else None
+        ),
         "today": await service.today_totals(user),
         "recent_sessions": serialized[1:] if active else serialized,
     }
@@ -217,12 +222,18 @@ async def start_focus_session(
             planned_event_id=payload.planned_event_id,
             intention=payload.intention,
             planned_minutes=payload.planned_minutes,
+            break_minutes=payload.break_minutes,
             **project_fields,
         )
     except ValueError as exc:
         code = str(exc)
-        status = 409 if code == "active_focus_session_exists" else 404
+        status = 409 if code in {
+            "active_focus_session_exists",
+            "active_break_exists",
+            "planned_event_conflicted",
+        } else 404
         if code in {
+            "invalid_focus_break",
             "invalid_focus_intention",
             "planned_event_not_confirmed",
             "planned_event_not_work_block",
@@ -284,6 +295,21 @@ async def finish_focus_session(
             next_step_text=payload.next_step_text,
             focus_score=payload.focus_score,
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"session": await _serialize_session(service, user, focus_session)}
+
+
+@router.post("/focus/sessions/{session_id}/break/finish")
+async def finish_focus_break(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    service = FocusService(session)
+    focus_session = await _session_or_404(service, user, session_id)
+    try:
+        focus_session = await service.finish_break(user, focus_session)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"session": await _serialize_session(service, user, focus_session)}

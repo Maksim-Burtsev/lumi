@@ -535,6 +535,7 @@ export function useStartFocusSession() {
         | undefined;
       queryClient.setQueryData(qk.focus, {
         active_session: response.session,
+        active_break: null,
         today: previous?.today ?? { focus_seconds: 0, completed_sessions: 0, streak_days: 0 },
         recent_sessions: previous?.recent_sessions ?? [],
       });
@@ -557,9 +558,15 @@ export function useFinishFocusSession() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, input }: { id: string; input: FinishFocusSessionInput }) => api.finishFocusSession(id, input),
-    onSuccess: () => {
+    onSuccess: (response) => {
       queryClient.setQueryData<FocusStateResponse>(qk.focus, (current) => (
-        current ? { ...current, active_session: null } : current
+        current
+          ? {
+              ...current,
+              active_session: null,
+              active_break: response.session.cycle?.phase === 'break' ? response.session : null,
+            }
+          : current
       ));
       invalidateFocusDerivedQueries(queryClient);
     },
@@ -596,6 +603,19 @@ export function useAbandonFocusSession() {
         current ? { ...current, active_session: null } : current
       ));
       invalidateFocusDerivedQueries(queryClient);
+    },
+    onSettled: () => invalidateFocusQueries(queryClient),
+  });
+}
+
+export function useFinishFocusBreak() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.finishFocusBreak(id),
+    onSuccess: () => {
+      queryClient.setQueryData<FocusStateResponse>(qk.focus, (current) => (
+        current ? { ...current, active_break: null } : current
+      ));
     },
     onSettled: () => invalidateFocusQueries(queryClient),
   });

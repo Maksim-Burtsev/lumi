@@ -295,6 +295,10 @@ export class LumiApiClient {
     return request('POST', `/api/focus/sessions/${id}/abandon`);
   }
 
+  finishFocusBreak(id: string): Promise<FocusSessionResponse> {
+    return request('POST', `/api/focus/sessions/${id}/break/finish`);
+  }
+
   // -------------------------------------------------- Calendar
   listCalendarEvents(start: string, end: string): Promise<CalendarEventsResponse> {
     return request('GET', '/api/calendar/events', { query: { start, end } });

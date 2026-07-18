@@ -688,6 +688,7 @@ class CalendarService:
             if value not in (None, "", [])
         }
         await self.session.flush()
+        await self._reconcile_work_block_conflicts(user, event)
         await self._emit_calendar_changed(event, "calendar_event.upserted")
         return event
 
@@ -725,6 +726,7 @@ class CalendarService:
                 "cancelled_by_sync": True,
                 "cancelled_by_sync_at": event.last_synced_at.isoformat(),
             }
+            await self._reconcile_work_block_conflicts(user, event)
             cancelled += 1
         if cancelled:
             await self.session.flush()
@@ -759,6 +761,233 @@ class CalendarService:
             )
         )
         return {calendar_id for calendar_id in result.scalars() if calendar_id}
+
+    async def _reconcile_work_block_conflicts(
+        self,
+        user: User,
+        external_event: CalendarEvent,
+    ) -> None:
+        """Keep external events fixed and represent recovery as an explicit proposal."""
+        from lumi.services.work_blocks import (  # local import avoids a service cycle
+            WorkBlockResultStatus,
+            WorkBlockService,
+        )
+
+        result = await self.session.execute(
+            select(CalendarEvent)
+            .where(
+                CalendarEvent.user_id == user.id,
+                CalendarEvent.source == CalendarSource.INTERNAL,
+                CalendarEvent.source_task_id.is_not(None),
+                CalendarEvent.status.in_(
+                    (CalendarEventStatus.CONFIRMED, CalendarEventStatus.PROPOSED)
+                ),
+            )
+            .with_for_update()
+        )
+        work_blocks = [
+            event
+            for event in result.scalars()
+            if not (
+                event.status == CalendarEventStatus.PROPOSED
+                and (event.metadata_ or {}).get("alternative_for_event_id")
+            )
+        ]
+        external_id = str(external_event.id)
+        external_is_busy = (
+            external_event.busy
+            and external_event.status
+            in (CalendarEventStatus.CONFIRMED, CalendarEventStatus.TENTATIVE)
+        )
+        work_blocks_service = WorkBlockService(self.session)
+
+        for block in work_blocks:
+            metadata = dict(block.metadata_ or {})
+            raw_conflict = metadata.get("work_block_conflict")
+            conflict = dict(raw_conflict) if isinstance(raw_conflict, dict) else {}
+            raw_ids = conflict.get("external_event_ids")
+            external_ids = [
+                value for value in raw_ids if isinstance(value, str)
+            ] if isinstance(raw_ids, list) else []
+            legacy_external_id = conflict.get("external_event_id")
+            if isinstance(legacy_external_id, str) and legacy_external_id not in external_ids:
+                external_ids.append(legacy_external_id)
+
+            overlaps = (
+                external_is_busy
+                and block.start_at < external_event.end_at + MEETING_BUFFER
+                and block.end_at > external_event.start_at - MEETING_BUFFER
+            )
+            changed = False
+            if overlaps:
+                was_impacted = (
+                    conflict.get("status") == "impacted"
+                    and external_id in external_ids
+                )
+                if external_id not in external_ids:
+                    external_ids.append(external_id)
+                conflict.update(
+                    {
+                        "status": "impacted",
+                        "external_event_id": external_ids[0],
+                        "external_event_ids": external_ids,
+                    }
+                )
+                conflict.setdefault("detected_at", utc_now().isoformat())
+                metadata["work_block_conflict"] = conflict
+                block.metadata_ = metadata
+                changed = not was_impacted
+            elif external_id in external_ids:
+                external_ids.remove(external_id)
+                if external_ids:
+                    conflict.update(
+                        {
+                            "status": "impacted",
+                            "external_event_id": external_ids[0],
+                            "external_event_ids": external_ids,
+                        }
+                    )
+                else:
+                    conflict.update(
+                        {
+                            "status": "resolved",
+                            "external_event_id": external_id,
+                            "external_event_ids": [],
+                            "resolved_at": utc_now().isoformat(),
+                        }
+                    )
+                    alternative = await self._conflict_alternative(user, block, conflict)
+                    if (
+                        alternative is not None
+                        and alternative.status == CalendarEventStatus.PROPOSED
+                    ):
+                        await self.cancel_internal_event(
+                            user,
+                            alternative,
+                            actor="external_sync",
+                        )
+                metadata["work_block_conflict"] = conflict
+                block.metadata_ = metadata
+                changed = True
+
+            if conflict.get("status") == "impacted":
+                alternative = await self._conflict_alternative(user, block, conflict)
+                if alternative is None:
+                    duration = block.end_at - block.start_at
+                    duration_minutes = max(
+                        1,
+                        int((duration.total_seconds() + 59) // 60),
+                    )
+                    slots = await self.find_free_slots(
+                        user,
+                        day=block.start_at,
+                        duration_minutes=duration_minutes,
+                    )
+                    for slot_start, slot_end in slots:
+                        alternative_end = slot_start + duration
+                        if alternative_end > slot_end:
+                            continue
+                        assert block.source_task_id is not None
+                        proposed = await work_blocks_service.create(
+                            user,
+                            task_id=block.source_task_id,
+                            title=block.title,
+                            description=block.description,
+                            start_at=slot_start,
+                            end_at=alternative_end,
+                            status=CalendarEventStatus.PROPOSED,
+                            created_by="external_sync",
+                            metadata={
+                                "alternative_for_event_id": str(block.id),
+                                "conflict_external_event_id": conflict.get(
+                                    "external_event_id"
+                                ),
+                            },
+                        )
+                        if (
+                            proposed.status == WorkBlockResultStatus.PROPOSED
+                            and proposed.event is not None
+                        ):
+                            conflict["alternative_event_id"] = str(proposed.event.id)
+                            metadata["work_block_conflict"] = conflict
+                            block.metadata_ = metadata
+                            changed = True
+                            break
+                    if not conflict.get("alternative_event_id"):
+                        conflict["alternative_event_id"] = None
+                        metadata["work_block_conflict"] = conflict
+                        block.metadata_ = metadata
+
+            if changed:
+                await self.session.flush()
+                await self._emit_calendar_changed(
+                    block,
+                    "calendar_event.work_block_impacted",
+                )
+
+    async def _conflict_alternative(
+        self,
+        user: User,
+        block: CalendarEvent,
+        conflict: dict[str, Any],
+    ) -> CalendarEvent | None:
+        alternative_id = conflict.get("alternative_event_id")
+        if not isinstance(alternative_id, str):
+            return None
+        try:
+            parsed_id = uuid.UUID(alternative_id)
+        except ValueError:
+            return None
+        alternative = await self.get_event(user, parsed_id)
+        if (
+            alternative is None
+            or alternative.source != CalendarSource.INTERNAL
+            or alternative.source_task_id != block.source_task_id
+            or (alternative.metadata_ or {}).get("alternative_for_event_id")
+            != str(block.id)
+            or alternative.status
+            not in (CalendarEventStatus.PROPOSED, CalendarEventStatus.CONFIRMED)
+        ):
+            return None
+        work_window = planning_work_window(
+            user.settings,
+            alternative.start_at,
+            user.timezone,
+        )
+        conflict_event = await self.session.scalar(
+            select(CalendarEvent.id)
+            .where(
+                CalendarEvent.user_id == user.id,
+                CalendarEvent.id != alternative.id,
+                CalendarEvent.busy.is_(True),
+                CalendarEvent.status.in_(
+                    (
+                        CalendarEventStatus.CONFIRMED,
+                        CalendarEventStatus.TENTATIVE,
+                        CalendarEventStatus.PROPOSED,
+                    )
+                ),
+                CalendarEvent.start_at < alternative.end_at + MEETING_BUFFER,
+                CalendarEvent.end_at > alternative.start_at - MEETING_BUFFER,
+            )
+            .limit(1)
+        )
+        valid = (
+            alternative.start_at >= utc_now()
+            and work_window is not None
+            and alternative.start_at >= work_window[0]
+            and alternative.end_at <= work_window[1]
+            and conflict_event is None
+        )
+        if not valid:
+            if alternative.status == CalendarEventStatus.PROPOSED:
+                await self.cancel_internal_event(
+                    user,
+                    alternative,
+                    actor="external_sync",
+                )
+            return None
+        return alternative
 
     async def _emit_calendar_changed(self, event: CalendarEvent, event_type: str) -> None:
         await RealtimeEventService(self.session).emit(

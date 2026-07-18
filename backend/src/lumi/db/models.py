@@ -563,6 +563,14 @@ class FocusSession(Base):
             unique=True,
             postgresql_where=text("status = 'active'"),
         ),
+        Index(
+            "uq_focus_sessions_one_active_break",
+            "user_id",
+            unique=True,
+            postgresql_where=text(
+                "break_started_at IS NOT NULL AND break_ended_at IS NULL"
+            ),
+        ),
         CheckConstraint(
             "planned_minutes BETWEEN 1 AND 240",
             name="focus_session_planned_minutes",
@@ -596,6 +604,19 @@ class FocusSession(Base):
         CheckConstraint(
             "planned_event_id IS NULL OR task_id IS NOT NULL",
             name="focus_session_planned_event_requires_task",
+        ),
+        CheckConstraint(
+            "break_minutes IS NULL OR break_minutes BETWEEN 1 AND 60",
+            name="focus_session_break_minutes",
+        ),
+        CheckConstraint(
+            "(break_started_at IS NULL AND break_target_end_at IS NULL "
+            "AND break_ended_at IS NULL) OR "
+            "(status = 'completed' AND break_minutes IS NOT NULL "
+            "AND break_started_at IS NOT NULL "
+            "AND break_target_end_at > break_started_at "
+            "AND (break_ended_at IS NULL OR break_ended_at >= break_started_at))",
+            name="focus_session_break_state",
         ),
         ForeignKeyConstraint(
             ["user_id", "task_id"],
@@ -634,6 +655,10 @@ class FocusSession(Base):
     distraction_text: Mapped[str | None] = mapped_column(Text)
     next_step_text: Mapped[str | None] = mapped_column(Text)
     focus_score: Mapped[int | None] = mapped_column(Integer)
+    break_minutes: Mapped[int | None] = mapped_column(Integer)
+    break_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    break_target_end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    break_ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     seed_batch_id: Mapped[uuid.UUID | None] = mapped_column()
     created_at: Mapped[datetime] = created_at_col()
     updated_at: Mapped[datetime] = updated_at_col()

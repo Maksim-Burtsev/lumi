@@ -22,6 +22,7 @@ import {
 import {
   useAbandonFocusSession,
   useDeleteFocusSession,
+  useFinishFocusBreak,
   useFinishFocusSession,
   useFocusSession,
   useFocusSessions,
@@ -35,7 +36,14 @@ import {
   useUpdateFocusSession,
 } from '../api/hooks';
 import type { FocusPeriod } from '../api/client';
-import type { FocusDailyActivity, FocusSession, FocusSummaryResponse, Project, Task } from '../api/types';
+import type {
+  FocusCyclePreset,
+  FocusDailyActivity,
+  FocusSession,
+  FocusSummaryResponse,
+  Project,
+  Task,
+} from '../api/types';
 import { Button } from '../components/ui/Button';
 import { prepareFocusAlarm, silenceFocusAlarm } from '../components/focus/FocusTimerCoordinator';
 import { Card } from '../components/ui/Card';
@@ -56,6 +64,12 @@ import { haptic } from '../telegram/webapp';
 
 const DURATIONS = [25, 45, 60];
 const DEFAULT_DURATION = 45;
+const DEFAULT_FOCUS_CYCLE = { preset: '25/5' as FocusCyclePreset, focusMinutes: 25, breakMinutes: 5 };
+const FOCUS_CYCLE_PRESETS = [
+  { preset: '25/5' as const, focusMinutes: 25, breakMinutes: 5 },
+  { preset: '50/10' as const, focusMinutes: 50, breakMinutes: 10 },
+  { preset: '90/15' as const, focusMinutes: 90, breakMinutes: 15 },
+] satisfies Array<{ preset: FocusCyclePreset; focusMinutes: number; breakMinutes: number }>;
 type MainPeriod = Exclude<FocusPeriod, 'custom'>;
 
 const COPY = {
@@ -78,6 +92,10 @@ const COPY = {
     nothingFound: 'Nothing found.',
     duration: 'Duration',
     customDuration: 'Custom duration',
+    cycle: 'Focus / break',
+    customCycle: 'Custom',
+    focusMinutes: 'Focus minutes',
+    breakMinutes: 'Break minutes',
     intention: 'Intent',
     project: 'Project',
     task: 'Task',
@@ -196,6 +214,16 @@ const COPY = {
     saveError: 'Could not save session',
     logError: 'Could not save block',
     progressLabel: 'Session progress',
+    breakProgressLabel: 'Break progress',
+    breakRunning: 'break running',
+    breakReady: 'Reset before the next block',
+    breakEnded: 'Break finished',
+    breakRemaining: 'break left',
+    finishBreak: 'Finish break',
+    skipBreak: 'Skip break',
+    finishBreakError: 'Could not finish break',
+    planned: 'Planned',
+    actual: 'Actual',
     allProjects: 'All projects',
     loadMore: 'Load more',
     loadingMore: 'Loading…',
@@ -223,6 +251,10 @@ const COPY = {
     nothingFound: 'Ничего не найдено.',
     duration: 'Длительность',
     customDuration: 'Своя длительность',
+    cycle: 'Фокус / перерыв',
+    customCycle: 'Свой',
+    focusMinutes: 'Минут фокуса',
+    breakMinutes: 'Минут перерыва',
     intention: 'Намерение',
     project: 'Проект',
     task: 'Задача',
@@ -341,6 +373,16 @@ const COPY = {
     saveError: 'Не удалось сохранить сессию',
     logError: 'Не удалось сохранить блок',
     progressLabel: 'Прогресс сессии',
+    breakProgressLabel: 'Прогресс перерыва',
+    breakRunning: 'идёт перерыв',
+    breakReady: 'Перезагрузка перед следующим блоком',
+    breakEnded: 'Перерыв завершён',
+    breakRemaining: 'осталось перерыва',
+    finishBreak: 'Завершить перерыв',
+    skipBreak: 'Пропустить перерыв',
+    finishBreakError: 'Не удалось завершить перерыв',
+    planned: 'План',
+    actual: 'Факт',
     allProjects: 'Все проекты',
     loadMore: 'Загрузить ещё',
     loadingMore: 'Загрузка…',
@@ -427,9 +469,18 @@ function sessionTimeRangeLabel(session: FocusSession, timeDisplay: TimeDisplayOp
   return `${formatTime(session.started_at, timeDisplay)}–${formatTime(sessionEndIso(session), timeDisplay)}`;
 }
 
+function plannedVsActualLabel(session: FocusSession, copy: (typeof COPY)[AppLocale]): string | null {
+  if (session.actual_minutes == null) return null;
+  const delta = session.planned_vs_actual_minutes ?? session.actual_minutes - session.planned_minutes;
+  const deltaLabel = delta === 0 ? '' : ` (${delta > 0 ? '+' : ''}${delta})`;
+  return `${copy.planned} ${session.planned_minutes} · ${copy.actual} ${session.actual_minutes}${deltaLabel}`;
+}
+
 function sessionMetaLabel(session: FocusSession, copy: (typeof COPY)[AppLocale], timeDisplay: TimeDisplayOptions): string {
   const parts = [sessionTimeRangeLabel(session, timeDisplay), session.project_name ?? copy.noProject];
   if (session.task?.title) parts.push(session.task.title);
+  const comparison = plannedVsActualLabel(session, copy);
+  if (comparison) parts.push(comparison);
   return parts.join(' · ');
 }
 
@@ -712,6 +763,78 @@ function DurationControl({
   );
 }
 
+function FocusCycleControl({
+  preset,
+  focusMinutes,
+  breakMinutes,
+  locale,
+  onChange,
+}: {
+  preset: FocusCyclePreset;
+  focusMinutes: number;
+  breakMinutes: number;
+  locale: AppLocale;
+  onChange: (value: { preset: FocusCyclePreset; focusMinutes: number; breakMinutes: number }) => void;
+}) {
+  const copy = COPY[locale];
+  return (
+    <fieldset>
+      <legend className="mb-1.5 block text-[12.5px] font-medium text-hint">{copy.cycle}</legend>
+      <div className="flex flex-wrap gap-2">
+        {FOCUS_CYCLE_PRESETS.map((item) => (
+          <Chip
+            key={item.preset}
+            label={item.preset}
+            active={preset === item.preset}
+            onClick={() => onChange(item)}
+          />
+        ))}
+        <Chip
+          label={copy.customCycle}
+          active={preset === 'custom'}
+          onClick={() => onChange({ preset: 'custom', focusMinutes, breakMinutes })}
+        />
+      </div>
+      {preset === 'custom' && (
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          <label>
+            <FieldLabel>{copy.focusMinutes}</FieldLabel>
+            <input
+              aria-label={copy.focusMinutes}
+              type="number"
+              min={1}
+              max={240}
+              value={focusMinutes}
+              onChange={(event) => onChange({
+                preset: 'custom',
+                focusMinutes: clampMinutes(event.target.value),
+                breakMinutes,
+              })}
+              className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3 text-center text-[14px] font-medium text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+            />
+          </label>
+          <label>
+            <FieldLabel>{copy.breakMinutes}</FieldLabel>
+            <input
+              aria-label={copy.breakMinutes}
+              type="number"
+              min={0}
+              max={60}
+              value={breakMinutes}
+              onChange={(event) => onChange({
+                preset: 'custom',
+                focusMinutes,
+                breakMinutes: Math.max(0, Math.min(60, Number(event.target.value) || 0)),
+              })}
+              className="h-11 w-full rounded-xl border border-hairline bg-[var(--surface-strong)] px-3 text-center text-[14px] font-medium text-ink outline-none focus:border-[var(--accent-border)] focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+            />
+          </label>
+        </div>
+      )}
+    </fieldset>
+  );
+}
+
 function StartSheet({
   open,
   onClose,
@@ -729,7 +852,7 @@ function StartSheet({
   const [taskPickerOpen, setTaskPickerOpen] = useState(false);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [intention, setIntention] = useState('');
-  const [duration, setDuration] = useState(DEFAULT_DURATION);
+  const [cycle, setCycle] = useState(DEFAULT_FOCUS_CYCLE);
   const [taskId, setTaskId] = useState('');
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projectName, setProjectName] = useState('');
@@ -752,7 +875,8 @@ function StartSheet({
         project_id: projectId,
         project_name: projectName.trim() || null,
         intention: text,
-        planned_minutes: duration,
+        planned_minutes: cycle.focusMinutes,
+        break_minutes: cycle.breakMinutes,
       },
       {
         onSuccess: () => {
@@ -760,7 +884,7 @@ function StartSheet({
           setTaskId('');
           setProjectId(null);
           setProjectName('');
-          setDuration(DEFAULT_DURATION);
+          setCycle(DEFAULT_FOCUS_CYCLE);
           onClose();
         },
         onError: () => show(copy.startError, 'error'),
@@ -776,7 +900,7 @@ function StartSheet({
             <FieldLabel>{copy.intention}</FieldLabel>
             <Input value={intention} onChange={setIntention} placeholder={copy.whatWork} />
           </label>
-          <DurationControl value={duration} onChange={setDuration} label={copy.customDuration} heading={copy.duration} />
+          <FocusCycleControl {...cycle} locale={locale} onChange={setCycle} />
           <div>
             <FieldLabel>{copy.task}</FieldLabel>
             <button
@@ -800,7 +924,7 @@ function StartSheet({
             </button>
           </div>
           <Button fullWidth busy={start.isPending} onClick={submit} icon={<Timer size={16} />}>
-            {copy.startCta} {duration} {locale === 'en' ? 'min' : 'мин'}
+            {copy.startCta} {cycle.focusMinutes} {locale === 'en' ? 'min' : 'мин'}
           </Button>
         </div>
       </Sheet>
@@ -1469,6 +1593,91 @@ function ActiveSessionCard({ session, locale, onReviewSession }: { session: Focu
   );
 }
 
+function ActiveBreakCard({ session, locale }: { session: FocusSession; locale: AppLocale }) {
+  const copy = COPY[locale];
+  const timeDisplay = useTimeDisplay();
+  const now = useNow();
+  const finishBreak = useFinishFocusBreak();
+  const { show } = useToast();
+  const targetAt = new Date(session.cycle?.break_target_end_at ?? '').getTime();
+  const startedAt = new Date(session.cycle?.break_started_at ?? '').getTime();
+  const validRange = Number.isFinite(targetAt) && Number.isFinite(startedAt);
+  const remaining = validRange ? Math.max(0, Math.round((targetAt - now) / 1000)) : 0;
+  const ended = validRange && now >= targetAt;
+  const totalSeconds = Math.max(1, (session.cycle?.break_minutes ?? 0) * 60);
+
+  const completeBreak = () => {
+    if (finishBreak.isPending) return;
+    finishBreak.mutate(session.id, {
+      onSuccess: () => {
+        silenceFocusAlarm(session.id, 'break');
+        haptic('success');
+      },
+      onError: () => show(copy.finishBreakError, 'error'),
+    });
+  };
+
+  return (
+    <Card className="relative overflow-hidden px-4 py-5 sm:px-5">
+      <div
+        aria-hidden
+        className="absolute -right-24 -top-28 h-80 w-80 rounded-full bg-[radial-gradient(circle,var(--success-soft),transparent_68%)] blur-2xl"
+      />
+      <div className="relative">
+        <div className="flex items-center justify-between gap-3">
+          <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-hairline bg-[var(--success-soft)] px-3 py-1 text-[12px] font-medium text-success">
+            <Clock3 size={14} />
+            {session.cycle?.preset ?? copy.customCycle}
+          </span>
+          <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-success">
+            <span className="h-1.5 w-1.5 rounded-full bg-success" />
+            {ended ? copy.breakEnded : copy.breakRunning}
+          </span>
+        </div>
+        <div
+          aria-label={copy.breakProgressLabel}
+          className="orb-breathe relative mx-auto mt-5 flex aspect-square w-[min(58vw,230px)] max-w-[230px] items-center justify-center rounded-full"
+          style={{
+            background:
+              'radial-gradient(circle at 50% 36%, rgba(183, 255, 220, 0.66) 0%, rgba(52, 178, 127, 0.34) 46%, rgba(31, 157, 107, 0.54) 72%, rgba(31, 157, 107, 0.12) 100%)',
+            boxShadow:
+              '0 0 48px rgba(52, 178, 127, 0.27), inset 0 0 58px rgba(210, 255, 232, 0.28), inset 0 -26px 54px rgba(31, 157, 107, 0.2)',
+          }}
+        >
+          <div aria-hidden className="absolute inset-0 rounded-full border border-white/10" />
+          <div className="text-center">
+            <p className="tnum text-[clamp(50px,14vw,72px)] font-semibold leading-none text-ink">
+              {timerLabel(remaining)}
+            </p>
+            <p className="mt-3 text-[13px] font-medium text-hint">
+              {ended ? copy.breakEnded : copy.breakRemaining} · {secondsLabel(totalSeconds, locale)}
+            </p>
+          </div>
+        </div>
+        <div className="mt-5 text-center">
+          <h2 className="truncate text-[20px] font-semibold text-ink">{copy.breakReady}</h2>
+          <p className="mt-1 truncate text-[13px] text-hint">{session.intention}</p>
+          {validRange && (
+            <p className="tnum mt-2 text-[12.5px] text-hint">
+              {formatTime(session.cycle?.break_started_at ?? '', timeDisplay)} —{' '}
+              {formatTime(session.cycle?.break_target_end_at ?? '', timeDisplay)}
+            </p>
+          )}
+        </div>
+        <Button
+          fullWidth
+          className="mt-5"
+          busy={finishBreak.isPending}
+          onClick={completeBreak}
+          icon={<Check size={17} />}
+        >
+          {ended ? copy.finishBreak : copy.skipBreak}
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
 function EmptyFocusCard({ onStart, onLog, locale }: { onStart: () => void; onLog: () => void; locale: AppLocale }) {
   const copy = COPY[locale];
   return (
@@ -2056,6 +2265,11 @@ function SessionDetailsSheet({
                 <p className="tnum mt-0.5 text-ink">{secondsLabel(session.duration_seconds ?? 0, locale)}</p>
               </div>
             </div>
+            {plannedVsActualLabel(session, copy) && (
+              <p className="tnum mt-3 rounded-xl bg-[var(--accent-soft)] px-3 py-2 text-[12.5px] font-medium text-accent-text">
+                {plannedVsActualLabel(session, copy)}
+              </p>
+            )}
           </div>
           <div className="rounded-2xl border border-hairline bg-[var(--surface)] p-4">
             <div className="mb-3 flex items-center justify-between">
@@ -2129,6 +2343,7 @@ export default function FocusPage() {
   const historySummary = useFocusSummary(historyPeriod, historyPeriod === 'custom' ? historyCustomRange : undefined);
   const detailsQuery = useFocusSession(detailsSessionId);
   const active = state.data?.active_session ?? null;
+  const activeBreak = state.data?.active_break ?? null;
   const today = state.data?.today;
   const sessions = sessionsQuery.data?.items ?? state.data?.recent_sessions ?? [];
   const daily = summary.data?.daily_activity ?? [];
@@ -2195,6 +2410,10 @@ export default function FocusPage() {
         <Rise>
           <ActiveSessionCard session={active} locale={locale} onReviewSession={setReviewSession} />
         </Rise>
+      ) : activeBreak ? (
+        <Rise>
+          <ActiveBreakCard session={activeBreak} locale={locale} />
+        </Rise>
       ) : (
         <Rise>
           <EmptyFocusCard onStart={() => setStartOpen(true)} onLog={() => setLogOpen(true)} locale={locale} />
@@ -2222,7 +2441,7 @@ export default function FocusPage() {
         </div>
       </Rise>
 
-      {active ? (
+      {active || activeBreak ? (
         <Rise>
           <button
             type="button"

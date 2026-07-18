@@ -374,6 +374,8 @@ export interface AssistantSuggestionResponse {
 // ---------------------------------------------------------------- Focus
 
 export type FocusSessionStatus = 'active' | 'completed' | 'abandoned';
+export type FocusCyclePreset = '25/5' | '50/10' | '90/15' | 'custom';
+export type FocusCyclePhase = 'focus' | 'break' | 'done';
 
 export interface FocusReflection {
   accomplished_text: string | null;
@@ -382,9 +384,20 @@ export interface FocusReflection {
   focus_score: number | null;
 }
 
+export interface FocusCycle {
+  preset: FocusCyclePreset | null;
+  focus_minutes: number;
+  break_minutes: number;
+  phase: FocusCyclePhase;
+  break_started_at: string | null;
+  break_target_end_at: string | null;
+  break_ended_at: string | null;
+}
+
 export interface FocusSession {
   id: string;
   status: FocusSessionStatus;
+  planned_event_id?: string | null;
   task: Task | null;
   project_id: string | null;
   project_name: string | null;
@@ -395,6 +408,9 @@ export interface FocusSession {
   target_end_at: string;
   ended_at: string | null;
   duration_seconds: number | null;
+  actual_minutes?: number | null;
+  planned_vs_actual_minutes?: number | null;
+  cycle?: FocusCycle;
   reflection: FocusReflection;
 }
 
@@ -406,16 +422,19 @@ export interface FocusTodaySummary {
 
 export interface FocusStateResponse {
   active_session: FocusSession | null;
+  active_break?: FocusSession | null;
   today: FocusTodaySummary;
   recent_sessions: FocusSession[];
 }
 
 export interface StartFocusSessionInput {
   task_id?: string | null;
+  planned_event_id?: string | null;
   project_id?: string | null;
   project_name?: string | null;
   intention: string;
   planned_minutes: number;
+  break_minutes?: number;
 }
 
 export interface FinishFocusSessionInput {
@@ -495,6 +514,7 @@ export interface FocusSummaryResponse {
 
 export interface CalendarEvent {
   id: string;
+  kind?: 'work_block' | 'internal' | 'external' | TimelineKind;
   title: string;
   description: string | null;
   start_at: string;
@@ -503,6 +523,15 @@ export interface CalendarEvent {
   busy: boolean;
   status: EventStatus;
   source: EventSource;
+  source_task_id?: string | null;
+  timezone?: string;
+  updated_at?: string;
+  work_block_conflict?: {
+    status: 'impacted';
+    external_event_id: string;
+    alternative_event_id: string | null;
+  } | null;
+  alternative_for_event_id?: string | null;
   created_by: string;
   location: string | null;
   meeting_url: string | null;

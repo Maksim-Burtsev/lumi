@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import {
+  AlertTriangle,
   CalendarDays,
   ChevronLeft,
   ChevronRight,
@@ -14,6 +15,7 @@ import {
   Plus,
   RefreshCw,
   Sparkles,
+  Timer,
   Video,
   X,
 } from 'lucide-react';
@@ -27,10 +29,12 @@ import {
   useCreateEvent,
   useDeleteCalendarPrivateNote,
   useDeleteEvent,
+  useStartFocusSession,
   useUpdateCalendarPrivateNote,
 } from '../api/hooks';
 import type { CalendarAttendee, CalendarEvent, CalendarPerson } from '../api/types';
 import { DayGrid } from '../components/calendar/DayGrid';
+import { prepareFocusAlarm } from '../components/focus/FocusTimerCoordinator';
 import { PRIVATE_NOTE_MAX_CHARS, PrivateNoteSection } from '../components/calendar/PrivateNoteSection';
 import { Button } from '../components/ui/Button';
 import { ErrorState } from '../components/ui/ErrorState';
@@ -124,6 +128,15 @@ const CALENDAR_COPY: Record<AppLocale, {
   removeFailed: string;
   reject: string;
   remove: string;
+  workBlock: string;
+  externalMeeting: string;
+  startFocus: string;
+  focusStarted: string;
+  startFocusFailed: string;
+  conflictTitle: string;
+  conflictBody: string;
+  viewAlternative: string;
+  alternativeBlock: string;
 }> = {
   en: {
     linkFallback: 'Link',
@@ -194,6 +207,15 @@ const CALENDAR_COPY: Record<AppLocale, {
     removeFailed: 'Could not remove',
     reject: 'Reject',
     remove: 'Remove',
+    workBlock: 'Lumi WorkBlock',
+    externalMeeting: 'External meeting',
+    startFocus: 'Start focus',
+    focusStarted: 'Focus session started',
+    startFocusFailed: 'Could not start focus. Check that no focus session or break is already active.',
+    conflictTitle: 'Schedule conflict',
+    conflictBody: 'An external meeting changed. Lumi kept this WorkBlock in place and prepared a valid alternative.',
+    viewAlternative: 'View alternative',
+    alternativeBlock: 'Alternative WorkBlock',
   },
   ru: {
     linkFallback: 'Ссылка',
@@ -264,6 +286,15 @@ const CALENDAR_COPY: Record<AppLocale, {
     removeFailed: 'Не удалось убрать',
     reject: 'Отклонить',
     remove: 'Убрать',
+    workBlock: 'Рабочий блок Lumi',
+    externalMeeting: 'Внешняя встреча',
+    startFocus: 'Начать фокус',
+    focusStarted: 'Фокус-сессия началась',
+    startFocusFailed: 'Не удалось начать фокус. Проверьте, что другая сессия или перерыв не активны.',
+    conflictTitle: 'Конфликт расписания',
+    conflictBody: 'Внешняя встреча изменилась. Lumi оставил этот блок на месте и подготовил корректную альтернативу.',
+    viewAlternative: 'Открыть альтернативу',
+    alternativeBlock: 'Альтернативный рабочий блок',
   },
 };
 
@@ -310,6 +341,22 @@ function visibleLinks(event: CalendarEvent): string[] {
   return event.links.filter(
     (link) => !sameUrl(link, event.meeting_url) && !sameUrl(link, event.external_url) && !isCalendarServiceLink(link),
   );
+}
+
+function isWorkBlock(event: CalendarEvent): boolean {
+  return event.kind === 'work_block' || Boolean(event.source_task_id);
+}
+
+function workBlockMinutes(event: CalendarEvent): number {
+  const minutes = Math.round((new Date(event.end_at).getTime() - new Date(event.start_at).getTime()) / 60_000);
+  return Math.max(1, Math.min(240, Number.isFinite(minutes) ? minutes : 25));
+}
+
+function workBlockBreakMinutes(minutes: number): number {
+  if (minutes === 25) return 5;
+  if (minutes === 50) return 10;
+  if (minutes === 90) return 15;
+  return 0;
 }
 
 function personLabel(person: { name?: string; email?: string }, locale: AppLocale): string {
@@ -601,6 +648,7 @@ export default function CalendarPage() {
   const eventsQuery = useCalendarEvents(rangeStart, rangeEnd);
   const confirmBlock = useConfirmBlock();
   const deleteEvent = useDeleteEvent();
+  const startFocus = useStartFocusSession();
   const updatePrivateNote = useUpdateCalendarPrivateNote();
   const deletePrivateNote = useDeleteCalendarPrivateNote();
 
@@ -634,6 +682,9 @@ export default function CalendarPage() {
   const [noteError, setNoteError] = useState<string | null>(null);
   const dayStart = useMemo(() => startOfDay(day), [day]);
   const events = eventsQuery.data?.items ?? [];
+  const alternativeEvent = selectedEvent?.work_block_conflict?.alternative_event_id
+    ? events.find((event) => event.id === selectedEvent.work_block_conflict?.alternative_event_id) ?? null
+    : null;
   const hasVisibleEvents = events.some((e) => e.status !== 'cancelled');
   const syncState = eventsQuery.data?.sync;
 
@@ -716,6 +767,29 @@ export default function CalendarPage() {
       },
       onError: () => show(copy.noteDeleteFailed, 'error'),
     });
+  };
+
+  const startWorkBlockFocus = () => {
+    if (!selectedEvent || !isWorkBlock(selectedEvent) || selectedEvent.status !== 'confirmed') return;
+    const plannedMinutes = workBlockMinutes(selectedEvent);
+    prepareFocusAlarm();
+    startFocus.mutate(
+      {
+        planned_event_id: selectedEvent.id,
+        intention: selectedEvent.title,
+        planned_minutes: plannedMinutes,
+        break_minutes: workBlockBreakMinutes(plannedMinutes),
+      },
+      {
+        onSuccess: () => {
+          haptic('success');
+          show(copy.focusStarted, 'success');
+          setSelectedEvent(null);
+          navigate('/sessions');
+        },
+        onError: () => show(copy.startFocusFailed, 'error'),
+      },
+    );
   };
 
   return (
@@ -866,8 +940,30 @@ export default function CalendarPage() {
               {formatTimeRange(selectedEvent.start_at, selectedEvent.end_at, timeDisplay)}
               {selectedEvent.source === 'google' && ' · Google Calendar'}
               {selectedEvent.source === 'yandex' && ` · ${copy.yandexCalendar}`}
+              {isWorkBlock(selectedEvent) && ` · ${selectedEvent.alternative_for_event_id ? copy.alternativeBlock : copy.workBlock}`}
+              {selectedEvent.source !== 'internal' && ` · ${copy.externalMeeting}`}
               {selectedEvent.status === 'proposed' && ` · ${copy.proposedLumi}`}
             </p>
+            {selectedEvent.work_block_conflict?.status === 'impacted' && (
+              <div className="rounded-2xl border border-[var(--danger)] bg-[var(--danger-soft)] px-4 py-3.5">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle size={18} className="mt-0.5 shrink-0 text-danger" aria-hidden="true" />
+                  <div className="min-w-0">
+                    <p className="text-[14px] font-semibold text-ink">{copy.conflictTitle}</p>
+                    <p className="mt-1 text-[12.5px] leading-relaxed text-hint">{copy.conflictBody}</p>
+                    {alternativeEvent && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedEvent(alternativeEvent)}
+                        className="mt-2 text-[13px] font-medium text-accent-text"
+                      >
+                        {copy.viewAlternative} →
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
             {selectedEvent.location && (
               <div className="flex items-start gap-2 text-[14px] leading-relaxed text-ink">
                 <MapPin size={16} className="mt-0.5 shrink-0 text-hint" />
@@ -972,7 +1068,19 @@ export default function CalendarPage() {
                 {copy.externalManaged}
               </p>
             ) : (
-              <div className="flex gap-2.5">
+              <div className="flex flex-wrap gap-2.5">
+                {isWorkBlock(selectedEvent)
+                  && selectedEvent.status === 'confirmed'
+                  && selectedEvent.work_block_conflict?.status !== 'impacted'
+                  && (
+                  <Button
+                    busy={startFocus.isPending}
+                    onClick={startWorkBlockFocus}
+                    icon={<Timer size={16} />}
+                  >
+                    {copy.startFocus}
+                  </Button>
+                  )}
                 {selectedEvent.status === 'proposed' && (
                   <Button
                     busy={confirmBlock.isPending}
