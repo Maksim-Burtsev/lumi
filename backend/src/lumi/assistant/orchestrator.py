@@ -20,6 +20,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lumi.assistant.action_reply_renderer import ActionOutcome, ActionReplyRenderer
+from lumi.assistant.command_core import (
+    FinishFocusBreakArgs,
+    FinishFocusSessionArgs,
+    StartFocusSessionArgs,
+    command_result,
+)
 from lumi.assistant.context_builder import ContextBuilder, PlannerContext, PlannerContextBuilder
 from lumi.assistant.media import ImageInput, MediaCandidate, media_candidate_id
 from lumi.assistant.memory_service import MemoryService
@@ -60,6 +66,7 @@ from lumi.db.models import (
     MemoryKind,
     Message,
     MessageRole,
+    ReflectionOutcome,
     Task,
     TaskStatus,
     User,
@@ -80,6 +87,7 @@ from lumi.services.calendar import (
     private_note_needs_summary,
 )
 from lumi.services.confirmations import ConfirmationService
+from lumi.services.focus import FocusService
 from lumi.services.planning import CalendarSyncService, PlanningService
 from lumi.services.realtime import RealtimeEventService
 from lumi.services.runs import RunService
@@ -96,7 +104,15 @@ from lumi.services.task_update_replies import (
 from lumi.services.tasks import TaskService
 from lumi.services.users import UserService
 from lumi.utils.text import normalize_for_match, truncate
-from lumi.utils.time import fmt_local, local_now, local_to_utc, utc_now, utc_to_local, validate_timezone_name
+from lumi.utils.time import (
+    fmt_local,
+    get_zone,
+    local_now,
+    local_to_utc,
+    utc_now,
+    utc_to_local,
+    validate_timezone_name,
+)
 from lumi.worker.queue import enqueue_job
 
 log = get_logger(__name__)
@@ -142,6 +158,7 @@ READ_ONLY_LOOP_TOOLS = {
     "read_memories",
     "read_settings",
     "read_connectors",
+    "read_focus_state",
 }
 MULTI_STEP_INTENT_MARKERS = (
     "add",
@@ -1276,11 +1293,17 @@ def _tool_observation(
         next_valid_actions = ["update_memory", "delete_memory", "read_memories", "final_answer", "ask_user"]
     elif call.name in {"read_settings", "read_connectors"}:
         next_valid_actions = ["update_settings", "final_answer", "ask_user"]
+    structured_result = command_result(
+        command=call.name,
+        status=status,
+        summary=summary,
+    )
     return {
         "tool": call.name,
         "status": status,
         "summary": truncate(summary, 1200),
         "next_valid_actions": next_valid_actions,
+        "result": structured_result.model_dump(mode="json"),
     }
 
 
@@ -1724,7 +1747,13 @@ class AssistantOrchestrator:
 
         if action_results and not plan.should_answer_normally:
             rendered_reply = None
-            if loop_result.use_action_reply_renderer:
+            if plan.command_core:
+                rendered_reply = self.action_reply_renderer.render_deterministic(
+                    user=user,
+                    planner_language=plan.language,
+                    outcomes=action_outcomes,
+                )
+            elif loop_result.use_action_reply_renderer:
                 rendered_reply = await self.action_reply_renderer.render(
                     user=user,
                     latest_user_message=trusted_text or text,
@@ -2168,6 +2197,7 @@ class AssistantOrchestrator:
 
             should_continue = (
                 plan.mode == "tool_calls"
+                and not plan.command_core
                 and all(call.name in READ_ONLY_LOOP_TOOLS for call in plan.tool_calls)
                 and _looks_like_multi_step_request(text)
                 and not _is_user_visible_schedule_read_plan(plan, text, user)
@@ -2399,6 +2429,44 @@ class AssistantOrchestrator:
                     user=user, run=run, call=call, request=calendar_request, results=results,
                     buttons=buttons, outcomes=outcomes, language=plan.language, text=text
                 )
+            elif call.name == "read_focus_state":
+                await self._apply_read_focus_state_tool(
+                    user=user,
+                    run=run,
+                    call=call,
+                    language=plan.language,
+                    results=results,
+                )
+            elif call.name == "start_focus_session":
+                focus_start_request = StartFocusSessionArgs.model_validate(call.args)
+                await self._apply_start_focus_session_tool(
+                    user=user,
+                    run=run,
+                    call=call,
+                    request=focus_start_request,
+                    language=plan.language,
+                    results=results,
+                )
+            elif call.name == "finish_focus_session":
+                focus_finish_request = FinishFocusSessionArgs.model_validate(call.args)
+                await self._apply_finish_focus_session_tool(
+                    user=user,
+                    run=run,
+                    call=call,
+                    request=focus_finish_request,
+                    language=plan.language,
+                    results=results,
+                )
+            elif call.name == "finish_focus_break":
+                focus_break_request = FinishFocusBreakArgs.model_validate(call.args)
+                await self._apply_finish_focus_break_tool(
+                    user=user,
+                    run=run,
+                    call=call,
+                    request=focus_break_request,
+                    language=plan.language,
+                    results=results,
+                )
             elif call.name == "read_calendar_events":
                 calendar_events_request = CalendarEventsRequest.model_validate(_args_with_call_defaults(call))
                 calendar_read = await self._apply_read_calendar_events_tool(
@@ -2453,6 +2521,7 @@ class AssistantOrchestrator:
                     run=run,
                     call=call,
                     request=calendar_private_note_request,
+                    planner_context=planner_context,
                     results=results,
                     language=plan.language,
                 )
@@ -2465,6 +2534,7 @@ class AssistantOrchestrator:
                     run=run,
                     call=call,
                     request=calendar_private_note_delete_request,
+                    planner_context=planner_context,
                     results=results,
                     language=plan.language,
                 )
@@ -2536,6 +2606,248 @@ class AssistantOrchestrator:
                 for result in results
             ]
         return results, outcomes, buttons, rich_html, observations, open_app_button, use_action_reply_renderer
+
+    async def _apply_read_focus_state_tool(
+        self,
+        *,
+        user: User,
+        run,
+        call: PlannedToolCall,
+        language: str,
+        results: list[str],
+    ) -> None:
+        service = FocusService(self.session)
+        active = await service.get_active(user)
+        active_break = await service.get_active_break(user)
+        await self.runs.log_tool_call(
+            run=run,
+            tool_name=call.name,
+            status="completed",
+            args={},
+            result={
+                "active_session_id": str(active.id) if active else None,
+                "active_break_session_id": str(active_break.id) if active_break else None,
+            },
+        )
+        if active is not None:
+            results.append(_text_for_language(
+                language,
+                en=f"Focus session active: “{active.intention}” · {active.planned_minutes} min.",
+                ru=f"Фокус-сессия активна: «{active.intention}» · {active.planned_minutes} мин.",
+                it=f"Sessione focus attiva: «{active.intention}» · {active.planned_minutes} min.",
+            ))
+        elif active_break is not None:
+            results.append(_text_for_language(
+                language,
+                en=f"Break active after “{active_break.intention}”.",
+                ru=f"Идёт перерыв после «{active_break.intention}».",
+                it=f"Pausa attiva dopo «{active_break.intention}».",
+            ))
+        else:
+            results.append(_text_for_language(
+                language,
+                en="No focus session or break is active.",
+                ru="Сейчас нет активной фокус-сессии или перерыва.",
+                it="Non ci sono sessioni focus o pause attive.",
+            ))
+
+    async def _apply_start_focus_session_tool(
+        self,
+        *,
+        user: User,
+        run,
+        call: PlannedToolCall,
+        request: StartFocusSessionArgs,
+        language: str,
+        results: list[str],
+    ) -> None:
+        service = FocusService(self.session)
+        project_fields = request.model_dump(
+            include={"project_id", "project_name"},
+            exclude_none=True,
+            exclude_unset=True,
+        )
+        args = request.model_dump(mode="json", exclude_none=True)
+        try:
+            focus_session = await service.start_session(
+                user,
+                intention=request.intention,
+                planned_minutes=request.planned_minutes,
+                break_minutes=request.break_minutes,
+                task_id=request.task_id,
+                planned_event_id=request.planned_event_id,
+                **project_fields,
+            )
+        except ValueError as exc:
+            reason = str(exc)
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name=call.name,
+                status="skipped",
+                args=args,
+                result={"reason": reason},
+            )
+            results.append(_text_for_language(
+                language,
+                en="I could not start the focus session. Check the active session and linked block.",
+                ru="Не удалось запустить фокус-сессию. Проверь активную сессию и связанный блок.",
+                it="Non ho potuto avviare la sessione focus. Controlla la sessione e il blocco.",
+            ))
+            return
+        await self.runs.log_tool_call(
+            run=run,
+            tool_name=call.name,
+            status="completed",
+            args=args,
+            result={"session_id": str(focus_session.id)},
+        )
+        results.append(_text_for_language(
+            language,
+            en=f"Started focus: “{focus_session.intention}” · {focus_session.planned_minutes} min.",
+            ru=f"Фокус начат: «{focus_session.intention}» · {focus_session.planned_minutes} мин.",
+            it=f"Focus avviato: «{focus_session.intention}» · {focus_session.planned_minutes} min.",
+        ))
+
+    async def _apply_finish_focus_session_tool(
+        self,
+        *,
+        user: User,
+        run,
+        call: PlannedToolCall,
+        request: FinishFocusSessionArgs,
+        language: str,
+        results: list[str],
+    ) -> None:
+        service = FocusService(self.session)
+        focus_session = (
+            await service.get_session(user, request.session_id)
+            if request.session_id is not None
+            else await service.get_active(user)
+        )
+        args = request.model_dump(mode="json", exclude_none=True)
+        if focus_session is None:
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name=call.name,
+                status="skipped",
+                args=args,
+                result={"reason": "focus_session_not_found"},
+            )
+            results.append(_text_for_language(
+                language,
+                en="No active focus session was found.",
+                ru="Активная фокус-сессия не найдена.",
+                it="Non è stata trovata una sessione focus attiva.",
+            ))
+            return
+        try:
+            focus_session = await service.finish_session(
+                user,
+                focus_session,
+                accomplished_text=request.accomplished_text,
+                distraction_text=request.distraction_text,
+                next_step_text=request.next_step_text,
+                focus_score=request.focus_score,
+                reflection_outcome=(
+                    ReflectionOutcome(request.reflection_outcome)
+                    if request.reflection_outcome is not None
+                    else None
+                ),
+                reflection_text=request.reflection_text,
+            )
+        except ValueError as exc:
+            reason = str(exc)
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name=call.name,
+                status="skipped",
+                args=args,
+                result={"reason": reason},
+            )
+            results.append(_text_for_language(
+                language,
+                en="I could not finish that focus session.",
+                ru="Не удалось завершить эту фокус-сессию.",
+                it="Non ho potuto terminare quella sessione focus.",
+            ))
+            return
+        await self.runs.log_tool_call(
+            run=run,
+            tool_name=call.name,
+            status="completed",
+            args=args,
+            result={"session_id": str(focus_session.id)},
+        )
+        results.append(_text_for_language(
+            language,
+            en=f"Finished focus: “{focus_session.intention}”.",
+            ru=f"Фокус завершён: «{focus_session.intention}».",
+            it=f"Focus terminato: «{focus_session.intention}».",
+        ))
+
+    async def _apply_finish_focus_break_tool(
+        self,
+        *,
+        user: User,
+        run,
+        call: PlannedToolCall,
+        request: FinishFocusBreakArgs,
+        language: str,
+        results: list[str],
+    ) -> None:
+        service = FocusService(self.session)
+        focus_session = (
+            await service.get_session(user, request.session_id)
+            if request.session_id is not None
+            else await service.get_active_break(user)
+        )
+        args = request.model_dump(mode="json", exclude_none=True)
+        if focus_session is None:
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name=call.name,
+                status="skipped",
+                args=args,
+                result={"reason": "focus_break_not_found"},
+            )
+            results.append(_text_for_language(
+                language,
+                en="No active focus break was found.",
+                ru="Активный перерыв не найден.",
+                it="Non è stata trovata una pausa attiva.",
+            ))
+            return
+        try:
+            focus_session = await service.finish_break(user, focus_session)
+        except ValueError as exc:
+            reason = str(exc)
+            await self.runs.log_tool_call(
+                run=run,
+                tool_name=call.name,
+                status="skipped",
+                args=args,
+                result={"reason": reason},
+            )
+            results.append(_text_for_language(
+                language,
+                en="I could not finish that break.",
+                ru="Не удалось завершить этот перерыв.",
+                it="Non ho potuto terminare quella pausa.",
+            ))
+            return
+        await self.runs.log_tool_call(
+            run=run,
+            tool_name=call.name,
+            status="completed",
+            args=args,
+            result={"session_id": str(focus_session.id)},
+        )
+        results.append(_text_for_language(
+            language,
+            en="Break finished.",
+            ru="Перерыв завершён.",
+            it="Pausa terminata.",
+        ))
 
     async def _apply_set_language_tool(
         self,
@@ -4101,22 +4413,16 @@ class AssistantOrchestrator:
         self,
         user: User,
         request: CalendarPrivateNoteRequest,
+        planner_context: PlannerContext,
     ):
-        if request.event_id:
-            return await self.calendar.get_event(user, request.event_id)
-        if not request.event_query:
-            return None
-        start = utc_now() - timedelta(days=1)
-        end = utc_now() + timedelta(days=30)
-        events = await self.calendar.list_events(user, start, end)
-        needle = normalize_for_match(request.event_query)
-        matches = [
-            event for event in events
-            if needle and needle in normalize_for_match(event.title)
-        ]
-        if len(matches) == 1:
-            return matches[0]
-        return None
+        candidates = await self._resolve_calendar_event_candidates(
+            user=user,
+            event_id=request.event_id,
+            event_query=request.event_query,
+            recency_hint=request.recency_hint,
+            planner_context=planner_context,
+        )
+        return candidates[0] if len(candidates) == 1 else None
 
     async def _apply_update_calendar_private_note_tool(
         self,
@@ -4125,12 +4431,17 @@ class AssistantOrchestrator:
         run,
         call: PlannedToolCall,
         request: CalendarPrivateNoteRequest,
+        planner_context: PlannerContext,
         results: list[str],
         language: str | None,
     ) -> None:
         if request.confidence < 0.6 or request.private_note is None:
             return
-        event = await self._resolve_calendar_event_for_private_note(user, request)
+        event = await self._resolve_calendar_event_for_private_note(
+            user,
+            request,
+            planner_context,
+        )
         if event is None:
             await self.runs.log_tool_call(
                 run=run,
@@ -4162,12 +4473,17 @@ class AssistantOrchestrator:
         run,
         call: PlannedToolCall,
         request: CalendarPrivateNoteRequest,
+        planner_context: PlannerContext,
         results: list[str],
         language: str | None,
     ) -> None:
         if request.confidence < 0.6:
             return
-        event = await self._resolve_calendar_event_for_private_note(user, request)
+        event = await self._resolve_calendar_event_for_private_note(
+            user,
+            request,
+            planner_context,
+        )
         if event is None:
             await self.runs.log_tool_call(
                 run=run,
@@ -4307,8 +4623,19 @@ class AssistantOrchestrator:
     ) -> None:
         tz = user.timezone
         if request.kind == "plan_day":
+            plan_day = (
+                datetime.combine(
+                    request.date_local,
+                    time(hour=12),
+                    tzinfo=get_zone(tz),
+                )
+                if request.date_local is not None
+                else None
+            )
             summary, created = await self.planning.propose_day_plan(
-                user, agent_run_id=run.id
+                user,
+                day=plan_day,
+                agent_run_id=run.id,
             )
             await self.runs.log_tool_call(
                 run=run, tool_name="propose_day_plan", status="completed",

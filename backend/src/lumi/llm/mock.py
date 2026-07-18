@@ -149,7 +149,10 @@ class MockLLMProvider:
             language_plan = self._language_plan(_extract_user_message(joined))
             if language_plan is not None:
                 return json.dumps(language_plan, ensure_ascii=False)
-            return json.dumps(self._extract_signals(joined), ensure_ascii=False)
+            return json.dumps(
+                self._signals_to_assistant_decision(self._extract_signals(joined)),
+                ensure_ascii=False,
+            )
         if request_kind == "action_reply_renderer":
             return json.dumps(
                 {
@@ -189,6 +192,31 @@ class MockLLMProvider:
                 {"summary": "Проверить UX заметок, summary длинных заметок и правило для chat dump."},
                 ensure_ascii=False,
             )
+        if request_kind == "reflection_extraction":
+            return json.dumps(
+                {
+                    "outcome": None,
+                    "outcome_confidence": None,
+                    "outcome_evidence": [],
+                    "work_type": None,
+                    "work_type_confidence": None,
+                    "work_type_evidence": [],
+                    "frictions": [],
+                    "normalized_next_action": None,
+                    "next_action_confidence": None,
+                    "next_action_evidence": [],
+                },
+                ensure_ascii=False,
+            )
+        if request_kind == "focus_insight_wording":
+            try:
+                payload = json.loads(joined)
+            except json.JSONDecodeError:
+                payload = {}
+            return json.dumps(
+                {"statement": str(payload.get("draft") or "Not enough evidence yet.")},
+                ensure_ascii=False,
+            )
         if request_kind == "daily_planning":
             return json.dumps(
                 {
@@ -217,11 +245,76 @@ class MockLLMProvider:
             else "Интерфейс Mini App только на английском. Ответы уже совпадают с языком каждого сообщения."
         )
         return {
-            "mode": "final_answer",
+            "kind": "final",
             "language": language,
-            "tool_calls": [],
-            "final_answer": answer,
-            "should_answer_normally": True,
+            "answer": answer,
+        }
+
+    @staticmethod
+    def _signals_to_assistant_decision(signals: dict[str, Any]) -> dict[str, Any]:
+        language = str(signals.get("language") or "en")
+        commands: list[dict[str, Any]] = []
+        for task in signals.get("tasks") or []:
+            if not isinstance(task, dict):
+                continue
+            commands.append({
+                "command": "create_task",
+                "args": {
+                    key: value
+                    for key, value in task.items()
+                    if key not in {"confidence", "requires_confirmation"}
+                },
+                "confidence": task.get("confidence", 0.95),
+                "requires_confirmation": task.get("requires_confirmation", False),
+            })
+        for update in signals.get("task_updates") or []:
+            if not isinstance(update, dict):
+                continue
+            updates: dict[str, Any] = {"title": update.get("new_title")}
+            if update.get("project"):
+                updates["project"] = update["project"]
+            if update.get("tags"):
+                updates["tags"] = update["tags"]
+            commands.append({
+                "command": "update_task",
+                "args": {
+                    "task_query": update.get("current_title"),
+                    "updates": updates,
+                },
+                "confidence": update.get("confidence", 0.95),
+                "requires_confirmation": update.get("requires_confirmation", False),
+            })
+        for candidate in signals.get("memory_candidates") or []:
+            if not isinstance(candidate, dict) or candidate.get("kind") != "preference":
+                continue
+            commands.append({
+                "command": "manage_preference",
+                "args": {
+                    "operation": "remember",
+                    "explicit_user_request": True,
+                    "text": candidate.get("text"),
+                    "importance": candidate.get("importance"),
+                },
+                "confidence": candidate.get("confidence", 0.95),
+                "requires_confirmation": candidate.get("requires_confirmation", False),
+            })
+        if commands:
+            return {
+                "kind": "commands",
+                "language": language,
+                "commands": commands,
+                "should_answer_normally": bool(
+                    signals.get("should_answer_normally", False)
+                ),
+            }
+        return {
+            "kind": "final",
+            "language": language,
+            "answer": (
+                "Готово, я это зафиксировал."
+                if language == "ru"
+                else "Done."
+            ),
         }
 
     @staticmethod

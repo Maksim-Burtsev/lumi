@@ -215,4 +215,8 @@ ASSISTANT_TOOL_COVERAGE: Final[dict[str, str]] = {
     "read_settings": "existing:test_orchestrator",
     "update_settings": "existing:test_orchestrator",
     "read_connectors": "existing:test_orchestrator",
+    "read_focus_state": "assistant-command-core:focus_state",
+    "start_focus_session": "assistant-command-core:focus_start_ru",
+    "finish_focus_session": "assistant-command-core:focus_finish_followup",
+    "finish_focus_break": "assistant-command-core:focus_break_finish",
 }

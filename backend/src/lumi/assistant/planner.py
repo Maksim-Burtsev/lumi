@@ -6,6 +6,7 @@ import json
 import uuid
 from typing import Any
 
+from lumi.assistant.command_core import decision_to_agent_plan_data, parse_assistant_decision
 from lumi.assistant.media import MediaCandidate
 from lumi.assistant.prompts import AGENT_PLANNER_SYSTEM
 from lumi.assistant.schemas import (
@@ -25,8 +26,18 @@ log = get_logger(__name__)
 
 
 class AgentPlanner:
-    def __init__(self, llm: LLMGateway | None = None) -> None:
+    def __init__(
+        self,
+        llm: LLMGateway | None = None,
+        *,
+        allow_legacy_agent_plans: bool | None = None,
+    ) -> None:
         self.llm = llm or LLMGateway()
+        self.allow_legacy_agent_plans = (
+            bool(getattr(self.llm, "allow_legacy_agent_plans", False))
+            if allow_legacy_agent_plans is None
+            else allow_legacy_agent_plans
+        )
         self.last_trace: dict[str, Any] = {}
 
     async def plan(
@@ -95,7 +106,7 @@ class AgentPlanner:
             return AgentPlan.empty()
 
         try:
-            if _looks_like_legacy_signals(raw):
+            if _looks_like_legacy_signals(raw) and self.allow_legacy_agent_plans:
                 plan = _signals_to_plan(ExtractedSignals.model_validate(raw))
                 self.last_trace = _planner_trace(
                     raw=raw,
@@ -105,17 +116,27 @@ class AgentPlanner:
                     available_media=available_media,
                 )
                 return plan
-            plan = AgentPlan.model_validate(raw)
+            if _looks_like_command_decision(raw):
+                decision = parse_assistant_decision(raw)
+                plan = AgentPlan.model_validate(decision_to_agent_plan_data(decision))
+                validation_status = "command_core_validated"
+            elif self.allow_legacy_agent_plans:
+                # Explicit compatibility for persisted/scripted test replays.
+                # Live model output is never allowed through this branch.
+                plan = AgentPlan.model_validate(raw)
+                validation_status = "legacy_plan_validated"
+            else:
+                raise ValueError("strict AssistantDecision output required")
             self.last_trace = _planner_trace(
                 raw=raw,
                 plan=plan,
-                validation_status="validated",
+                validation_status=validation_status,
                 media_context=media_context,
                 available_media=available_media,
             )
             return plan
         except Exception as plan_exc:
-            if _looks_like_legacy_signals(raw):
+            if _looks_like_legacy_signals(raw) and self.allow_legacy_agent_plans:
                 try:
                     plan = _signals_to_plan(ExtractedSignals.model_validate(raw))
                     self.last_trace = _planner_trace(
@@ -150,6 +171,10 @@ def _looks_like_legacy_signals(raw: object) -> bool:
             "calendar_requests",
         )
     )
+
+
+def _looks_like_command_decision(raw: object) -> bool:
+    return isinstance(raw, dict) and raw.get("kind") in {"commands", "final", "ask", "denied"}
 
 
 def _short_text(value: str, *, limit: int = 500) -> str:
@@ -191,6 +216,7 @@ def _planner_trace(
         "available_media_count": len(available_media or []),
         "validation_status": validation_status,
         "validation_error": _short_text(validation_error, limit=800) if validation_error else None,
+        "command_core": plan.command_core,
         "mode": plan.mode,
         "tool_names": [call.name for call in plan.tool_calls],
         "tool_count": len(plan.tool_calls),

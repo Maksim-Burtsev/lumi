@@ -70,6 +70,7 @@ class AssistantCaseResult:
 class ScriptedAssistantProvider:
     name = "assistant-regression"
     model = "scripted-1"
+    allow_legacy_agent_plans = True
 
     def __init__(self, plans: tuple[dict[str, Any], ...]) -> None:
         self.plans = list(plans)

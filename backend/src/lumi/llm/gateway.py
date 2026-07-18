@@ -62,6 +62,11 @@ def reset_llm_provider() -> None:  # for tests
 class LLMGateway:
     def __init__(self, provider: LLMProvider | None = None) -> None:
         self.provider = provider or get_llm_provider()
+        # Legacy AgentPlan fixtures are an explicit test/replay compatibility
+        # surface. Live providers must return the strict AssistantDecision.
+        self.allow_legacy_agent_plans = bool(
+            getattr(self.provider, "allow_legacy_agent_plans", False)
+        )
 
     async def complete(
         self,

@@ -169,6 +169,88 @@ class ActionReplyRenderer:
             rendered = rendered.model_copy(update={"button_labels": {}})
         return rendered
 
+    @classmethod
+    def render_deterministic(
+        cls,
+        *,
+        user,
+        planner_language: str | None,
+        outcomes: list[ActionOutcome],
+    ) -> RenderedActionReply | None:
+        """Render action facts without a second model call.
+
+        Command-core action flows already spent their single model call choosing
+        a validated command. Backend outcomes are therefore rendered directly.
+        """
+
+        if not outcomes:
+            return None
+        language_settings = ensure_language_settings(user.settings)
+        language = cls._target_language(
+            user_locale=user.locale,
+            planner_language=planner_language,
+            language_settings=language_settings,
+        )
+        russian = language.startswith("ru")
+        messages: list[str] = []
+        button_labels: dict[str, str] = {}
+        for outcome in outcomes:
+            if outcome.action_type == "create_task" and outcome.title:
+                if outcome.status == "completed":
+                    message = (
+                        f"Создана задача: «{outcome.title}»"
+                        if russian
+                        else f"Created task: “{outcome.title}”"
+                    )
+                    if outcome.project:
+                        message += (
+                            f" в проекте {outcome.project}"
+                            if russian
+                            else f" in project {outcome.project}"
+                        )
+                    messages.append(message)
+                    continue
+                if outcome.status == "requires_confirmation":
+                    message = (
+                        f"Предложена задача «{outcome.title}»"
+                        if russian
+                        else f"Proposed task “{outcome.title}”"
+                    )
+                    if outcome.project:
+                        message += (
+                            f" в проекте {outcome.project}"
+                            if russian
+                            else f" in project {outcome.project}"
+                        )
+                    message += " — ждёт подтверждения" if russian else " — waiting for confirmation"
+                    messages.append(message)
+                    continue
+            messages.append(outcome.fallback_text)
+
+        available_keys = {key for outcome in outcomes for key in outcome.button_keys}
+        labels = (
+            {
+                "task_done": "✓ Выполнено",
+                "task_snooze": "⏰ Отложить",
+                "confirm": "✓ Подтвердить",
+                "reject": "✗ Не надо",
+            }
+            if russian
+            else {
+                "task_done": "✓ Done",
+                "task_snooze": "⏰ Snooze",
+                "confirm": "✓ Confirm",
+                "reject": "✗ No",
+            }
+        )
+        button_labels = {key: label for key, label in labels.items() if key in available_keys}
+        if len(messages) == 1:
+            message = messages[0]
+        else:
+            heading = "Готово:" if russian else "Done:"
+            message = heading + "\n" + "\n".join(f"• {item}" for item in messages)
+        return RenderedActionReply(message=message, button_labels=button_labels)
+
     @staticmethod
     def _target_language(
         *,

@@ -10,6 +10,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +24,7 @@ from lumi.db.models import (
     ConfirmationStatus,
     Conversation,
     ConversationSummary,
+    FocusSession,
     Message,
     MessageRole,
     PendingConfirmation,
@@ -169,6 +171,127 @@ class PlannerCalendarRef:
 
 
 @dataclass(slots=True)
+class PlannerWorkBlockRef:
+    event_id: uuid.UUID
+    task_id: uuid.UUID
+    title: str
+    status: str
+    start_at_local: str
+    end_at_local: str
+    conflict_status: str | None = None
+    timestamp: str | None = None
+
+    @classmethod
+    def from_event(
+        cls,
+        event: CalendarEvent,
+        *,
+        timezone: str | None = None,
+    ) -> PlannerWorkBlockRef:
+        assert event.source_task_id is not None
+        conflict = (event.metadata_ or {}).get("work_block_conflict")
+        conflict_status = conflict.get("status") if isinstance(conflict, dict) else None
+        return cls(
+            event_id=event.id,
+            task_id=event.source_task_id,
+            title=event.title,
+            status=event.status.value if hasattr(event.status, "value") else str(event.status),
+            start_at_local=_planner_local_iso(event.start_at, timezone) or "",
+            end_at_local=_planner_local_iso(event.end_at, timezone) or "",
+            conflict_status=str(conflict_status)[:40] if conflict_status else None,
+            timestamp=event.updated_at.isoformat() if event.updated_at else None,
+        )
+
+    def to_prompt_line(self) -> str:
+        parts = [
+            f"event_id={self.event_id}",
+            f"task_id={self.task_id}",
+            f'title="{self.title[:180]}"',
+            f"status={self.status}",
+            f"start_at_local={self.start_at_local}",
+            f"end_at_local={self.end_at_local}",
+        ]
+        if self.conflict_status:
+            parts.append(f"conflict_status={self.conflict_status}")
+        if self.timestamp:
+            parts.append(f"timestamp={self.timestamp}")
+        return "- " + " ".join(parts)
+
+
+@dataclass(slots=True)
+class PlannerSessionRef:
+    session_id: uuid.UUID
+    intention: str
+    status: str
+    planned_minutes: int
+    task_id: uuid.UUID | None = None
+    planned_event_id: uuid.UUID | None = None
+    phase: Literal["focus", "break", "done"] = "done"
+    started_at_local: str | None = None
+    ended_at_local: str | None = None
+    timestamp: str | None = None
+
+    @classmethod
+    def from_session(
+        cls,
+        focus_session: FocusSession,
+        *,
+        timezone: str | None = None,
+    ) -> PlannerSessionRef:
+        if focus_session.break_started_at is not None and focus_session.break_ended_at is None:
+            phase: Literal["focus", "break", "done"] = "break"
+        elif (
+            focus_session.status.value
+            if hasattr(focus_session.status, "value")
+            else str(focus_session.status)
+        ) == "active":
+            phase = "focus"
+        else:
+            phase = "done"
+        return cls(
+            session_id=focus_session.id,
+            intention=focus_session.intention,
+            status=(
+                focus_session.status.value
+                if hasattr(focus_session.status, "value")
+                else str(focus_session.status)
+            ),
+            planned_minutes=focus_session.planned_minutes,
+            task_id=focus_session.task_id,
+            planned_event_id=focus_session.planned_event_id,
+            phase=phase,
+            started_at_local=_planner_local_iso(focus_session.started_at, timezone),
+            ended_at_local=_planner_local_iso(focus_session.ended_at, timezone),
+            timestamp=focus_session.updated_at.isoformat() if focus_session.updated_at else None,
+        )
+
+    def to_prompt_line(self) -> str:
+        parts = [
+            f"session_id={self.session_id}",
+            f'intention="{self.intention[:180]}"',
+            f"status={self.status}",
+            f"phase={self.phase}",
+            f"planned_minutes={self.planned_minutes}",
+            f"task_id={self.task_id}" if self.task_id else "task_id=null",
+            (
+                f"planned_event_id={self.planned_event_id}"
+                if self.planned_event_id
+                else "planned_event_id=null"
+            ),
+            (
+                f"started_at_local={self.started_at_local}"
+                if self.started_at_local
+                else "started_at_local=null"
+            ),
+        ]
+        if self.ended_at_local:
+            parts.append(f"ended_at_local={self.ended_at_local}")
+        if self.timestamp:
+            parts.append(f"timestamp={self.timestamp}")
+        return "- " + " ".join(parts)
+
+
+@dataclass(slots=True)
 class PlannerPendingTaskRef:
     confirmation_id: uuid.UUID
     title: str
@@ -214,6 +337,8 @@ class PlannerContext:
     last_notified_task_refs: list[PlannerTaskRef] = field(default_factory=list)
     replied_task_ref: PlannerTaskRef | None = None
     recent_calendar_refs: list[PlannerCalendarRef] = field(default_factory=list)
+    recent_work_block_refs: list[PlannerWorkBlockRef] = field(default_factory=list)
+    recent_session_refs: list[PlannerSessionRef] = field(default_factory=list)
     known_projects: list[str] = field(default_factory=list)
 
     def to_prompt_text(self) -> str:
@@ -228,6 +353,7 @@ class PlannerContext:
             "For multi-task/filter/all matching task changes use bulk_update_tasks.",
             "Use calendar event_id or recency_hint for follow-ups that refer to a recent "
             "calendar block/event.",
+            "Use work-block event_id/task_id and session_id for pronouns and short focus follow-ups.",
         ]
         lines.append("project_refs:")
         for ref_name in (
@@ -268,6 +394,16 @@ class PlannerContext:
             lines.extend(ref.to_prompt_line() for ref in self.recent_calendar_refs)
         else:
             lines.append("- none")
+        lines.append("recent_work_block_refs:")
+        if self.recent_work_block_refs:
+            lines.extend(ref.to_prompt_line() for ref in self.recent_work_block_refs)
+        else:
+            lines.append("- none")
+        lines.append("recent_session_refs:")
+        if self.recent_session_refs:
+            lines.extend(ref.to_prompt_line() for ref in self.recent_session_refs)
+        else:
+            lines.append("- none")
         known_projects = ", ".join(self.known_projects) if self.known_projects else "none"
         lines.append("known_projects: " + known_projects)
         return "\n".join(lines)
@@ -280,6 +416,8 @@ class PlannerContext:
             "last_notified_task_count": len(self.last_notified_task_refs),
             "replied_task_count": 1 if self.replied_task_ref is not None else 0,
             "recent_calendar_ref_count": len(self.recent_calendar_refs),
+            "recent_work_block_ref_count": len(self.recent_work_block_refs),
+            "recent_session_ref_count": len(self.recent_session_refs),
             "known_project_count": len(self.known_projects),
         }
 
@@ -353,6 +491,8 @@ class PlannerContextBuilder:
             user=user,
             conversation=conversation,
         )
+        recent_work_block_refs = await self._recent_work_block_refs(user=user)
+        recent_session_refs = await self._recent_session_refs(user=user)
         pending_refs = await self._pending_task_refs(user=user)
         last_notified_refs = await self._last_notified_task_refs(
             user=user,
@@ -372,6 +512,8 @@ class PlannerContextBuilder:
             last_notified_task_refs=last_notified_refs,
             replied_task_ref=replied_ref,
             recent_calendar_refs=recent_calendar_refs,
+            recent_work_block_refs=recent_work_block_refs,
+            recent_session_refs=recent_session_refs,
             known_projects=known_projects[:30],
         )
 
@@ -580,6 +722,43 @@ class PlannerContextBuilder:
                 timestamp=call.created_at.isoformat() if call.created_at else None,
             ))
         return refs
+
+    async def _recent_work_block_refs(
+        self,
+        *,
+        user: User,
+        limit: int = 5,
+    ) -> list[PlannerWorkBlockRef]:
+        result = await self.session.execute(
+            select(CalendarEvent)
+            .where(
+                CalendarEvent.user_id == user.id,
+                CalendarEvent.source_task_id.is_not(None),
+            )
+            .order_by(CalendarEvent.updated_at.desc(), CalendarEvent.id.desc())
+            .limit(limit)
+        )
+        return [
+            PlannerWorkBlockRef.from_event(event, timezone=user.timezone)
+            for event in result.scalars()
+        ]
+
+    async def _recent_session_refs(
+        self,
+        *,
+        user: User,
+        limit: int = 5,
+    ) -> list[PlannerSessionRef]:
+        result = await self.session.execute(
+            select(FocusSession)
+            .where(FocusSession.user_id == user.id)
+            .order_by(FocusSession.updated_at.desc(), FocusSession.id.desc())
+            .limit(limit)
+        )
+        return [
+            PlannerSessionRef.from_session(focus_session, timezone=user.timezone)
+            for focus_session in result.scalars()
+        ]
 
     async def _pending_task_refs(
         self,
